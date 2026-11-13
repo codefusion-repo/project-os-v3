@@ -148,6 +148,33 @@ class MultiRepository(unittest.TestCase):
                 result = run(remote, '--workflow', 'continue', '--repo', name)
                 self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual(len(outputs(remote)), 2)
+            first_remote = next(path for path in outputs(remote) if 'org/first' in path.read_text())
+            second_remote = next(path for path in outputs(remote) if path != first_remote)
+            result = run(remote, '--workflow', 'review', '--repo', 'ORG/FIRST')
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertFalse(first_remote.exists())
+            self.assertTrue(second_remote.exists())
+            self.assertEqual(len(outputs(remote)), 2)
+
+    def test_remote_owner_uses_unordered_repository_set(self):
+        owner = selector.prompt_owner(None, ['org/front', 'org/api'])
+        self.assertEqual(owner, selector.prompt_owner(None, ['ORG/API', 'org/front', 'org/api']))
+        self.assertNotEqual(owner, selector.prompt_owner(None, ['org/front']))
+        self.assertNotEqual(owner, selector.prompt_owner(Path('/org/front'), ['org/front', 'org/api']))
+
+    def test_remote_only_interactive_replaces_previous_across_invocations(self):
+        with tempfile.TemporaryDirectory() as temp:
+            folder = Path(temp) / 'out'
+            def generate(objective):
+                entries = ['org/repo', 'review', '', objective, '#1', '', '', 'g', str(folder), 's']
+                result = execute(input_text='\n'.join(entries) + '\n', cwd=temp)
+                self.assertEqual(result.returncode, 0, result.stderr)
+            generate('Primero')
+            previous = outputs(folder)[0]
+            generate('Segundo')
+            self.assertFalse(previous.exists())
+            self.assertEqual(len(outputs(folder)), 1)
+            self.assertIn('Segundo', outputs(folder)[0].read_text())
 
     def test_issue_reference_outside_scope_warns(self):
         self.assertIn('fuera del alcance', selector.reference_warning(

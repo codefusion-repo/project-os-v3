@@ -33,4 +33,4 @@ Recupera `PROJECT_OS.md` y los documentos aplicables del SHA fijado en `AGENTS.m
 
 Para cada resultado, evalúa y consulta el template pertinente de la [lista compartida](../PROJECT_OS.md#selección-de-templates) si es accesible y aporta valor. Incluye review, comentario de review, ejecución, decisión y handoff, además de los demás artefactos. Adapta sus campos a la evidencia real; omite los irrelevantes o desconocidos y nunca inventes información para completarlo. Si no puedes acceder al template, informa el límite y entrega lo seguro. Preparar un borrador no concede permisos de publicación ni ejecución.
 
-En un proyecto multirrepositorio identifica según la tarea los repositorios necesarios entre los conocidos y accesibles, sin asumir una jerarquía. Respeta cualquier alcance explícito y comprueba por separado instrucciones, visibilidad, permisos y evidencia de cada repositorio; no publiques relaciones privadas ni rutas locales.
+Para proyectos multirrepositorio aplica las comprobaciones independientes y límites de privacidad de [PROJECT_OS.md](../PROJECT_OS.md#instalación-adopción-y-versión-del-proyecto).

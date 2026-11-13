@@ -319,10 +319,15 @@ def save_prompt(folder, content, owner=None):
         os.close(fd)
 
 
-def prompt_owner(project):
-    # A local root identifies the logical project. Without one, keep different
-    # invocations isolated because their project identity cannot be established.
-    identity = os.fsencode(project_local.path(project)) if project is not None else uuid.uuid4().bytes
+def prompt_owner(project, repositories=(), anonymous=None):
+    # A local root is authoritative; remote-only use can identify the exact set
+    # of repositories, but an anonymous invocation has no comparable identity.
+    if project is not None:
+        identity = os.fsencode(project_local.path(project))
+    elif repositories:
+        identity = b'remote-repositories\0' + '\0'.join(sorted({repo.casefold() for repo in repositories})).encode('utf-8')
+    else:
+        identity = anonymous if anonymous is not None else uuid.uuid4().bytes
     return hashlib.sha256(identity).hexdigest()
 
 
@@ -711,7 +716,7 @@ def interactive(operations, skills, templates, folder, repositories, project=Non
         print('Este Python no dispone de edición segura de terminal; usa los flags del CLI para texto multilínea.', file=sys.stderr)
         return 1
     operation, last_path = 'continue', None
-    owner = prompt_owner(project)
+    anonymous = uuid.uuid4().bytes
     protection_checked = False
     values = {'repositories': list(repositories), 'scope': [], 'project_name': (config or {}).get('name', ''),
               'local_only': False, 'skills': [], 'context': '', 'locator': '', 'feedback': '', 'question': ''}
@@ -796,7 +801,7 @@ def interactive(operations, skills, templates, folder, repositories, project=Non
                     else:
                         raise InputError('Selecciona un destino fuera del proyecto desprotegido.')
                 print(project_local.preflight(folder, prepare=False))
-                last_path, failures = save_prompt(folder, content, owner=owner)
+                last_path, failures = save_prompt(folder, content, owner=prompt_owner(project, values['repositories'], anonymous))
                 print(f'Prompt guardado: {last_path}')
                 if failures:
                     print('No se pudieron quitar algunos prompts anteriores.', file=sys.stderr)
@@ -1095,9 +1100,9 @@ def main(argv=None):
                 raise InputError('El destino debe estar fuera del proyecto desprotegido.')
         print(project_local.preflight(folder, prepare=False))
         print('Se reemplazarán solo prompts identificados del mismo proyecto después de escribir el nuevo.')
-        if project is None:
-            print('Sin proyecto local identificable se conservan los prompts de otras invocaciones.')
-        output, failures = save_prompt(folder, content, owner=prompt_owner(project))
+        if project is None and not repositories:
+            print('Sin proyecto ni repositorios identificables se conservan los prompts de otras invocaciones.')
+        output, failures = save_prompt(folder, content, owner=prompt_owner(project, repositories))
         print(f'Prompt guardado: {output}')
         if failures:
             print('No se pudieron quitar algunos prompts anteriores.', file=sys.stderr)

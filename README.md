@@ -4,15 +4,18 @@ Kit Markdown-first con workflows, skills, templates y un wizard para preparar pr
 
 ## Instalar una vez
 
-En Linux o WSL, con Git y Python 3.9 o superior, desde un checkout inspeccionado del kit:
+Para el piloto previo al merge, en Linux o WSL con Git y Python 3.9 o superior, obtén el SHA revisado del draft PR y compruébalo antes de instalar:
 
 ```bash
-git clone https://github.com/codefusion-repo/project-os-v3.git
+git clone --no-checkout https://github.com/codefusion-repo/project-os-v3.git
 cd project-os-v3
-./install.sh
+git checkout --detach 5a7252fdb76afbbd49647838fed059252faf8152 &&
+  test "$(git rev-parse HEAD)" = 5a7252fdb76afbbd49647838fed059252faf8152 &&
+  test -f install.sh &&
+  ./install.sh
 ```
 
-Durante el desarrollo del MVP usa la rama del draft PR: la rama de distribución puede no contener aún estos cambios. El instalador crea `.venv` aislado con `prompt_toolkit` y `~/.local/bin/project-os-v3`; no usa sudo, paquetes globales ni modifica archivos del shell. Si el destino no está en `PATH`, añade esa carpeta de forma explícita. Si falla la dependencia opcional, informa el fallo y prepara un launcher que usa Python estándar. No sobrescribe un launcher ajeno. Requiere apertura segura de directorios y enlaces duros en el filesystem.
+El SHA fija la versión revisada para este piloto; consulta el [draft PR](https://github.com/codefusion-repo/project-os-v3/pull/1) para una versión posterior y verifica su SHA antes de sustituirlo. `main` todavía no contiene el instalador. El instalador crea `.venv` aislado con `prompt_toolkit` y `~/.local/bin/project-os-v3`; no usa sudo, paquetes globales ni modifica archivos del shell. Si el destino no está en `PATH`, añade esa carpeta de forma explícita. Si falla la dependencia opcional, informa el fallo y prepara un launcher que usa Python estándar. No sobrescribe un launcher ajeno. Requiere apertura segura de directorios y enlaces duros en el filesystem.
 
 ## Adaptar un proyecto
 
@@ -34,7 +37,7 @@ El destino por defecto es `.project-os/prompts/` del proyecto o workspace, no de
 project-os-v3 --project /ruta/al/proyecto --output-dir /ruta/a/mis-prompts
 ```
 
-Antes de guardar, el wizard comprueba las reglas Git efectivas y si existen archivos privados bajo seguimiento. Cuando es seguro, prepara y verifica una exclusión local en Git; el agente debe agregar la exclusión versionada a `.gitignore`. Si no puede proteger el proyecto, conserva la vista previa y solicita un destino externo explícito. Los prompts identificados del mismo proyecto se reemplazan solo después de escribir el nuevo, incluso en una carpeta compartida. Se conservan los archivos ajenos y los prompts antiguos que no pueden atribuirse a un proyecto. Sin proyecto local identificable, se conservan los prompts de otras invocaciones. El detector de secretos es heurístico y no sustituye revisar lo que se comparte.
+Antes de guardar, el wizard comprueba las reglas Git efectivas y si existen archivos privados bajo seguimiento. Cuando es seguro, prepara y verifica una exclusión local en Git; el agente debe agregar la exclusión versionada a `.gitignore`. Si no puede proteger el proyecto, conserva la vista previa y solicita un destino externo explícito. Los prompts identificados del mismo proyecto se reemplazan solo después de escribir el nuevo, incluso en una carpeta compartida. Sin proyecto local, el conjunto exacto de repositorios identifica la operación; conjuntos distintos quedan aislados. Se conservan archivos ajenos y prompts antiguos que no pueden atribuirse con seguridad, incluidos los generados antes de esta identificación remota. Sin proyecto ni repositorios identificables se conservan prompts de otras invocaciones. El detector de secretos es heurístico y no sustituye revisar lo que se comparte.
 
 Los repositorios de un proyecto son equivalentes; la configuración usa una lista `repositories` sin principal. El selector genera un único prompt acotado: conserva el contexto del PM y los pasos esenciales para iniciar; señala también los documentos y la versión que el agente debe verificar. No copia el kit completo en el prompt.
 
@@ -52,4 +55,4 @@ project-os-v3 --help
 
 La generación no interactiva puede leer preferencias del proyecto, pero no las cambia; `--repo` repetido limita solo la operación y, con `--configure`, agrega repositorios a la lista; `--configure` solicita explícitamente modificarlas. `--prototype` combina `implement` con `rapid-prototype` y admite más skills. El prompt referencia documentos e indica al agente que verifique su procedencia y disponibilidad. Si la versión fijada falta localmente, señala ese límite sin mezclar otra versión. Si todavía no hay SHA fijado se indica la procedencia disponible sin afirmar que el proyecto ya está adaptado.
 
-Para uso directo, lee [PROJECT_OS.md](PROJECT_OS.md), el workflow y las skills base [repo-context](skills/repo-context/SKILL.md) y [github-traceability](skills/github-traceability/SKILL.md). El kit incluye seis workflows, nueve skills, catorce templates y dos adapters. La [especificación](docs/V3_SPEC.md) y el [addendum](docs/V3_ADDENDUM.md) describen el contrato. Ejecuta `python3 -m unittest discover -s tests -v` para comprobar el kit.
+Para uso directo, lee [PROJECT_OS.md](PROJECT_OS.md), el workflow y las skills base [repo-context](skills/repo-context/SKILL.md) y [github-traceability](skills/github-traceability/SKILL.md). El kit incluye seis workflows, nueve skills, catorce templates y dos adapters. La [especificación](docs/V3_SPEC.md), el [addendum](docs/V3_ADDENDUM.md) y la [validación histórica](docs/VALIDATION.md) son evidencia consultable cuando la tarea la requiera; no se cargan por defecto en el trabajo diario. Ejecuta `python3 -m unittest discover -s tests -v` para comprobar el kit.

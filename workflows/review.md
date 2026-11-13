@@ -10,8 +10,7 @@ Review de diff, PR o cambio ya implementado.
 1. Identifica base/head, alcance y criterios; inspecciona diff y código circundante.
 2. Examina casos límite, seguridad y tests pertinentes; reproduce hallazgos cuando sea viable.
 3. Entrega al PM findings por impacto con ubicación, evidencia, corrección, SHA revisado, checks y límites.
-4. En browser chat, aplica el [adapter](../adapters/browser-chat.md): si `review.publish` está autorizado y disponible, publica y verifica un comentario nuevo; si no, entrega borrador e indica review no publicado. Informa cambios del head.
-5. Tras confirmar publicación, prepara un prompt compacto con repo, PR, SHA y URL del comentario para corregir en el mismo PR; valida y publica commits solo con autorización.
+4. En browser chat, sigue el procedimiento de publicación y corrección del [adapter](../adapters/browser-chat.md).
 ## Evidencia y validación
 Usa código y checks reales, no solo la descripción del PR. Identifica cada review material de forma única y evita duplicados en reintentos; no sustituyas ni edites historia. Una review de solo lectura no crea commits. Aplica [github-traceability](../skills/github-traceability/SKILL.md) a las correcciones versionadas. Skills sugeridas: [code-review](../skills/code-review/SKILL.md), [security-review](../skills/security-review/SKILL.md), [testing](../skills/testing/SKILL.md).
 ## Salida

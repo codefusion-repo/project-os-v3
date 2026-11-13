@@ -18,12 +18,7 @@ Repo, scope autorizado y locator de issue/PR si existe.
 
 ## Publicación de review desde browser chat
 
-Aplicar el [adapter browser](../../adapters/browser-chat.md) y [review](../../workflows/review.md).
-
-- Distinguir `review.read` de `review.publish`: publicar requiere capacidad real y autorización explícita vigente del PM para repo/PR, respaldada por la configuración real del adaptador. Una autorización previa dentro de ese alcance se reutiliza; la existencia de conector no autoriza. Comentar no autoriza review formal, cambios de código, merge ni deploy.
-- Entregar primero el review al PM con findings, severidad, ubicación, evidencia, corrección, límites y SHA inspeccionado. Para cada revisión material, asignar un identificador único estable durante reintentos; incluirlo con el SHA en un comentario nuevo sin datos sensibles.
-- Comprobar head antes/después de publicar; indicar cualquier cambio frente al SHA revisado. Verificar comentario y URL permanente en GitHub. Si una respuesta es ambigua, buscar el identificador y contenido en el historial completo accesible antes de reintentar; si no puede comprobarse, no reenviar. Cada revisión material nueva usa identificador nuevo, sin editar ni borrar historia.
-- Tras confirmar, preparar prompt compacto para terminal con repo, número/URL del PR, SHA revisado y URL del comentario: corregir los findings en el mismo PR, validar, publicar commits autorizados y registrar nueva ejecución. Si no se puede publicar, entregar review completo y borrador, decir **review no publicado**, no inventar URL y continuar lo seguro; ante resultado ambiguo aclarar que la publicación no está confirmada y podría existir.
+El [adapter browser](../../adapters/browser-chat.md) es la fuente del procedimiento de `review.read` y `review.publish`: autorización, SHA, identificador, reintentos y estado **review no publicado**. Aplica también [review](../../workflows/review.md).
 
 ## Validación y salida
 SHA o URL remotos verificados, issue/PR, enlace al comentario nuevo confirmado o borrador pendiente, checks, tests, fallos y riesgos reales. No inventar resultados ni declarar publicación sin evidencia.
