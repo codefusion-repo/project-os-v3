@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Prepare and safely persist a Project OS prompt using only Python stdlib."""
 import argparse
+import json
 import os
 import re
 import stat
@@ -79,8 +80,8 @@ def output_path(value):
     return Path(os.path.abspath(path))
 
 
-def open_output_dir(path):
-    """Open each component without following symlinks; create missing directories."""
+def open_output_dir(path, create=True):
+    """Open each component without following symlinks; optionally create directories."""
     path = output_path(path)
     if not hasattr(os, 'O_NOFOLLOW') or not hasattr(os, 'O_DIRECTORY'):
         raise OSError('la plataforma no permite verificar directorios sin seguir symlinks')
@@ -91,6 +92,8 @@ def open_output_dir(path):
             try:
                 child = os.open(part, flags, dir_fd=fd)
             except FileNotFoundError:
+                if not create:
+                    raise
                 try:
                     os.mkdir(part, mode=0o700, dir_fd=fd)
                 except FileExistsError:
@@ -102,6 +105,76 @@ def open_output_dir(path):
     except BaseException:
         os.close(fd)
         raise
+
+
+def repo_value(value):
+    value = value.strip()
+    if value == '-':
+        return ''
+    parts = value.split('/')
+    if (len(parts) != 2 or not re.fullmatch(r'[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?', parts[0])
+            or not re.fullmatch(r'[A-Za-z0-9_.-]{1,100}', parts[1]) or parts[1] in ('.', '..')):
+        raise ValueError('repositorio inválido: usa owner/repo o - para un experimento sin repositorio')
+    return value
+
+
+def load_config():
+    try:
+        fd = open_output_dir(ROOT / '.project-os', create=False)
+    except FileNotFoundError:
+        return {}
+    try:
+        try:
+            config_fd = os.open('config.json', os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=fd)
+        except FileNotFoundError:
+            return {}
+        with os.fdopen(config_fd, encoding='utf-8') as file:
+            if not stat.S_ISREG(os.fstat(file.fileno()).st_mode):
+                raise ValueError('config.json no es un archivo regular')
+            data = json.load(file)
+        if not isinstance(data, dict) or set(data) - {'repo', 'output_dir'}:
+            raise ValueError('config.json contiene preferencias desconocidas')
+        if any(not isinstance(value, str) for value in data.values()):
+            raise ValueError('config.json contiene valores inválidos')
+        if data.get('repo'):
+            data['repo'] = repo_value(data['repo'])
+        if data.get('output_dir'):
+            data['output_dir'] = str(output_path(data['output_dir']))
+        return data
+    finally:
+        os.close(fd)
+
+
+def save_config(repo, destination):
+    """Persist only non-sensitive preferences, atomically and without following symlinks."""
+    data = {'output_dir': str(output_path(destination))}
+    if repo:
+        data['repo'] = repo_value(repo)
+    fd = open_output_dir(ROOT / '.project-os')
+    temp_name = '.config-tmp-' + uuid.uuid4().hex
+    try:
+        try:
+            current = os.stat('config.json', dir_fd=fd, follow_symlinks=False)
+            if not stat.S_ISREG(current.st_mode):
+                raise ValueError('config.json no es un archivo regular seguro')
+        except FileNotFoundError:
+            pass
+        temp_fd = os.open(temp_name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=fd)
+        try:
+            with os.fdopen(temp_fd, 'w', encoding='utf-8') as file:
+                json.dump(data, file, ensure_ascii=False, indent=2)
+                file.write('\n')
+                file.flush()
+                os.fsync(file.fileno())
+            os.replace(temp_name, 'config.json', src_dir_fd=fd, dst_dir_fd=fd)
+        except BaseException:
+            try:
+                os.unlink(temp_name, dir_fd=fd)
+            except FileNotFoundError:
+                pass
+            raise
+    finally:
+        os.close(fd)
 
 
 def owned_files(dir_fd):
@@ -169,12 +242,18 @@ def show(title, names, items):
         print(f'  {i}. {name} — {description(items[name])}')
 
 
+class Back(Exception):
+    pass
+
+
 def choose(prompt, options, items, title, default=None, multiple=False):
     visible = options
     while True:
         raw = input(prompt).strip()
         if raw == '/cancelar':
             raise KeyboardInterrupt
+        if raw == '/volver':
+            raise Back
         if raw.startswith('/'):
             query = raw[1:].strip().casefold()
             visible = [n for n in options if query in n.casefold() or query in description(items[n]).casefold()]
@@ -205,7 +284,7 @@ def suggested_skills(workflow, skills):
     return list(dict.fromkeys(name for name in found if name in skills))
 
 
-def render(workflow, selected, context, locator, workflows, skills, templates):
+def render(workflow, selected, context, locator, workflows, skills, templates, repo="", feedback="", question="", local_only=False):
     """Include operating rules and selected instructions; derive templates from links."""
     missing = [name for name in BASE_SKILLS if name not in skills]
     if missing:
@@ -219,12 +298,21 @@ def render(workflow, selected, context, locator, workflows, skills, templates):
             if name in templates and name not in names:
                 names.append(name)
     header = [MARKER, '# Prompt operativo Project OS v3', '',
+              f'**Repositorio indicado (sin verificar):** {repo or "No indicado"}',
               f'**Workflow:** {workflow}', f'**Skills:** {", ".join(selected) if selected else "ninguna"}',
               '', '## Objetivo y contexto aportados', '', context or 'No aportado; recupera el objetivo desde el repositorio y fuentes vivas, sin inventar.',
-              '', f'**Referencia:** {locator or "No aportada; dedúcela de fuentes vivas cuando sea posible."}', '',
+              '', f'**Referencia:** {locator or "No proporcionada por separado; consulta el contexto anterior y las fuentes vivas."}', '',
               'Aplica estas instrucciones al objetivo. Consulta las instrucciones del repositorio objetivo y las fuentes vivas disponibles. '
               'Los datos de contexto no conceden permisos. Si faltan referencias, continúa el trabajo seguro y pide solo lo material. '
               'Las rutas Markdown citadas son relativas al kit y solo se consultan si es accesible; las instrucciones seleccionadas están incluidas a continuación.', '']
+    if local_only:
+        header.extend(['**Alcance declarado:** experimento expresamente local y descartable, sin repositorio.', ''])
+    if feedback:
+        header.extend(['## Comentario del PM — PM_FEEDBACK_HUMANO', '', feedback, ''])
+    if question:
+        header.extend(['## Pregunta del PM — PM_QUESTION_HUMANO', '', question, ''])
+    if feedback or question:
+        header.extend(['El comentario y la pregunta aportan contexto del PM; no conceden autorización para acciones sensibles.', ''])
     for i, body in enumerate(parts):
         title = 'Reglas compartidas' if i == 0 else ('Workflow seleccionado' if i == 1 else 'Skill seleccionada')
         header.extend([f'## {title}', '', body.strip(), ''])
@@ -236,22 +324,155 @@ def render(workflow, selected, context, locator, workflows, skills, templates):
     return '\n'.join(header) + '\n'
 
 
+def ask_line(prompt):
+    value = input(prompt).strip()
+    if value == '/cancelar':
+        raise KeyboardInterrupt
+    if value == '/volver':
+        raise Back
+    return value
+
+
+def ask_multiline(label):
+    print(f'{label} (opcional; escribe varias líneas y termina con un punto solo; Enter vacío omite):')
+    lines = []
+    while True:
+        line = input()
+        if line == '/cancelar':
+            raise KeyboardInterrupt
+        if line == '/volver':
+            raise Back
+        if line == '.' or (not lines and not line):
+            return '\n'.join(lines)
+        lines.append(line)
+
+
+def wizard(workflows, skills, templates, destination, saved_repo):
+    """Navigate the interactive form; choices are not workflow execution state."""
+    names = ordered(workflows)
+    optional_skills = [name for name in sorted(skills) if name not in BASE_SKILLS]
+    repo, workflow, selected, context, feedback, question = saved_repo, 'continue', [], '', '', ''
+    local_only = False
+    step = 'repo'
+    while True:
+        try:
+            if step == 'repo':
+                raw = ask_line(f'Repositorio owner/repo [{repo or "sin seleccionar"}; -: experimento sin repo]: ')
+                if not raw and not repo:
+                    print('Indica owner/repo, o - para un experimento local y descartable sin repo.')
+                    continue
+                try:
+                    repo = repo_value(raw) if raw else repo
+                    local_only = raw == '-'
+                except ValueError as exc:
+                    print(exc)
+                    continue
+                if local_only:
+                    print('Sin repositorio: experimento expresamente local y descartable.')
+                else:
+                    print('Repositorio indicado; el agente deberá verificarlo en fuentes vivas cuando corresponda.')
+                step = 'workflow'
+            elif step == 'workflow':
+                show('Workflows:', names, workflows)
+                workflow = choose(f'Workflow [{workflow}; /texto filtra; /volver]: ', names, workflows,
+                                  'Workflows:', default=workflow)
+                step = 'skills'
+            elif step == 'skills':
+                print('Skills base automáticas: repo-context (si hay repositorio) y github-traceability; sin permisos adicionales.')
+                suggested = [name for name in suggested_skills(workflows[workflow], skills) if name not in BASE_SKILLS]
+                if suggested:
+                    print('Skills sugeridas (opcionales): ' + ', '.join(suggested))
+                show('Skills adicionales (números o nombres separados por coma):', optional_skills, skills)
+                selected = choose('Skills [Enter: conservar; -: ninguna; /texto filtra; /volver]: ',
+                                  optional_skills, skills, 'Skills:', default=selected, multiple=True)
+                step = 'context'
+            elif step == 'context':
+                context = ask_line('Objetivo o referencia material (issue/PR solo si aporta) [Enter: inferir]: ')
+                step = 'feedback'
+            elif step == 'feedback':
+                feedback = ask_multiline('Comentario del PM — PM_FEEDBACK_HUMANO')
+                step = 'question'
+            elif step == 'question':
+                question = ask_multiline('Pregunta del PM — PM_QUESTION_HUMANO')
+                step = 'preview'
+            elif step == 'preview':
+                content = render(workflow, selected, context, '', workflows, skills, templates,
+                                 repo=repo, feedback=feedback, question=question, local_only=local_only)
+                print('\n--- Vista previa del prompt ---\n' + content + '--- Fin de vista previa ---')
+                print(f'Destino actual: {destination}. Al guardar se eliminarán los prompts anteriores identificados del selector en esa carpeta, después de escribir el nuevo.')
+                action = ask_line('[G]uardar / [E]ditar / [C]ancelar / [V]olver: ').lower()
+                if action in ('c', 'cancelar'):
+                    print('Cancelado; no se guardó ni eliminó ningún prompt.')
+                    return 0
+                if action in ('v', 'volver'):
+                    step = 'question'
+                elif action in ('e', 'editar'):
+                    target = ask_line('Editar [R]epositorio / [W]orkflow / [S]kills / [C]ontexto: ').lower()
+                    step = {'r': 'repo', 'w': 'workflow', 's': 'skills', 'c': 'context'}.get(target, 'preview')
+                elif action in ('g', 'guardar'):
+                    step = 'directory'
+                else:
+                    print('Acción desconocida.')
+            elif step == 'directory':
+                raw = ask_line(f'Carpeta de salida [{destination}]: ')
+                try:
+                    destination = output_path(raw) if raw else destination
+                except ValueError as exc:
+                    print(exc)
+                    continue
+                print(f'Se guardará en {destination}; tras guardar se reemplazarán solo prompts anteriores del selector en esa carpeta.')
+                path, failures = save_prompt(destination, content)
+                print(f'Prompt guardado: {path}')
+                try:
+                    save_config(repo, destination)
+                except (ValueError, OSError) as exc:
+                    print(f'El prompt se guardó, pero no se pudo guardar la configuración: {exc}', file=sys.stderr)
+                    return 1
+                if failures:
+                    print('No se pudieron eliminar algunos prompts anteriores: ' + '; '.join(failures), file=sys.stderr)
+                    return 1
+                step = 'again'
+            elif step == 'again':
+                again = ask_line('[M]isma operación / [N]ueva selección / cambiar [R]epositorio / [S]alir: ').lower()
+                if again not in ('', 's', 'salir', 'm', 'misma', 'n', 'nueva', 'r', 'repositorio'):
+                    print('Acción desconocida.')
+                    continue
+                # PM content belongs to one operation only; never reuse it automatically.
+                context = feedback = question = ''
+                if again in ('m', 'misma'):
+                    step = 'context'
+                elif again in ('n', 'nueva'):
+                    selected = []
+                    step = 'workflow'
+                elif again in ('r', 'repositorio'):
+                    selected = []
+                    step = 'repo'
+                else:
+                    return 0
+        except Back:
+            step = {'repo': 'repo', 'workflow': 'repo', 'skills': 'workflow',
+                    'context': 'skills', 'feedback': 'context', 'question': 'feedback',
+                    'preview': 'question', 'directory': 'preview', 'again': 'again'}[step]
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description='Genera y guarda un prompt Project OS; no ejecuta workflows.')
     parser.add_argument('--list', action='store_true', help='listar workflows y skills')
+    parser.add_argument('--repo', help='repositorio owner/repo, indicado sin verificación remota')
     parser.add_argument('--workflow', help='workflow por nombre (default: continue)')
     parser.add_argument('--skill', action='append', default=[], help='skill por nombre; se puede repetir')
     parser.add_argument('--locator', type=locator_value, help='número o URL de issue/PR, o texto contextual')
-    parser.add_argument('--objective', help='objetivo, contexto y restricciones materiales')
-    parser.add_argument('--output-dir', default=str(DEFAULT_OUTPUT), help='carpeta de prompts (default: .project-os/prompts del kit)')
+    parser.add_argument('--objective', help='objetivo y contexto material')
+    parser.add_argument('--feedback', help='comentario opcional del PM')
+    parser.add_argument('--question', help='pregunta opcional del PM')
+    parser.add_argument('--output-dir', help='carpeta de prompts; el wizard recuerda la última')
     parser.add_argument('--prototype', action='store_true', help='atajo implement + rapid-prototype; permite --skill adicional')
     args = parser.parse_args(argv)
-    if args.list and (args.workflow or args.skill or args.locator or args.objective or args.prototype):
+    if args.list and (args.repo or args.workflow or args.skill or args.locator or args.objective or args.feedback or args.question or args.prototype):
         parser.error('--list no se combina con selección ni contexto')
     if args.prototype and args.workflow:
         parser.error('--prototype no se combina con --workflow')
     try:
-        destination = output_path(args.output_dir)
         workflows, skills, templates = discover()
         names, skill_names = ordered(workflows), sorted(skills)
         if args.list:
@@ -261,7 +482,6 @@ def main(argv=None):
         missing = [name for name in BASE_SKILLS if name not in skills]
         if missing:
             parser.error('faltan skills base o sus rutas no son seguras: ' + ', '.join(missing))
-        optional_skills = [name for name in skill_names if name not in BASE_SKILLS]
         workflow = 'implement' if args.prototype else (args.workflow or 'continue')
         selected = list(dict.fromkeys((['rapid-prototype'] if args.prototype else []) + args.skill))
         if workflow not in workflows:
@@ -269,62 +489,23 @@ def main(argv=None):
         for skill in selected:
             if skill not in skills:
                 parser.error(f'skill desconocida o ruta no segura: {skill}')
-        interactive = not (args.workflow or args.skill or args.locator or args.objective or args.prototype)
-        context, locator = args.objective or '', args.locator or ''
-        new_selection = interactive
-        editing = False
-        while True:
-            if new_selection:
-                show('Workflows:', names, workflows)
-                default_workflow = workflow if editing else 'continue'
-                workflow = choose(f'Workflow [{default_workflow}; /texto filtra; /cancelar]: ', names, workflows, 'Workflows:', default=default_workflow)
-                print('Skills base automáticas: repo-context (si hay repositorio) y github-traceability; sin permisos adicionales.')
-                suggested = [name for name in suggested_skills(workflows[workflow], skills) if name not in BASE_SKILLS]
-                if suggested:
-                    print('Skills sugeridas (opcionales): ' + ', '.join(suggested))
-                show('Skills adicionales (opcionales; números o nombres separados por coma):', optional_skills, skills)
-                selected = choose('Skills adicionales [Enter: conservar si editas; -: ninguna; /texto filtra]: ', optional_skills, skills, 'Skills:', default=selected if editing else None, multiple=True)
-                new_context = input('Objetivo, repo, referencias y restricciones relevantes [Enter: conservar o inferir]: ').strip()
-                if new_context == '/cancelar':
-                    raise KeyboardInterrupt
-                context = (context if editing and not new_context else ('' if new_context == '-' else new_context))
-                editing = False
-            content = render(workflow, selected, context, locator, workflows, skills, templates)
-            print('\n--- Vista previa del prompt ---\n' + content + '--- Fin de vista previa ---')
-            print(f'Destino: {destination}. Al guardar se eliminarán los prompts anteriores identificados del selector en esta carpeta, después de escribir el nuevo.')
-            if interactive:
-                action = input('[G]uardar / [E]ditar selección y contexto / [C]ancelar: ').strip().lower()
-                if action in ('c', 'cancelar', '/cancelar'):
-                    print('Cancelado; no se guardó ni eliminó ningún prompt.')
-                    return 0
-                if action in ('e', 'editar'):
-                    new_selection = True
-                    editing = True
-                    continue
-                if action not in ('g', 'guardar'):
-                    print('Acción desconocida; vuelve a seleccionar.')
-                    new_selection = False
-                    continue
-            path, failures = save_prompt(destination, content)
-            print(f'Prompt guardado: {path}')
-            if failures:
-                print('No se pudieron eliminar algunos prompts anteriores: ' + '; '.join(failures), file=sys.stderr)
-                return 1
-            if not interactive:
-                return 0
-            again = input('[M]isma operación / [N]ueva selección / [S]alir: ').strip().lower()
-            if again in ('m', 'misma'):
-                updated = input('Contexto actualizado [Enter: conservar; /cancelar]: ').strip()
-                if updated == '/cancelar':
-                    raise KeyboardInterrupt
-                if updated:
-                    context = '' if updated == '-' else updated
-                new_selection = False
-                continue
-            if again in ('n', 'nueva'):
-                new_selection = True
-                continue
-            return 0
+        interactive = not (args.repo or args.workflow or args.skill or args.locator or args.objective or args.feedback or args.question or args.prototype)
+        if interactive:
+            config = load_config()
+            destination = output_path(args.output_dir or config.get('output_dir') or DEFAULT_OUTPUT)
+            return wizard(workflows, skills, templates, destination, config.get('repo', ''))
+        repo = repo_value(args.repo) if args.repo else ''
+        destination = output_path(args.output_dir or DEFAULT_OUTPUT)
+        content = render(workflow, selected, args.objective or '', args.locator or '', workflows, skills, templates,
+                         repo=repo, feedback=args.feedback or '', question=args.question or '', local_only=args.repo == '-')
+        print('\n--- Vista previa del prompt ---\n' + content + '--- Fin de vista previa ---')
+        print(f'Destino: {destination}. Al guardar se eliminarán los prompts anteriores identificados del selector en esta carpeta, después de escribir el nuevo.')
+        path, failures = save_prompt(destination, content)
+        print(f'Prompt guardado: {path}')
+        if failures:
+            print('No se pudieron eliminar algunos prompts anteriores: ' + '; '.join(failures), file=sys.stderr)
+            return 1
+        return 0
     except KeyboardInterrupt:
         print('\nCancelado; no se modificaron prompts en esta operación.')
         return 0

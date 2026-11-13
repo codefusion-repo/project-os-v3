@@ -1,5 +1,7 @@
 import importlib.util
+import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -14,9 +16,26 @@ selector = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(selector)
 
 
-def run(output_dir, *args, input_text=None):
-    return subprocess.run([sys.executable, str(SCRIPT), '--output-dir', str(output_dir), *args],
-                          input=input_text, text=True, capture_output=True, cwd=ROOT)
+def copy_install(target):
+    target = Path(target)
+    (target / 'tools').mkdir(parents=True)
+    shutil.copy2(SCRIPT, target / 'tools' / 'select.py')
+    shutil.copy2(ROOT / 'PROJECT_OS.md', target / 'PROJECT_OS.md')
+    for directory in ('workflows', 'skills', 'templates'):
+        shutil.copytree(ROOT / directory, target / directory)
+    return target
+
+
+def run(output_dir, *args, input_text=None, install=None):
+    def execute(script):
+        return subprocess.run([sys.executable, str(script), '--output-dir', str(output_dir), *args],
+                              input=input_text, text=True, capture_output=True, cwd=ROOT)
+    if install:
+        return execute(Path(install) / 'tools' / 'select.py')
+    if input_text is not None:
+        with tempfile.TemporaryDirectory() as tmp:
+            return execute(copy_install(tmp) / 'tools' / 'select.py')
+    return execute(SCRIPT)
 
 
 def generated(folder):
@@ -64,7 +83,7 @@ class SelectorCLI(unittest.TestCase):
 
     def test_interactive_base_skill_is_not_a_selection(self):
         with tempfile.TemporaryDirectory() as tmp:
-            result = run(tmp, input_text='implement\n-\nContexto\ng\ns\n')
+            result = run(tmp, input_text='owner/repo\nimplement\n-\nContexto\n\n\ng\n\ns\n')
             self.assertEqual(result.returncode, 0, result.stderr)
             menu = result.stdout.split('--- Vista previa del prompt ---')[0]
             self.assertIn('Skills base automáticas: repo-context', menu)
@@ -86,7 +105,7 @@ class SelectorCLI(unittest.TestCase):
 
     def test_interactive_multiple_specialized_skills(self):
         with tempfile.TemporaryDirectory() as tmp:
-            result = run(tmp, input_text='implement\ndebug,testing,security-review\nCorregir repo\ng\ns\n')
+            result = run(tmp, input_text='owner/repo\nimplement\ndebug,testing,security-review\nCorregir repo\n\n\ng\n\ns\n')
             self.assertEqual(result.returncode, 0, result.stderr)
             text = generated(tmp)[0].read_text()
             self.assertIn('**Skills:** repo-context, github-traceability, debug, testing, security-review', text)
@@ -145,8 +164,8 @@ class SelectorCLI(unittest.TestCase):
     def test_interactive_select_edit_save_and_reuse(self):
         with tempfile.TemporaryDirectory() as tmp:
             dest = Path(tmp) / 'out'
-            session = ('/prototipo\n1\nrapid-prototype,testing\nPrimera idea\n'
-                       'e\n\n\nIdea editada\ng\nm\nSegunda idea\ng\ns\n')
+            session = ('owner/repo\n/prototipo\n1\nrapid-prototype,testing\nPrimera idea\n\n\n'
+                       'e\nc\nIdea editada\n\n\ng\n\nm\nSegunda idea\n\n\ng\n\ns\n')
             result = run(dest, input_text=session)
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertIn('Skills sugeridas', result.stdout)
@@ -166,7 +185,7 @@ class SelectorCLI(unittest.TestCase):
             self.assertEqual(run(dest, '--prototype').returncode, 0)
             previous = generated(dest)[0]
             before = previous.read_bytes()
-            result = run(dest, input_text='\n\nContexto\nc\n')
+            result = run(dest, input_text='owner/repo\n\n\nContexto\n\n\nc\n')
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertIn('Cancelado', result.stdout)
             self.assertEqual(generated(dest), [previous])
@@ -178,7 +197,7 @@ class SelectorCLI(unittest.TestCase):
     def test_default_continue_and_direct_prototype(self):
         with tempfile.TemporaryDirectory() as tmp:
             dest = Path(tmp)
-            result = run(dest, input_text='\n\n\ng\ns\n')
+            result = run(dest, input_text='owner/repo\n\n\n\n\n\ng\n\ns\n')
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertIn('**Workflow:** continue', generated(dest)[0].read_text())
             result = run(dest, '--prototype')
@@ -216,6 +235,121 @@ class SelectorCLI(unittest.TestCase):
                 self.assertEqual(list(Path(outside).iterdir()), [])
 
 
+class WizardConfiguration(unittest.TestCase):
+    @staticmethod
+    def invoke(install, input_text):
+        return subprocess.run([sys.executable, str(Path(install) / 'tools' / 'select.py')],
+                              input=input_text, text=True, capture_output=True, cwd=install)
+
+    def test_fresh_and_existing_configuration_multiline_and_changed_repo(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            install = copy_install(root / 'kit')
+            destination = root / 'selected'
+            first_input = ('repo-invalido\norg/uno\n\ndebug,testing\n\n'
+                           'feedback privado línea uno\nfeedback línea dos\n.\n'
+                           'pregunta privada uno\npregunta dos\n.\n'
+                           'g\n' + str(destination) + '\ns\n')
+            first = self.invoke(install, first_input)
+            self.assertEqual(first.returncode, 0, first.stderr)
+            self.assertIn('repositorio inválido', first.stdout)
+            self.assertIn('Repositorio indicado; el agente deberá verificarlo', first.stdout)
+            prompt = generated(destination)[0].read_text()
+            self.assertIn('**Repositorio indicado (sin verificar):** org/uno', prompt)
+            self.assertIn('debug, testing', prompt)
+            self.assertIn('feedback privado línea uno\nfeedback línea dos', prompt)
+            self.assertIn('pregunta privada uno\npregunta dos', prompt)
+            config_path = install / '.project-os' / 'config.json'
+            config = json.loads(config_path.read_text())
+            self.assertEqual(config, {'repo': 'org/uno', 'output_dir': str(destination)})
+            self.assertNotIn('privado', config_path.read_text())
+            self.assertEqual(config_path.stat().st_mode & 0o777, 0o600)
+            second = self.invoke(install, '\n\n\n#77\n\n\ng\n\ns\n')
+            self.assertEqual(second.returncode, 0, second.stderr)
+            self.assertIn('Repositorio owner/repo [org/uno;', second.stdout)
+            self.assertIn(f'Carpeta de salida [{destination}]', second.stdout)
+            prompt = generated(destination)[0].read_text()
+            self.assertIn('#77', prompt)
+            self.assertNotIn('feedback privado', prompt)
+            self.assertNotIn('pregunta privada', prompt)
+            third = self.invoke(install, 'org/dos\n\n\n\n\n\ng\n\ns\n')
+            self.assertEqual(third.returncode, 0, third.stderr)
+            self.assertEqual(json.loads(config_path.read_text())['repo'], 'org/dos')
+            self.assertIn('org/dos', generated(destination)[0].read_text())
+
+    def test_reuse_clears_pm_fields_and_back_navigation(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            install = copy_install(root / 'kit')
+            destination = root / 'out'
+            inputs = ('org/repo\nimplement\n/volver\nreview\ndebug,testing\n'
+                      'Contexto primero\ncomentario privado\n.\npregunta privada\n.\n'
+                      'g\n' + str(destination) + '\nm\nContexto segundo\n\n\ng\n\ns\n')
+            result = self.invoke(install, inputs)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(result.stdout.count('Prompt guardado:'), 2)
+            text = generated(destination)[0].read_text()
+            self.assertIn('**Workflow:** review', text)
+            self.assertIn('Contexto segundo', text)
+            self.assertNotIn('comentario privado', text)
+            self.assertNotIn('pregunta privada', text)
+            self.assertNotIn('PM_FEEDBACK_HUMANO', text)
+            self.assertNotIn('PM_QUESTION_HUMANO', text)
+
+    def test_cancel_and_unsafe_config_do_not_write(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            install = copy_install(root / 'kit')
+            result = self.invoke(install, 'org/repo\n\n\n\n\n\nc\n')
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertFalse((install / '.project-os').exists())
+            outside = root / 'external.json'
+            outside.write_text('{"repo":"outside/repo"}')
+            (install / '.project-os').mkdir()
+            (install / '.project-os' / 'config.json').symlink_to(outside)
+            result = self.invoke(install, '')
+            self.assertNotEqual(result.returncode, 0)
+            self.assertEqual(outside.read_text(), '{"repo":"outside/repo"}')
+            self.assertTrue((install / '.project-os' / 'config.json').is_symlink())
+
+    def test_optional_pm_fields_available_for_every_workflow(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            install = copy_install(Path(tmp) / 'kit')
+            for workflow in selector.WORKFLOW_ORDER:
+                with self.subTest(workflow=workflow):
+                    result = self.invoke(install, 'org/repo\n' + workflow + '\n\n\n\n\nc\n')
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertIn('Comentario del PM — PM_FEEDBACK_HUMANO', result.stdout)
+                    self.assertIn('Pregunta del PM — PM_QUESTION_HUMANO', result.stdout)
+                    self.assertFalse((install / '.project-os').exists())
+
+    def test_cli_flags_do_not_read_or_write_wizard_configuration(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            install = copy_install(root / 'kit')
+            destination = root / 'out'
+            result = run(destination, '--repo', 'org/repo', '--workflow', 'review',
+                         '--feedback', 'Nota uno\nNota dos', '--question', 'Consulta uno\nConsulta dos',
+                         install=install)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertFalse((install / '.project-os').exists())
+            text = generated(destination)[0].read_text()
+            self.assertIn('org/repo', text)
+            self.assertIn('Nota uno\nNota dos', text)
+            self.assertIn('Consulta uno\nConsulta dos', text)
+
+    def test_local_disposable_without_repo(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            install = copy_install(root / 'kit')
+            destination = root / 'out'
+            result = self.invoke(install, '-\nimplement\n-\nPrototipo local y descartable\n\n\ng\n' + str(destination) + '\ns\n')
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn('**Repositorio indicado (sin verificar):** No indicado', generated(destination)[0].read_text())
+            self.assertIn('experimento expresamente local y descartable, sin repositorio', generated(destination)[0].read_text())
+            self.assertEqual(json.loads((install / '.project-os' / 'config.json').read_text()), {'output_dir': str(destination)})
+
+
 class SafePersistence(unittest.TestCase):
     def test_failed_write_keeps_previous_and_cleans_temporary_file(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -227,6 +361,19 @@ class SafePersistence(unittest.TestCase):
                         selector.save_prompt(root, selector.MARKER + '\nnuevo\n')
                     self.assertEqual(previous.read_text(), selector.MARKER + '\noriginal\n')
                     self.assertEqual(list(root.iterdir()), [previous])
+
+    def test_config_write_failure_preserves_previous_preferences(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            with patch.object(selector, 'ROOT', root):
+                selector.save_config('old/repo', root / 'output')
+                config_path = root / '.project-os' / 'config.json'
+                before = config_path.read_bytes()
+                with patch.object(selector.os, 'fsync', side_effect=OSError('fallo simulado')):
+                    with self.assertRaises(OSError):
+                        selector.save_config('new/repo', root / 'new-output')
+                self.assertEqual(config_path.read_bytes(), before)
+                self.assertEqual(list((root / '.project-os').iterdir()), [config_path])
 
     def test_unowned_name_collision_cannot_be_overwritten(self):
         with tempfile.TemporaryDirectory() as tmp:
