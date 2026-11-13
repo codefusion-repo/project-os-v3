@@ -28,6 +28,8 @@ La configuración v2 admite nombre, una lista no vacía `repositories` de reposi
 project-os-v3 --project /ruta/al/workspace --configure --repo organizacion/frontend --repo organizacion/backend --checkout organizacion/backend=/ruta/al/backend
 ```
 
+Al configurar un checkout se conservan los demás; indicar nuevamente un repositorio actualiza solo su ruta local. Ninguna de estas rutas se incorpora automáticamente al prompt.
+
 Si una carpeta contiene configuración desconocida, el wizard la conserva y no la reemplaza. Ante errores o rutas inseguras, corrige la protección o elige un destino externo seguro de forma explícita. No uses carpetas temporales compartidas para prompts sensibles.
 
 ## Workspace y precedencia

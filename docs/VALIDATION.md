@@ -90,14 +90,16 @@ Las pruebas usan únicamente proyectos temporales. Cubren un repositorio y tres 
 
 Dos proyectos que comparten carpeta de salida conservan sus prompts de forma independiente: se sustituye únicamente el prompt atribuible al proyecto actual. Los archivos anteriores sin identificación de proyecto se preservan, y las invocaciones sin raíz local no eliminan prompts de otras invocaciones. También se comprueba la advertencia al proporcionar una URL de issue fuera de un alcance explícito.
 
+Una revisión posterior detectó que `--configure --checkout` podía descartar otras rutas locales ya guardadas. La corrección conserva las demás rutas y permite actualizar la indicada; se agregó un test de regresión.
+
 Las pruebas comprueban el contenido del prompt y la configuración del wizard; no demuestran que un agente independiente haya coordinado realmente varios repositorios. Esa ejecución sigue pendiente. La validación terminal de los 14 templates y las pruebas de browser que realiza el PM por separado conservan los límites descritos en la sección anterior. El smoke local sigue siendo parcial y no es dogfood de rendimiento.
 
 Durante la integración se observaron fallos de regresión: inicialmente los fixtures aún usaban el esquema v1 de escritura; después, siete aserciones contaban dos veces rutas de skills cuando también aparecían en el aviso de archivos modificados. Al reforzar el aislamiento, una prueba adicional asumía que invocaciones sin proyecto borraban prompts anteriores y falló en ambas suites; se cambió para comprobar cada operación en su propia carpeta. Se actualizaron los fixtures y las aserciones para comprobar el comportamiento efectivo.
 
 | Comando | Exit | Resultado |
 |---|---:|---|
-| `python3 -m unittest discover -s tests -q` | 0 | 81 tests; uno omitido por no estar instalado `prompt_toolkit` en ese Python. |
-| `.project-os/venv/bin/python -m unittest discover -s tests -q` | 0 | 81 tests sin omisiones. |
+| `python3 -m unittest discover -s tests -q` | 0 | 82 tests; uno omitido por no estar instalado `prompt_toolkit` en ese Python. |
+| `.project-os/venv/bin/python -m unittest discover -s tests -q` | 0 | 82 tests sin omisiones. |
 | `python3 tests/smoke_local.py` | 0 | Instalación y flujo local parcial con configuración v2 y SHA canónico comprobado; adopción simulada en fixture. |
 | `python3 -m py_compile tools/select.py tools/project_local.py` | 0 | Sintaxis válida. |
 | `git diff --check` | 0 | Sin errores de whitespace en el diff observado. |

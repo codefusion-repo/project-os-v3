@@ -155,6 +155,21 @@ class MultiRepository(unittest.TestCase):
         self.assertEqual('', selector.reference_warning(
             ['org/front'], 'https://github.com/org/front/issues/17', 'PR #4'))
 
+    def test_configure_checkout_preserves_other_checkouts(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = repo(Path(temp) / 'project')
+            config = self.configured(root)
+            replacement = str(Path(temp) / 'new-api')
+            added = str(Path(temp) / 'new-mobile')
+            result = execute('--project', root, '--configure',
+                             '--checkout', 'org/api=' + replacement,
+                             '--checkout', 'org/mobile=' + added)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            data = json.loads(config.read_text())
+            self.assertEqual(data['checkouts'], {'org/front': str(root / 'local-front'),
+                                                'org/api': replacement, 'org/mobile': added})
+            self.assertEqual(data['repositories'], ['org/front', 'org/api', 'org/mobile'])
+
     def test_transversal_and_explicit_scopes_do_not_change_configuration(self):
         with tempfile.TemporaryDirectory() as temp:
             root = repo(Path(temp) / 'project')

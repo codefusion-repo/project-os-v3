@@ -967,15 +967,18 @@ def configure_project(project, config, args):
     if args.name is not None:
         data['name'] = args.name
     if args.checkout is not None:
-        paths = dict(data.get('checkouts', {})) if previous else {}
+        paths = dict(data.get('checkouts', {}))
         for entry in args.checkout:
             name, separator, location = entry.partition('=')
             if not separator:
                 raise InputError('Usa --checkout owner/repo=/ruta/local.')
             name, location = repo_value(name), str(project_local.path(location))
             for existing, existing_location in paths.items():
-                if existing.casefold() == name.casefold() and (existing != name or existing_location != location):
-                    raise InputError('Checkout ambiguo durante la migración; conserva y revisa la configuración.')
+                if existing.casefold() == name.casefold():
+                    if previous and (existing != name or existing_location != location):
+                        raise InputError('Checkout ambiguo durante la migración; conserva y revisa la configuración.')
+                    name = existing
+                    break
             paths[name] = location
         data['checkouts'] = paths
     if args.output_dir:
