@@ -1,0 +1,17 @@
+name: Selector and structure
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run stdlib tests
+        run: python3 -m unittest discover -s tests -v

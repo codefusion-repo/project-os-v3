@@ -23,6 +23,35 @@ NAME = re.compile(r'[a-z0-9]+(?:-[a-z0-9]+)*\Z')
 OWNED_NAME = re.compile(r'project-os-prompt-[0-9a-f]{32}\.md\Z')
 MARKER = '<!-- project-os-v3-selector: generated-prompt v1 -->'
 
+# Recognize common credential shapes; this is intentionally not an exhaustive scanner.
+SECRET_PATTERNS = tuple(re.compile(pattern, re.I) for pattern in (
+    r'-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----',
+    r'\b(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,})\b',
+    r'\bsk-(?:proj-|live-|test-)?[A-Za-z0-9_-]{20,}\b',
+    r'\b(?:AKIA|ASIA)[A-Z0-9]{16}\b',
+    r'\b(?:xox[baprs]-[A-Za-z0-9-]{15,}|AIza[A-Za-z0-9_-]{30,})\b',
+    r'\bBearer\s+[A-Za-z0-9._~+/-]{12,}',
+    r'\b[a-z][a-z0-9+.-]*://[^/\s:@]+:[^@\s/]+@',
+    r'\b(?:password|passwd|secret|credential|token|authorization|api[_-]?key|access[_-]?token|client[_-]?secret|private[_-]?key)\s*[:=]\s*[\"\']?[^\s\"\']{4,}',
+))
+
+
+class SensitiveInput(ValueError):
+    pass
+
+
+def require_safe(*values):
+    if any(pattern.search(str(value)) for value in values if value is not None for pattern in SECRET_PATTERNS):
+        raise SensitiveInput('Se detectó posible información sensible; retírala antes de continuar.')
+
+
+class SafeParser(argparse.ArgumentParser):
+    def error(self, message):
+        # argparse may include an unrecognized user-provided argument in its error.
+        if message.startswith('unrecognized arguments:') or any(p.search(message) for p in SECRET_PATTERNS):
+            message = 'argumentos inválidos o información sensible detectada; consulta --help'
+        super().error(message)
+
 
 def inside_root(path):
     try:
@@ -66,19 +95,22 @@ def ordered(items):
 
 def locator_value(value):
     value = value.strip()
-    if len(value) > 200 or not value or any(ord(c) < 32 or ord(c) == 127 for c in value):
-        raise argparse.ArgumentTypeError('locator vacío, demasiado largo o con caracteres de control')
+    try:
+        require_safe(value)
+    except SensitiveInput as exc:
+        raise argparse.ArgumentTypeError(str(exc)) from None
+    if re.fullmatch(r'#?[1-9][0-9]*', value):
+        return value
     if value.startswith('https://'):
         url = urlsplit(value)
-        if (url.netloc.lower() != 'github.com' or url.query or url.fragment or
-                not re.fullmatch(r'/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/(?:issues|pull)/[0-9]+/?', url.path)):
-            raise argparse.ArgumentTypeError('usa una URL de issue/PR de github.com válida')
-    elif not re.fullmatch(r'[\wáéíóúÁÉÍÓÚñÑ #.,:()_-]+', value):
-        raise argparse.ArgumentTypeError('locator inválido: usa texto contextual, número o URL de issue/PR de GitHub')
-    return value
+        if (url.netloc.lower() == 'github.com' and not url.query and not url.fragment and
+                re.fullmatch(r'/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/(?:issues|pull)/[1-9][0-9]*/?', url.path)):
+            return value
+    raise argparse.ArgumentTypeError('locator inválido: usa número, #número o URL de issue/PR de github.com')
 
 
 def output_path(value):
+    require_safe(value)
     path = Path(value).expanduser()
     if '..' in path.parts:
         raise ValueError('la carpeta de salida no admite ..')
@@ -113,6 +145,7 @@ def open_output_dir(path, create=True):
 
 
 def repo_value(value):
+    require_safe(value)
     value = value.strip()
     if value == '-':
         return ''
@@ -235,7 +268,7 @@ def save_prompt(path, content):
             except FileNotFoundError:
                 continue
             except OSError as exc:
-                failures.append(f'{old_name}: {exc.strerror}')
+                failures.append(old_name)
         return path / name, failures
     finally:
         os.close(dir_fd)
@@ -255,6 +288,7 @@ def choose(prompt, options, items, title, default=None, multiple=False, all_opti
     visible = options
     while True:
         raw = input(prompt).strip()
+        require_safe(raw)
         if raw == '/cancelar':
             raise KeyboardInterrupt
         if raw == '/volver':
@@ -281,7 +315,7 @@ def choose(prompt, options, items, title, default=None, multiple=False, all_opti
             if token.isdecimal() and 1 <= int(token) <= len(visible):
                 token = visible[int(token) - 1]
             if token not in options:
-                print(f'Selección desconocida: {token}. Usa nombre, número o /texto para filtrar.')
+                print('Selección desconocida. Usa nombre, número o /texto para filtrar.')
                 break
             if token not in result:
                 result.append(token)
@@ -296,6 +330,7 @@ def suggested_skills(workflow, skills):
 
 def render(workflow, selected, context, locator, workflows, skills, templates, repo="", feedback="", question="", local_only=False):
     """Include operating rules and selected instructions; derive templates from links."""
+    require_safe(repo, context, locator, feedback, question)
     missing = [name for name in BASE_SKILLS if name not in skills]
     if missing:
         raise ValueError('faltan skills base o sus rutas no son seguras: ' + ', '.join(missing))
@@ -331,11 +366,14 @@ def render(workflow, selected, context, locator, workflows, skills, templates, r
                        'Usa estos templates solo si el resultado lo necesita; no son autorización ni formularios obligatorios.', ''])
         for name in names:
             header.extend([read_source(templates[name]).strip(), ''])
-    return '\n'.join(header) + '\n'
+    content = '\n'.join(header) + '\n'
+    require_safe(content)
+    return content
 
 
 def ask_line(prompt):
     value = input(prompt).strip()
+    require_safe(value)
     if value == '/cancelar':
         raise KeyboardInterrupt
     if value == '/volver':
@@ -343,24 +381,37 @@ def ask_line(prompt):
     return value
 
 
-def ask_multiline(label):
-    line = input(f'{label} [Enter: omitir; /m: varias líneas]: ')
+def preserve_line(prompt, current):
+    value = ask_line(prompt)
+    if value == '/limpiar':
+        return ''
+    return value if value else current
+
+
+def ask_multiline(label, current=''):
+    line = input(f'{label} [Enter: conservar; /limpiar: borrar; /m: varias líneas]: ')
+    require_safe(line)
     if line == '/cancelar':
         raise KeyboardInterrupt
     if line == '/volver':
         raise Back
+    if line == '/limpiar':
+        return ''
+    if not line:
+        return current
     if line != '/m':
         return line
     print('Modo multilínea: escribe cada línea y termina con una línea vacía o un punto solo.')
     lines = []
     while True:
         line = input('> ')
+        require_safe(line)
         if line == '/cancelar':
             raise KeyboardInterrupt
         if line == '/volver':
             raise Back
         if line == '.' or not line:
-            return '\n'.join(lines)
+            return '\n'.join(lines) if lines else current
         lines.append(line)
 
 
@@ -368,7 +419,7 @@ def wizard(workflows, skills, templates, destination, saved_repo):
     """Navigate the interactive form; choices are not workflow execution state."""
     names = ordered(workflows)
     optional_skills = [name for name in sorted(skills) if name not in BASE_SKILLS]
-    repo, workflow, selected, context, feedback, question = saved_repo, 'continue', [], '', '', ''
+    repo, workflow, selected, context, locator, feedback, question = saved_repo, 'continue', [], '', '', '', ''
     local_only = False
     step = 'repo'
     if sys.stdin.isatty() and readline is None:
@@ -410,16 +461,28 @@ def wizard(workflows, skills, templates, destination, saved_repo):
                                   suggested, skills, 'Skills:', default=selected, multiple=True, all_options=optional_skills)
                 step = 'context'
             elif step == 'context':
-                context = ask_line('Objetivo o referencia material (issue/PR solo si aporta) [Enter: inferir]: ')
+                raw_context = ask_line('Objetivo [Enter: conservar/inferir; /limpiar; /ref: añadir issue/PR]: ')
+                if raw_context == '/ref':
+                    step = 'locator'
+                    continue
+                context = '' if raw_context == '/limpiar' else (raw_context or context)
+                step = 'locator' if repo and workflow in ('implement', 'review', 'close', 'release') else 'feedback'
+            elif step == 'locator':
+                raw = preserve_line('Issue/PR (número, #número o URL) [Enter: conservar/inferir; /limpiar]: ', locator)
+                try:
+                    locator = locator_value(raw) if raw else ''
+                except argparse.ArgumentTypeError as exc:
+                    print(str(exc))
+                    continue
                 step = 'feedback'
             elif step == 'feedback':
-                feedback = ask_multiline('Comentario del PM — PM_FEEDBACK_HUMANO')
+                feedback = ask_multiline('Comentario del PM — PM_FEEDBACK_HUMANO', feedback)
                 step = 'question'
             elif step == 'question':
-                question = ask_multiline('Pregunta del PM — PM_QUESTION_HUMANO')
+                question = ask_multiline('Pregunta del PM — PM_QUESTION_HUMANO', question)
                 step = 'preview'
             elif step == 'preview':
-                content = render(workflow, selected, context, '', workflows, skills, templates,
+                content = render(workflow, selected, context, locator, workflows, skills, templates,
                                  repo=repo, feedback=feedback, question=question, local_only=local_only)
                 print('\n--- Vista previa del prompt ---\n' + content + '--- Fin de vista previa ---')
                 print(f'Destino actual: {destination}. Al guardar se eliminarán los prompts anteriores identificados del selector en esa carpeta, después de escribir el nuevo.')
@@ -430,8 +493,8 @@ def wizard(workflows, skills, templates, destination, saved_repo):
                 if action in ('v', 'volver'):
                     step = 'question'
                 elif action in ('e', 'editar'):
-                    target = ask_line('Editar [R]epositorio / [W]orkflow / [S]kills / [C]ontexto: ').lower()
-                    step = {'r': 'repo', 'w': 'workflow', 's': 'skills', 'c': 'context'}.get(target, 'preview')
+                    target = ask_line('Editar [R]epositorio / [W]orkflow / [S]kills / [C]ontexto / [L]ocator / [F]eedback / [P]regunta: ').lower()
+                    step = {'r': 'repo', 'w': 'workflow', 's': 'skills', 'c': 'context', 'l': 'locator', 'f': 'feedback', 'p': 'question'}.get(target, 'preview')
                 elif action in ('g', 'guardar'):
                     step = 'directory'
                 else:
@@ -448,8 +511,8 @@ def wizard(workflows, skills, templates, destination, saved_repo):
                 print(f'Prompt guardado: {path}')
                 try:
                     save_config(repo, destination)
-                except (ValueError, OSError) as exc:
-                    print(f'El prompt se guardó, pero no se pudo guardar la configuración: {exc}', file=sys.stderr)
+                except (ValueError, OSError):
+                    print('El prompt se guardó, pero no se pudo guardar la configuración.', file=sys.stderr)
                     return 1
                 if failures:
                     print('No se pudieron eliminar algunos prompts anteriores: ' + '; '.join(failures), file=sys.stderr)
@@ -461,7 +524,7 @@ def wizard(workflows, skills, templates, destination, saved_repo):
                     print('Acción desconocida.')
                     continue
                 # PM content belongs to one operation only; never reuse it automatically.
-                context = feedback = question = ''
+                context = locator = feedback = question = ''
                 if again in ('m', 'misma'):
                     step = 'context'
                 elif again in ('n', 'nueva'):
@@ -472,14 +535,19 @@ def wizard(workflows, skills, templates, destination, saved_repo):
                     step = 'repo'
                 else:
                     return 0
+        except SensitiveInput as exc:
+            print(str(exc))
+            if step == 'preview':
+                print('Revisa el contexto y los campos del PM, o cancela; usa /limpiar para borrar un valor.')
+                step = 'context'
         except Back:
             step = {'repo': 'repo', 'workflow': 'repo', 'skills': 'workflow',
-                    'context': 'skills', 'feedback': 'context', 'question': 'feedback',
+                    'context': 'skills', 'locator': 'context', 'feedback': 'locator' if repo and workflow in ('implement', 'review', 'close', 'release') else 'context', 'question': 'feedback',
                     'preview': 'question', 'directory': 'preview', 'again': 'again'}[step]
 
 
 def main(argv=None):
-    parser = argparse.ArgumentParser(description='Genera y guarda un prompt Project OS; no ejecuta workflows.')
+    parser = SafeParser(description='Genera y guarda un prompt Project OS; no ejecuta workflows.')
     parser.add_argument('--list', action='store_true', help='listar workflows y skills')
     parser.add_argument('--repo', help='repositorio owner/repo, indicado sin verificación remota')
     parser.add_argument('--workflow', help='workflow por nombre (default: continue)')
@@ -491,6 +559,10 @@ def main(argv=None):
     parser.add_argument('--output-dir', help='carpeta de prompts; el wizard recuerda la última')
     parser.add_argument('--prototype', action='store_true', help='atajo implement + rapid-prototype; permite --skill adicional')
     args = parser.parse_args(argv)
+    try:
+        require_safe(args.repo, args.workflow, *args.skill, args.objective, args.feedback, args.question, args.output_dir)
+    except SensitiveInput as exc:
+        parser.error(str(exc))
     if args.list and (args.repo or args.workflow or args.skill or args.locator or args.objective or args.feedback or args.question or args.prototype):
         parser.error('--list no se combina con selección ni contexto')
     if args.prototype and args.workflow:
@@ -508,10 +580,10 @@ def main(argv=None):
         workflow = 'implement' if args.prototype else (args.workflow or 'continue')
         selected = list(dict.fromkeys((['rapid-prototype'] if args.prototype else []) + args.skill))
         if workflow not in workflows:
-            parser.error(f'workflow desconocido o ruta no segura: {workflow}')
+            parser.error('workflow desconocido o ruta no segura')
         for skill in selected:
             if skill not in skills:
-                parser.error(f'skill desconocida o ruta no segura: {skill}')
+                parser.error('skill desconocida o ruta no segura')
         interactive = not (args.repo or args.workflow or args.skill or args.locator or args.objective or args.feedback or args.question or args.prototype)
         if interactive:
             config = load_config()
@@ -535,8 +607,11 @@ def main(argv=None):
     except EOFError:
         print('\nEntrada incompleta; no se guardó el prompt actual.', file=sys.stderr)
         return 2
-    except (OSError, ValueError) as exc:
+    except SensitiveInput as exc:
         print(f'Error: {exc}', file=sys.stderr)
+        return 1
+    except (OSError, ValueError):
+        print('Error de entrada, acceso o escritura; revisa los argumentos y permisos.', file=sys.stderr)
         return 1
 
 

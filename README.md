@@ -4,7 +4,7 @@ Kit Markdown-first para llevar una intención a un resultado verificable con wor
 
 ## Abrir el selector
 
-Desde la raíz del kit, con Python 3 estándar:
+Plataforma soportada: Linux con Python 3.9 o superior; validación local con Python 3.12. Se requiere un sistema de archivos con enlaces duros y soporte POSIX de apertura de directorios sin seguir symlinks. La edición con flechas usa `readline` cuando está disponible. Desde la raíz del kit:
 
 ```bash
 python3 tools/select.py
@@ -12,15 +12,17 @@ python3 tools/select.py
 
 En la primera sesión indica el repositorio como `owner/repo`; el wizard valida el formato, pero el agente deberá verificarlo en GitHub. En siguientes sesiones Enter confirma el último repositorio. Para un experimento expresamente local y descartable sin repositorio escribe `-`.
 
-Elige un workflow (Enter usa `continue`); el menú muestra sus skills adicionales sugeridas. Usa `/todas` si necesitas seleccionar otra. `repo-context` y `github-traceability` se incluyen sin pedir selección y se aplican según el contexto. El wizard pregunta un objetivo o referencia solo si aporta; el agente puede recuperar el issue/PR desde fuentes vivas. Ofrece en todos los workflows **Comentario del PM** y **Pregunta del PM**, ambos opcionales: escribe una línea y pulsa Enter para continuar, o pulsa Enter sin texto para omitir. Para varias líneas escribe `/m`, pulsa Enter y termina con una línea vacía o un punto `.` en una línea propia. Las flechas permiten editar cuando Python dispone de `readline`. Su contenido no autoriza acciones sensibles.
+Elige un workflow (Enter usa `continue`); el menú muestra sus skills adicionales sugeridas. Usa `/todas` si necesitas seleccionar otra. `repo-context` y `github-traceability` se incluyen sin pedir selección y se aplican según el contexto. El wizard pregunta el objetivo y, en implementación, review, cierre o release con repositorio, ofrece un campo separado y opcional para issue/PR: número, `#número` o URL de GitHub. En `continue` puedes escribir `/ref` en el objetivo si la referencia es material; también puedes omitirla para que el agente la recupere. Ofrece en todos los workflows **Comentario del PM** y **Pregunta del PM**, ambos opcionales: escribe una línea y pulsa Enter para continuar, o pulsa Enter sin texto para omitir. Para varias líneas escribe `/m`, pulsa Enter y termina con una línea vacía o un punto `.` en una línea propia. Las flechas permiten editar cuando Python dispone de `readline`. Su contenido no autoriza acciones sensibles.
 
-Revisa el prompt completo y pulsa `g` para guardarlo, `e` para editar o `c` para cancelar. `/volver` retrocede, `/cancelar` cancela y `/texto` filtra los menús. Después puedes reutilizar la operación, seleccionar otra o cambiar de repositorio; el comentario y la pregunta no se reutilizan.
+Revisa el prompt completo y pulsa `g` para guardarlo, `e` para editar o `c` para cancelar. Al editar, Enter conserva el valor existente y `/limpiar` lo borra explícitamente. `/volver` retrocede, `/cancelar` cancela y `/texto` filtra los menús. Después puedes reutilizar la operación, seleccionar otra o cambiar de repositorio; el comentario y la pregunta no se reutilizan.
 
 Al guardar, el wizard permite elegir la carpeta. Recuerda ese destino y el último repositorio en `.project-os/config.json`, ignorado por Git; solo guarda esas preferencias, no los campos del PM ni credenciales. Sin preferencia guardada, el destino es `.project-os/prompts/`. También puedes indicar una carpeta al iniciar:
 
 ```bash
 python3 tools/select.py --output-dir "/ruta/a/mis-prompts"
 ```
+
+El selector rechaza patrones comunes de credenciales antes de previsualizar o guardar y no reproduce su contenido en los errores. La detección es heurística y no identifica todos los secretos; revisa el prompt antes de compartirlo.
 
 Al guardar, se eliminan **solo después de escribir el nuevo** los prompts anteriores identificados del selector en la carpeta elegida. Conserva Markdown manuales, archivos de otras carpetas y symlinks; cancelar o fallar la escritura conserva el anterior. La carpeta no admite `..` ni componentes symlink. La publicación atómica requiere soporte de directorios sin seguimiento de symlinks y enlaces duros. Los prompts incluyen el contenido del PM; si eliges una carpeta fuera de `.project-os/`, protege y excluye ese destino de Git según corresponda.
 

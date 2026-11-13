@@ -86,7 +86,7 @@ class SelectorCLI(unittest.TestCase):
 
     def test_interactive_base_skill_is_not_a_selection(self):
         with tempfile.TemporaryDirectory() as tmp:
-            result = run(tmp, input_text='owner/repo\nimplement\n-\nContexto\n\n\ng\n\ns\n')
+            result = run(tmp, input_text='owner/repo\nimplement\n-\nContexto\n\n\n\ng\n\ns\n')
             self.assertEqual(result.returncode, 0, result.stderr)
             menu = result.stdout.split('--- Vista previa del prompt ---')[0]
             self.assertIn('Skills base automáticas: repo-context', menu)
@@ -108,19 +108,19 @@ class SelectorCLI(unittest.TestCase):
 
     def test_review_displays_only_relevant_skills_with_optional_expansion(self):
         with tempfile.TemporaryDirectory() as tmp:
-            result = run(tmp, input_text='org/repo\nreview\n\n\n\n\nc\n')
+            result = run(tmp, input_text='org/repo\nreview\n\n\n\n\n\nc\n')
             self.assertEqual(result.returncode, 0, result.stderr)
             menu = result.stdout.split('Skills sugeridas (opcionales):', 1)[1].split('Skills [Enter:', 1)[0]
             for skill in ('code-review', 'security-review', 'testing'):
                 self.assertIn(skill, menu)
             self.assertNotIn('implement-change', menu)
-            result = run(tmp, input_text='org/repo\nreview\n/todas\nimplement-change\n\n\n\nc\n')
+            result = run(tmp, input_text='org/repo\nreview\n/todas\nimplement-change\n\n\n\n\nc\n')
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertIn('**Skills:** repo-context, github-traceability, implement-change', result.stdout)
 
     def test_interactive_multiple_specialized_skills(self):
         with tempfile.TemporaryDirectory() as tmp:
-            result = run(tmp, input_text='owner/repo\nimplement\ndebug,testing,security-review\nCorregir repo\n\n\ng\n\ns\n')
+            result = run(tmp, input_text='owner/repo\nimplement\ndebug,testing,security-review\nCorregir repo\n\n\n\ng\n\ns\n')
             self.assertEqual(result.returncode, 0, result.stderr)
             text = generated(tmp)[0].read_text()
             self.assertIn('**Skills:** repo-context, github-traceability, debug, testing, security-review', text)
@@ -147,6 +147,37 @@ class SelectorCLI(unittest.TestCase):
             text = generated(root / 'prompts')[0].read_text()
             self.assertIn('Experimento local y descartable sin repositorio', text)
             self.assertIn('no exijas consultas GitHub ni publicación remota', text)
+
+    def test_sensitive_cli_values_do_not_leak_or_replace_existing_prompt(self):
+        secret = 'ghp_' + 'A' * 36
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            dest = root / 'out'
+            self.assertEqual(run(dest, '--workflow', 'continue').returncode, 0)
+            previous = generated(dest)[0]
+            before = previous.read_bytes()
+            for option in ('--objective', '--feedback', '--question', '--repo', '--locator', '--workflow', '--skill'):
+                with self.subTest(option=option):
+                    result = run(dest, '--workflow', 'review', option, secret)
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertNotIn(secret, result.stdout + result.stderr)
+                    self.assertEqual(previous.read_bytes(), before)
+            result = run(root / ('secret=' + secret), '--workflow', 'review')
+            self.assertNotEqual(result.returncode, 0)
+            self.assertNotIn(secret, result.stdout + result.stderr)
+            self.assertEqual(previous.read_bytes(), before)
+            result = run(dest, '--unrecognized=' + secret)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertNotIn(secret, result.stdout + result.stderr)
+
+    def test_sensitive_assignment_and_private_key_are_rejected(self):
+        for value in ('password=not-a-real-password', 'token=synthetic-example',
+                      'https://sample:synthetic@example.test/path', '-----BEGIN PRIVATE KEY-----'):
+            with self.subTest(value=value), tempfile.TemporaryDirectory() as tmp:
+                result = run(tmp, '--workflow', 'review', '--feedback', value)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertNotIn(value, result.stdout + result.stderr)
+                self.assertEqual(generated(tmp), [])
 
     def test_replacement_preserves_foreign_files_symlinks_and_other_directories(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -179,8 +210,8 @@ class SelectorCLI(unittest.TestCase):
     def test_interactive_select_edit_save_and_reuse(self):
         with tempfile.TemporaryDirectory() as tmp:
             dest = Path(tmp) / 'out'
-            session = ('owner/repo\n/prototipo\n1\nrapid-prototype,testing\nPrimera idea\n\n\n'
-                       'e\nc\nIdea editada\n\n\ng\n\nm\nSegunda idea\n\n\ng\n\ns\n')
+            session = ('owner/repo\n/prototipo\n1\nrapid-prototype,testing\nPrimera idea\n\n\n\n'
+                       'e\nc\nIdea editada\n\n\n\ng\n\nm\nSegunda idea\n\n\n\ng\n\ns\n')
             result = run(dest, input_text=session)
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertIn('Skills sugeridas', result.stdout)
@@ -290,7 +321,9 @@ class TerminalInteraction(unittest.TestCase):
                 os.write(master, b'review\n')
                 wait_for(b'Skills [Enter:')
                 os.write(master, b'\n')
-                wait_for(b'Objetivo o referencia')
+                wait_for(b'Objetivo [')
+                os.write(master, b'\n')
+                wait_for(b'Issue/PR (')
                 os.write(master, b'\n')
                 wait_for(b'PM_FEEDBACK_HUMANO')
                 os.write(master, b'holaXY\x1b[D\x1b[D\x1b[C!\n')
@@ -356,8 +389,8 @@ class WizardConfiguration(unittest.TestCase):
             install = copy_install(root / 'kit')
             destination = root / 'out'
             inputs = ('org/repo\nimplement\n/volver\nreview\ncode-review,testing\n'
-                      'Contexto primero\ncomentario privado\npregunta privada\n'
-                      'g\n' + str(destination) + '\nm\nContexto segundo\n\n\ng\n\ns\n')
+                      'Contexto primero\n\ncomentario privado\npregunta privada\n'
+                      'g\n' + str(destination) + '\nm\nContexto segundo\n\n\n\ng\n\ns\n')
             result = self.invoke(install, inputs)
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual(result.stdout.count('Prompt guardado:'), 2)
@@ -368,6 +401,81 @@ class WizardConfiguration(unittest.TestCase):
             self.assertNotIn('pregunta privada', text)
             self.assertNotIn('PM_FEEDBACK_HUMANO', text)
             self.assertNotIn('PM_QUESTION_HUMANO', text)
+
+    def test_review_locator_and_partial_edit_preserve_pm_fields(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            install = copy_install(root / 'kit')
+            dest = root / 'out'
+            locator = 'https://github.com/codefusion-repo/project-os-v3/pull/1'
+            inputs = ('codefusion-repo/project-os-v3\nreview\ncode-review\nObjetivo inicial\n' + locator +
+                      '\nComentario original\nPregunta original\ne\np\nPregunta editada\n'
+                      'e\nc\nObjetivo actualizado\n\n\n\ng\n' + str(dest) + '\ns\n')
+            result = self.invoke(install, inputs)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            text = generated(dest)[0].read_text()
+            self.assertIn('Objetivo actualizado', text)
+            self.assertIn('**Referencia:** ' + locator, text)
+            self.assertIn('Comentario original', text)
+            self.assertIn('Pregunta editada', text)
+            self.assertNotIn('Pregunta original', text)
+            self.assertIn('**Repositorio indicado (sin verificar):** codefusion-repo/project-os-v3', text)
+
+    def test_explicit_clear_does_not_clear_other_fields(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            install = copy_install(root / 'kit')
+            dest = root / 'out'
+            inputs = ('org/repo\nreview\n\nObjetivo\n#123\nComentario\nPregunta\n'
+                      'e\nf\n/limpiar\n\ng\n' + str(dest) + '\ns\n')
+            result = self.invoke(install, inputs)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            text = generated(dest)[0].read_text()
+            self.assertIn('**Referencia:** #123', text)
+            self.assertIn('Objetivo', text)
+            self.assertIn('Pregunta', text)
+            self.assertNotIn('## Comentario del PM — PM_FEEDBACK_HUMANO', text)
+
+    def test_continue_optional_structured_locator_and_no_forced_reference(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            install = copy_install(root / 'kit')
+            dest = root / 'out'
+            result = self.invoke(install, 'org/repo\ncontinue\n\n/ref\n#77\n\n\ng\n' + str(dest) + '\ns\n')
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn('**Referencia:** #77', generated(dest)[0].read_text())
+            result = self.invoke(install, '\ncontinue\n\n\n\n\nc\n')
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertNotIn('Issue/PR (número', result.stdout)
+
+    def test_sensitive_interactive_fields_are_rejected_without_leaking(self):
+        secret = 'ghp_' + 'B' * 36
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            install = copy_install(root / 'kit')
+            dest = root / 'out'
+            inputs = ('org/repo\nreview\n\n' + secret + '\nObjetivo seguro\n\n' + secret +
+                      '\nComentario seguro\n' + secret + '\nPregunta segura\ng\n' + str(dest) + '\ns\n')
+            result = self.invoke(install, inputs)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertGreaterEqual(result.stdout.count('posible información sensible'), 3)
+            self.assertNotIn(secret, result.stdout + result.stderr)
+            self.assertNotIn(secret, generated(dest)[0].read_text())
+            self.assertNotIn(secret, (install / '.project-os' / 'config.json').read_text())
+
+    def test_sensitive_value_spanning_multiline_can_be_removed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            install = copy_install(root / 'kit')
+            dest = root / 'out'
+            secret_part = 'z' * 24
+            inputs = ('org/repo\nreview\n\nObjetivo\n\n/m\nBearer\n' + secret_part +
+                      '\n.\n\n\n\n/limpiar\n\ng\n' + str(dest) + '\ns\n')
+            result = self.invoke(install, inputs)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn('posible información sensible', result.stdout)
+            self.assertNotIn(secret_part, result.stdout + result.stderr)
+            self.assertNotIn(secret_part, generated(dest)[0].read_text())
 
     def test_cancel_and_unsafe_config_do_not_write(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -390,7 +498,8 @@ class WizardConfiguration(unittest.TestCase):
             install = copy_install(Path(tmp) / 'kit')
             for workflow in selector.WORKFLOW_ORDER:
                 with self.subTest(workflow=workflow):
-                    result = self.invoke(install, 'org/repo\n' + workflow + '\n\n\n\n\nc\n')
+                    locator_line = '\n' if workflow in ('implement', 'review', 'close', 'release') else ''
+                    result = self.invoke(install, 'org/repo\n' + workflow + '\n\n\n' + locator_line + '\n\nc\n')
                     self.assertEqual(result.returncode, 0, result.stderr)
                     self.assertIn('Comentario del PM — PM_FEEDBACK_HUMANO', result.stdout)
                     self.assertIn('Pregunta del PM — PM_QUESTION_HUMANO', result.stdout)
@@ -434,6 +543,17 @@ class SafePersistence(unittest.TestCase):
                         selector.save_prompt(root, selector.MARKER + '\nnuevo\n')
                     self.assertEqual(previous.read_text(), selector.MARKER + '\noriginal\n')
                     self.assertEqual(list(root.iterdir()), [previous])
+
+    def test_sensitive_source_is_not_rendered_or_persisted(self):
+        workflows, skills, templates = selector.discover()
+        real_read = selector.read_source
+        secret = 'ghp_' + 'C' * 36
+        def source(path):
+            return secret if path == workflows['review'] else real_read(path)
+        with patch.object(selector, 'read_source', side_effect=source):
+            with self.assertRaises(selector.SensitiveInput) as result:
+                selector.render('review', [], '', '', workflows, skills, templates)
+            self.assertNotIn(secret, str(result.exception))
 
     def test_config_write_failure_preserves_previous_preferences(self):
         with tempfile.TemporaryDirectory() as tmp:

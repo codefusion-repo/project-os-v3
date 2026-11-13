@@ -15,7 +15,8 @@ class Structure(unittest.TestCase):
     def test_required_files(self):
         for path in ['AGENTS.md', 'PROJECT_OS.md', 'README.md', 'docs/V3_SPEC.md',
                      'docs/ADOPTION.md', 'docs/IMPLEMENTATION_TASK.md', 'adapters/terminal-agent.md', 'adapters/browser-chat.md',
-                     'tools/select.py', 'tests/test_select.py', 'tests/test_structure.py']:
+                     'tools/select.py', 'tests/test_select.py', 'tests/test_structure.py',
+                     '.github/workflows/selector-ci.yml']:
             self.assertTrue((ROOT / path).is_file(), path)
         self.assertEqual({p.stem for p in (ROOT / 'workflows').glob('*.md')}, WORKFLOWS)
         self.assertEqual({p.parent.name for p in (ROOT / 'skills').glob('*/SKILL.md')}, SKILLS)

@@ -29,3 +29,7 @@ El selector previsualiza y guarda prompts Markdown operativos en `--output-dir` 
 ## Wizard-first y configuración local
 
 El wizard inicia por repositorio, continúa con workflow, skills, contexto del PM, preview y guardado. Recuerda únicamente repositorio y carpeta en `.project-os/config.json` ignorado por Git; un repositorio indicado no se considera verificado. Comentario y pregunta del PM son opcionales, multilínea y exclusivos de la operación; no se guardan en la configuración ni se reutilizan. El selector no exige referencias issue/PR que puedan recuperarse. Los flags siguen disponibles para automatización sin leer ni escribir la configuración del wizard.
+
+## Correcciones de review del selector
+
+El wizard conserva objetivo y locator en campos separados cuando corresponda y permite añadir un locator opcional con `/ref`. La edición preserva los valores y `/limpiar` los elimina explícitamente. Antes de previsualizar o persistir se rechazan patrones comunes de secretos sin imprimirlos en errores; la detección es heurística. La plataforma validada y el check CI están descritos en [V3_SPEC.md](V3_SPEC.md).
