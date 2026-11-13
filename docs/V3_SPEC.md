@@ -21,7 +21,7 @@ Project OS v3 es un **kit operativo Markdown-first** de **workflows + skills + t
 - **Workflow = resultado y recorrido breve.** Describe cuándo usarlo, qué evidencia inspeccionar, qué hacer, qué entregar y cuándo detener *solo* una acción sensible. No es máquina de estados.
 - **Skill = capacidad reusable y especializada.** Instrucciones de ejecución para una técnica concreta (prototipar, depurar, testear, revisar seguridad), invocables desde distintos workflows o directamente por intención.
 - **Template = estructura mínima de un artefacto.** Se usa cuando ese resultado existe; nunca obliga a crear issue/PR/informe solo para rellenar un formulario.
-- **Selector = interfaz de descubrimiento y preparación.** Se incluye siempre, descubre Markdown, propone combinaciones workflow/skills y genera un prompt copiable. No ejecuta acciones ni concede permisos.
+- **Selector = interfaz de descubrimiento y preparación.** Se incluye siempre, descubre Markdown, propone combinaciones workflow/skills y guarda un prompt copiable. No ejecuta workflows ni concede permisos.
 - **Adapter = capacidades reales de la superficie.** Terminal y browser comparten reglas; sus diferencias están en acceso al filesystem, shell, GitHub y acciones disponibles.
 - **GitHub = fuente de trazabilidad viva**, nunca registry o estado propio. Mantener una unidad de trabajo y un mismo issue/PR para implementación, review y correcciones de un outcome.
 
@@ -115,26 +115,22 @@ Cada `skills/<nombre>/SKILL.md` debe ser **ejecutable como instrucción para un 
 
 ## 6. Selector requerido (`tools/select.py`)
 
-Implementar un **CLI real** con **Python stdlib solamente**, sin pip, servicios, red ni inicialización. Debe funcionar en modo interactivo y no interactivo:
+CLI Python stdlib obligatorio para generar prompts operativos Markdown, sin servicios ni ejecución de workflows. Markdown directo sigue disponible sin ejecutar el selector.
 
 ```bash
-python3 tools/select.py                    # menú de 6 workflows; default continue
-python3 tools/select.py --list             # lista de workflows y skills descubiertas
-python3 tools/select.py --workflow implement --skill rapid-prototype
-python3 tools/select.py --prototype        # atajo equivalente a implement + rapid-prototype
+python3 tools/select.py --output-dir /ruta/a/prompts
+python3 tools/select.py --list
+python3 tools/select.py --workflow implement --skill rapid-prototype --objective "Validar una idea"
+python3 tools/select.py --prototype
 python3 tools/select.py --workflow review --locator 123
 ```
 
-**Comportamiento de aceptación:**
-
-1. **Descubrimiento de archivos Markdown** en `workflows/*.md`, `skills/*/SKILL.md` y `templates/*.md`; no mantener catálogo JSON/CSV paralelo. El orden de los seis workflows es estable y explícito para la UI, pero existencia y descripciones salen de los Markdown.
-2. `continue` es predeterminado. Menú legible con descripción y acceso fácil a skills y templates; combinación explícita, no autoorquestación opaca. `--prototype` es un **atajo**, no un séptimo workflow.
-3. `--workflow`, `--skill`, `--template`, `--locator`, `--list`, `--prototype`, `--help`; combinaciones incompatibles o desconocidas fallan con mensaje claro y exit code distinto de cero. `--locator` es texto contextual validado (issue/PR/URL GitHub opcional), no entrada para ejecución de comandos ni path arbitrario.
-4. Salida estándar: **prompt corto y copiable** con rutas relativas verificadas a los Markdown seleccionados y locator opcional. También se puede imprimir `Modo directo: lee workflows/…` para entornos sin Python.
-5. **Sin efectos laterales:** no abre archivos para edición, no lanza agente, no hace checkout, no ejecuta workflows, no llama GitHub ni modifica archivos. Rechaza traversal/symlinks fuera de raíz y no ejecuta código derivado del Markdown.
-6. El selector es **parte obligatoria del paquete y debe tener pruebas**. El uso del selector por un agente no es obligatorio: el fallback Markdown preserva portabilidad y cold start.
-
-El terminal puede agregar UX simple (búsqueda de nombre o filtros), siempre que no introduzca dependencias, tiempo de arranque innecesario, configuración o permisos.
+1. Descubre `workflows/*.md`, `skills/*/SKILL.md` y recursos `templates/*.md` sin catálogo paralelo. La selección interactiva permite búsqueda, workflow `continue` por defecto, skills sugeridas opcionales, captura de contexto material, edición, cancelación y reutilización de operación.
+2. Previsualiza el prompt completo antes de guardar. Contiene reglas compartidas, workflow y skills seleccionadas, objetivo/contexto, referencias, restricciones operativas y templates pertinentes resueltos desde los vínculos de los Markdown. Los templates son recursos internos opcionales; no se solicita su selección al PM.
+3. `--workflow`, `--skill`, `--locator`, `--objective`, `--output-dir`, `--list`, `--prototype` y `--help` permiten uso no interactivo. `--prototype` es atajo de implement + rapid-prototype. El modo no interactivo previsualiza y guarda directamente; combinaciones incompatibles, nombres desconocidos y locators inválidos fallan con mensaje claro.
+4. Por defecto guarda en `.project-os/prompts/`, ignorado por Git. Informa antes de reemplazar: tras publicar atómicamente el nuevo archivo, elimina solo los prompts anteriores identificables mediante nombre reservado y marcador del selector en la misma carpeta. Nunca elimina Markdown ajenos, symlinks ni archivos de otras carpetas. Si se cancela o falla la escritura, conserva los anteriores; informa si la limpieza posterior falla.
+5. Rechaza traversal y symlinks en rutas de destino y fuentes externas. Usa escritura temporal seguida de publicación atómica sin sobrescribir archivos existentes; no ejecuta código derivado del Markdown ni llama GitHub. Requiere soporte del sistema para abrir directorios sin seguir symlinks y enlaces duros en la carpeta destino.
+6. El selector se entrega y prueba obligatoriamente, pero su uso no es requisito para operar con Markdown. No concede permisos ni ejecuta workflows.
 
 ## 7. Catorce templates livianos
 
@@ -191,7 +187,7 @@ Otros agentes: Markdown directo. Añadir adapter cuando una diferencia real lo e
 ## 10. Validación mínima y aceptación del MVP
 
 - Existencia y enlaces correctos de **6 workflows, 9 skills, 14 templates, 2 adapters, selector y tests**, además de `AGENTS.md`, `PROJECT_OS.md`, `README.md`, esta spec y `docs/ADOPTION.md`.
-- `tools/select.py`: menú default, `--list`, selección simple/combinada, `--prototype`, errores, locator, discovery desde Markdown y protección de rutas. Pruebas automatizadas stdlib (`unittest`), sin red ni writes de producción.
+- `tools/select.py`: menú default, selección y edición, contexto, preview, guardado en carpeta temporal, reemplazo seguro, cancelación, fallos, locator, discovery desde Markdown y protección de rutas. Pruebas stdlib (`unittest`), sin red ni writes de producción.
 - Pruebas de estructura/referencias Markdown y revisión humana de legibilidad; **no** tests frágiles de wording.
 - Ejemplo documentado y reproducible de inicio `continue`, de prototipo rápido y de review. Se puede usar el kit leyendo los Markdown sin Python; Python se usa para el selector entregado.
 - Un chat nuevo recibe solo el repositorio y recupera el trabajo relevante desde GitHub; otro agente retoma sin repetir preguntas respondibles desde evidencia. Verificar el objetivo, referencias, checks, blockers y siguiente acción; si faltan fuentes, registrar el límite.

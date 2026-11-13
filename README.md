@@ -1,38 +1,38 @@
 # Project OS v3
 
-Kit operativo Markdown-first para llevar una intención a un resultado verificable con workflows, skills, templates y un selector local. La hipótesis de ahorro frente a v2 aún no se ha medido en un piloto.
+Kit Markdown-first para llevar una intención a un resultado verificable con workflows, skills, templates y un selector local. La hipótesis de ahorro frente a v2 aún no se ha medido en un piloto.
 
-## Inicio en 30 segundos
+## Abrir el selector
 
-En la raíz de este kit, ejecuta con Python 3 estándar:
+Desde la raíz del kit, con Python 3 estándar:
 
 ```bash
-python3 tools/select.py --workflow continue
+python3 tools/select.py
 ```
 
-Copia el prompt, añade tu objetivo y entrégalo a un agente con acceso al kit y al proyecto. Para comenzar sin contexto: «Retoma el trabajo de este repositorio; identifica el issue/PR si existe, verifica los checks y continúa con el siguiente paso seguro». El agente lee [PROJECT_OS.md](PROJECT_OS.md), [continue](workflows/continue.md) y las instrucciones del proyecto; busca fuentes vivas en vez de depender del chat anterior.
+Elige un workflow (Enter usa `continue`) y las skills útiles. Escribe solo el objetivo, repositorio, referencias o restricciones que el agente necesite y no pueda inferir. El selector muestra el prompt completo para revisión: guarda con `g`, edita con `e` o cancela con `c`. Después de guardar puedes reutilizar la operación con contexto nuevo, elegir otra o salir. En los menús, `/texto` filtra, `/` restablece y `/cancelar` cancela.
 
-## Elegir una operación
+Por defecto los prompts se guardan en `.project-os/prompts/` dentro del kit, carpeta ignorada por Git. Para elegir otra carpeta:
 
 ```bash
-python3 tools/select.py                  # menú; Enter elige continue, luego skills y templates opcionales
-python3 tools/select.py --list           # descubre workflows, skills y templates
-python3 tools/select.py --workflow review --skill code-review --skill testing --locator 123
-python3 tools/select.py --workflow review --skill github-traceability --template review-comment --locator 123
-python3 tools/select.py --workflow close --template merge --template close
+python3 tools/select.py --output-dir "/ruta/a/mis-prompts"
+```
+
+El selector avisa antes de guardar: **cuando la escritura del nuevo prompt termina correctamente, elimina los prompts anteriores creados por el selector en esa misma carpeta**. Identifica sus archivos por nombre reservado y marcador interno. Conserva Markdown manuales, archivos de otras carpetas y symlinks; una cancelación o un fallo de escritura conserva el anterior. La carpeta no admite `..` ni componentes symlink. El guardado requiere un sistema con soporte de directorios sin seguimiento de symlinks y enlaces duros en la carpeta de destino.
+
+## Uso directo y prototipo
+
+```bash
+python3 tools/select.py --list
+python3 tools/select.py --workflow review --skill code-review --skill testing --locator 123 --objective "Revisar el PR del repo identificado"
+python3 tools/select.py --prototype --objective "Validar un filtro de tareas con datos simulados"
 python3 tools/select.py --help
 ```
 
-Repite `--skill` y `--template` para componer capacidades y artefactos; el locator es contexto, no una orden. En el menú se aceptan nombres o números, separados por comas para skills y templates; `/texto` filtra por nombre o descripción y `/` restablece la lista. Se muestran skills sugeridas desde el workflow, sin seleccionarlas automáticamente. La salida es texto copiable; el selector no llama al agente, GitHub ni ejecuta workflows. Sin Python, indica directamente: «Lee `PROJECT_OS.md` y `workflows/review.md`; revisa el diff del PR 123 y entrega findings con evidencia». Lee solo las skills útiles.
+En modo no interactivo se muestra la vista previa y se guarda directamente; añade `--output-dir` si quieres elegir destino. `--skill` se puede repetir y `--prototype` equivale a `implement` más `rapid-prototype`. El prompt contiene reglas compartidas, instrucciones seleccionadas y contexto; los templates pertinentes se incorporan automáticamente como recursos opcionales. No ejecuta workflows, llama GitHub ni concede permisos.
 
-## Prototipo rápido
-
-```bash
-python3 tools/select.py --prototype
-```
-
-Añade, por ejemplo: «Quiero comprobar si un PM encuentra una tarea: crea una pantalla mínima con una lista de datos simulados y un filtro; demuestra que filtrar cambia el resultado». El agente aplica [implement](workflows/implement.md) y [rapid-prototype](skills/rapid-prototype/SKILL.md): hipótesis → una ruta vertical → demo o test real → decisión de iterar, descartar o endurecer. No se exige issue ni PR para el resultado local.
+Sin selector, pide al agente leer [PROJECT_OS.md](PROJECT_OS.md), el workflow y solo las skills pertinentes; por ejemplo, [continue](workflows/continue.md) para recuperar estado vivo o [review](workflows/review.md) para revisar un diff. El selector es parte del kit, pero no es obligatorio para operar.
 
 ## Contenido y adopción
 
-Los seis [workflows](workflows/), nueve [skills](skills/), catorce [templates](templates/) y [adapters](adapters/) son independientes del selector. Los templates se rellenan solo cuando aportan valor. Consulta [adopción](docs/ADOPTION.md), [reglas compartidas](PROJECT_OS.md) y el [contrato MVP](docs/V3_SPEC.md), el [encargo de implementación](docs/IMPLEMENTATION_TASK.md) y sus [addenda](docs/V3_ADDENDUM.md). Valida el paquete con `python3 -m unittest discover -s tests -v`.
+El kit distribuye seis [workflows](workflows/), nueve [skills](skills/), catorce [templates](templates/) y [adapters](adapters/). Los templates se usan solo cuando aportan valor. Consulta la [guía de adopción](docs/ADOPTION.md), el [contrato MVP](docs/V3_SPEC.md), el [encargo](docs/IMPLEMENTATION_TASK.md) y sus [addenda](docs/V3_ADDENDUM.md). Valida el paquete con `python3 -m unittest discover -s tests -v`.

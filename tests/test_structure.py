@@ -42,7 +42,7 @@ class Structure(unittest.TestCase):
 
     def test_relative_markdown_links(self):
         for path in ROOT.rglob('*.md'):
-            if '.git' in path.parts:
+            if '.git' in path.parts or '.project-os' in path.parts:
                 continue
             content = re.sub(r'```.*?```', '', path.read_text(), flags=re.S)
             for target in re.findall(r'(?<!!)\[[^\]]+\]\(([^\s)]+)(?:\s+[^)]*)?\)', content):

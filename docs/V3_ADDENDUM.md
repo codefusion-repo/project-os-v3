@@ -8,8 +8,12 @@ Complementa [V3_SPEC.md](V3_SPEC.md). Ante contradicciones, prevalecen estas dec
 
 ## Templates operativos GitHub
 
-La biblioteca se amplía de diez a catorce templates: [merge](../templates/merge.md), [close](../templates/close.md), [comment](../templates/comment.md) y [review-comment](../templates/review-comment.md) preparan mensajes y acciones con referencias y resultados verificados. Se integran con implement, review, close y github-traceability y se descubren mediante el selector. Preparación, ejecución y confirmación son distintas; merge y cierre requieren autorización específica. Se reutilizan la unidad y conversación existentes.
+La biblioteca se amplía de diez a catorce templates: [merge](../templates/merge.md), [close](../templates/close.md), [comment](../templates/comment.md) y [review-comment](../templates/review-comment.md) preparan mensajes y acciones con referencias y resultados verificados. Se integran con implement, review, close y github-traceability y el selector los incorpora automáticamente cuando corresponda, sin selección manual. Preparación, ejecución y confirmación son distintas; merge y cierre requieren autorización específica. Se reutilizan la unidad y conversación existentes.
 
 ## Garantías esenciales
 
 El PM requiere cold start desde el repositorio y GitHub, respuestas comunes de Ejecución, Review y Decisión pendiente, trazabilidad de toda la unidad y continuidad entre agentes con fuentes vivas. El selector y los catorce templates permanecen obligatorios como artefactos; su uso no es un gate. Continuar lo seguro ante incertidumbre secundaria y detener solo acciones sensibles sin autorización. Los escenarios de aceptación y sus límites se describen en [V3_SPEC.md](V3_SPEC.md) y [ADOPTION.md](ADOPTION.md).
+
+## Corrección del selector tras review
+
+El selector previsualiza y guarda prompts Markdown operativos en `--output-dir` o en su carpeta local ignorada por Git. Tras guardar, reemplaza solo sus prompts anteriores identificados en la misma carpeta, con escritura atómica y protección de archivos ajenos, traversal y symlinks. Permite editar, cancelar y reutilizar la operación. No solicita selección de templates; véase [V3_SPEC.md](V3_SPEC.md).

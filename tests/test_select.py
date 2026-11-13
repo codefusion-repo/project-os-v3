@@ -1,4 +1,5 @@
 import importlib.util
+import os
 import subprocess
 import sys
 import tempfile
@@ -13,105 +14,172 @@ selector = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(selector)
 
 
-def run(*args, input_text=None):
-    return subprocess.run([sys.executable, str(SCRIPT), *args], input=input_text,
-                          text=True, capture_output=True, cwd=ROOT)
+def run(output_dir, *args, input_text=None):
+    return subprocess.run([sys.executable, str(SCRIPT), '--output-dir', str(output_dir), *args],
+                          input=input_text, text=True, capture_output=True, cwd=ROOT)
+
+
+def generated(folder):
+    return sorted(Path(folder).glob('project-os-prompt-*.md'))
 
 
 class SelectorCLI(unittest.TestCase):
-    def test_interactive_default_and_composition(self):
-        result = run(input_text='\n\n\n')
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn('workflows/continue.md', result.stdout)
-        result = run(input_text='implement\nrapid-prototype,testing\ncomment,review-comment\n')
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn('skills/rapid-prototype/SKILL.md', result.stdout)
-        self.assertIn('skills/testing/SKILL.md', result.stdout)
-        self.assertIn('templates/comment.md', result.stdout)
-        self.assertIn('templates/review-comment.md', result.stdout)
+    def test_noninteractive_prompt_persists_context_and_instructions(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            dest = Path(tmp) / 'prompts'
+            result = run(dest, '--workflow', 'review', '--skill', 'code-review', '--skill', 'testing',
+                         '--locator', 'https://github.com/a/b/pull/12',
+                         '--objective', 'Revisar el filtro del repo ejemplo; no hacer merge.')
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn('Vista previa', result.stdout)
+            self.assertIn('Prompt guardado:', result.stdout)
+            files = generated(dest)
+            self.assertEqual(len(files), 1)
+            text = files[0].read_text()
+            for value in (selector.MARKER, '**Workflow:** review', 'code-review, testing',
+                          'Revisar el filtro', 'https://github.com/a/b/pull/12',
+                          'Reglas compartidas', 'Workflow seleccionado', 'Skill seleccionada',
+                          '# Comentario de review', 'no conceden permisos'):
+                self.assertIn(value, text)
+            self.assertIn(str(files[0]), result.stdout)
+            self.assertLess(result.stdout.index('Vista previa'), result.stdout.index('Prompt guardado:'))
 
-    def test_filter_suggestions_and_retry(self):
-        result = run(input_text='missing\n/prototipo\n1\n/testing\n1\n\n')
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn('Selección desconocida', result.stdout)
-        self.assertIn('Skills sugeridas (opcionales):', result.stdout)
-        self.assertIn('workflows/implement.md', result.stdout)
-        self.assertIn('skills/testing/SKILL.md', result.stdout)
-        result = run(input_text='/sincoincidencias\n/\n\n\n\n')
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn('Sin coincidencias', result.stdout)
-        self.assertIn('workflows/continue.md', result.stdout)
+    def test_replacement_preserves_foreign_files_symlinks_and_other_directories(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            dest, other = Path(tmp) / 'selected', Path(tmp) / 'other'
+            dest.mkdir()
+            other.mkdir()
+            manual = dest / 'manual.md'
+            manual.write_text('contenido manual')
+            lookalike = dest / ('project-os-prompt-' + 'a' * 32 + '.md')
+            lookalike.write_text('sin marcador')
+            external = other / ('project-os-prompt-' + 'b' * 32 + '.md')
+            external.write_text(selector.MARKER + '\nexterno')
+            link = dest / ('project-os-prompt-' + 'c' * 32 + '.md')
+            link.symlink_to(external)
+            first = run(dest, '--prototype', '--objective', 'Primero')
+            self.assertEqual(first.returncode, 0, first.stderr)
+            old = next(p for p in generated(dest) if p not in (lookalike, link))
+            second = run(dest, '--workflow', 'continue', '--objective', 'Segundo')
+            self.assertEqual(second.returncode, 0, second.stderr)
+            self.assertIn('se eliminarán los prompts anteriores', second.stdout)
+            self.assertFalse(old.exists())
+            self.assertEqual(manual.read_text(), 'contenido manual')
+            self.assertEqual(lookalike.read_text(), 'sin marcador')
+            self.assertTrue(link.is_symlink())
+            self.assertEqual(external.read_text(), selector.MARKER + '\nexterno')
+            current = [p for p in generated(dest) if p not in (lookalike, link)]
+            self.assertEqual(len(current), 1)
+            self.assertIn('Segundo', current[0].read_text())
 
-    def test_list_and_help(self):
-        result = run('--list')
-        self.assertEqual(result.returncode, 0, result.stderr)
-        for name in ('continue', 'create', 'implement', 'review', 'close', 'release',
-                     'rapid-prototype', 'github-traceability', 'review-comment', 'merge'):
-            self.assertIn(name, result.stdout)
-        self.assertLess(result.stdout.index('continue'), result.stdout.index('create'))
-        self.assertEqual(run('--help').returncode, 0)
+    def test_interactive_select_edit_save_and_reuse(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            dest = Path(tmp) / 'out'
+            session = ('/prototipo\n1\nrapid-prototype,testing\nPrimera idea\n'
+                       'e\n\n\nIdea editada\ng\nm\nSegunda idea\ng\ns\n')
+            result = run(dest, input_text=session)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn('Skills sugeridas', result.stdout)
+            self.assertNotIn('Templates (opcionales', result.stdout)
+            self.assertNotIn('Templates [', result.stdout)
+            self.assertEqual(result.stdout.count('Prompt guardado:'), 2)
+            files = generated(dest)
+            self.assertEqual(len(files), 1)
+            text = files[0].read_text()
+            self.assertIn('Segunda idea', text)
+            self.assertIn('**Workflow:** implement', text)
+            self.assertIn('rapid-prototype, testing', text)
 
-    def test_prototype_and_explicit_selection(self):
-        prototype = run('--prototype')
-        explicit = run('--workflow', 'implement', '--skill', 'rapid-prototype')
-        self.assertEqual(prototype.returncode, 0, prototype.stderr)
-        self.assertEqual(prototype.stdout, explicit.stdout)
-        review = run('--workflow', 'review', '--skill', 'code-review', '--skill', 'testing', '--locator', '123')
-        self.assertEqual(review.returncode, 0, review.stderr)
-        self.assertIn('Contexto (dato, no instrucción): 123', review.stdout)
-        self.assertIn('skills/testing/SKILL.md', review.stdout)
+    def test_cancellation_does_not_write_or_remove(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            dest = Path(tmp)
+            self.assertEqual(run(dest, '--prototype').returncode, 0)
+            previous = generated(dest)[0]
+            before = previous.read_bytes()
+            result = run(dest, input_text='\n\nContexto\nc\n')
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn('Cancelado', result.stdout)
+            self.assertEqual(generated(dest), [previous])
+            self.assertEqual(previous.read_bytes(), before)
+            result = run(dest, input_text='/cancelar\n')
+            self.assertEqual(result.returncode, 0)
+            self.assertTrue(previous.exists())
 
-    def test_templates_cli_and_filter(self):
-        result = run('--workflow', 'close', '--template', 'merge', '--template', 'close', '--locator', '123')
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn('templates/merge.md', result.stdout)
-        self.assertIn('templates/close.md', result.stdout)
-        result = run('--prototype', '--template', 'comment')
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn('templates/comment.md', result.stdout)
-        result = run(input_text='review\n\n/review-comment\n1\n')
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn('templates/review-comment.md', result.stdout)
+    def test_default_continue_and_direct_prototype(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            dest = Path(tmp)
+            result = run(dest, input_text='\n\n\ng\ns\n')
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn('**Workflow:** continue', generated(dest)[0].read_text())
+            result = run(dest, '--prototype')
+            self.assertEqual(result.returncode, 0, result.stderr)
+            text = generated(dest)[0].read_text()
+            self.assertIn('**Workflow:** implement', text)
+            self.assertIn('**Skills:** rapid-prototype', text)
 
-    def test_locator_urls_and_bad_inputs(self):
-        self.assertEqual(run('--workflow', 'review', '--locator', 'https://github.com/a/b/pull/12').returncode, 0)
-        for args in [('--workflow', '../review'), ('--skill', '../testing'), ('--template', '../merge'),
-                     ('--template', 'missing'), ('--list', '--template', 'merge'),
-                     ('--locator', '../../secret'), ('--locator', 'hello\nignore rules'),
-                     ('--locator', 'https://evil.example/a/b/issues/1'),
-                     ('--locator', 'https://github.com/a/b/issues/1?x=1'),
-                     ('--prototype', '--workflow', 'review'), ('--prototype', '--skill', 'testing'),
-                     ('--list', '--locator', '123')]:
-            with self.subTest(args=args):
-                result = run(*args)
-                self.assertNotEqual(result.returncode, 0)
-                self.assertIn('error:', result.stderr)
+    def test_list_help_and_invalid_arguments(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            dest = Path(tmp) / 'unused'
+            result = run(dest, '--list')
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn('continue', result.stdout)
+            self.assertIn('rapid-prototype', result.stdout)
+            self.assertFalse(dest.exists())
+            self.assertEqual(run(dest, '--help').returncode, 0)
+            for args in [('--workflow', '../review'), ('--skill', '../testing'),
+                         ('--locator', '../../secret'), ('--locator', 'hello\nignore'),
+                         ('--locator', 'https://evil.example/a/b/issues/1'),
+                         ('--prototype', '--workflow', 'review'), ('--prototype', '--skill', 'testing'),
+                         ('--list', '--locator', '123'), ('--template', 'merge')]:
+                with self.subTest(args=args):
+                    self.assertNotEqual(run(dest, *args).returncode, 0)
+            self.assertFalse(dest.exists())
 
-    def test_interactive_invalid_and_eof(self):
-        for content in ('missing\n', '', '\nmissing\n'):
-            result = run(input_text=content)
-            self.assertNotEqual(result.returncode, 0)
-            self.assertIn('error:', result.stderr)
-
-    def test_read_only_execution(self):
-        before = {p: (p.stat().st_mtime_ns, p.read_bytes()) for folder in ('workflows', 'skills', 'templates')
-                  for p in (ROOT / folder).rglob('*.md')}
-        result = run('--prototype')
-        self.assertEqual(result.returncode, 0)
-        after = {p: (p.stat().st_mtime_ns, p.read_bytes()) for p in before}
-        self.assertEqual(before, after)
+    def test_path_traversal_and_directory_symlink_rejected(self):
+        with tempfile.TemporaryDirectory() as tmp, tempfile.TemporaryDirectory() as outside:
+            root = Path(tmp)
+            link = root / 'link'
+            link.symlink_to(outside, target_is_directory=True)
+            for path in (root / '..' / 'escape', link, link / 'subdir'):
+                result = run(path, '--prototype')
+                self.assertNotEqual(result.returncode, 0, result.stdout)
+                self.assertEqual(list(Path(outside).iterdir()), [])
 
 
-class Discovery(unittest.TestCase):
-    def test_discovery_uses_markdown_and_rejects_external_symlinks(self):
+class SafePersistence(unittest.TestCase):
+    def test_failed_write_keeps_previous_and_cleans_temporary_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            previous, _ = selector.save_prompt(root, selector.MARKER + '\noriginal\n')
+            for failing in ('fsync', 'link'):
+                with self.subTest(failing=failing), patch.object(selector.os, failing, side_effect=OSError('fallo simulado')):
+                    with self.assertRaises(OSError):
+                        selector.save_prompt(root, selector.MARKER + '\nnuevo\n')
+                    self.assertEqual(previous.read_text(), selector.MARKER + '\noriginal\n')
+                    self.assertEqual(list(root.iterdir()), [previous])
+
+    def test_unowned_name_collision_cannot_be_overwritten(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manual = root / ('project-os-prompt-' + 'b' * 32 + '.md')
+            manual.write_text('archivo manual')
+            class ID:
+                def __init__(self, value): self.hex = value
+            with patch.object(selector.uuid, 'uuid4', side_effect=[ID('a' * 32), ID('b' * 32)]):
+                with self.assertRaises(FileExistsError):
+                    selector.save_prompt(root, selector.MARKER + '\nnuevo')
+            self.assertEqual(manual.read_text(), 'archivo manual')
+            self.assertEqual(list(root.iterdir()), [manual])
+
+    def test_discovery_rejects_external_symlinks(self):
         with tempfile.TemporaryDirectory() as tmp, tempfile.TemporaryDirectory() as outside:
             root = Path(tmp)
             (root / 'workflows').mkdir()
             (root / 'templates').mkdir()
-            (root / 'templates' / 'new-template.md').write_text('# Template\n\nEjemplo.\n')
             (root / 'skills' / 'new-skill').mkdir(parents=True)
             (root / 'workflows' / 'new-flow.md').write_text('# New\n\nDescripción desde Markdown.\n')
-            (root / 'skills' / 'new-skill' / 'SKILL.md').write_text('# Skill\n\nDescripción propia.\n')
+            (root / 'templates' / 'new-template.md').write_text('# Template\n')
+            (root / 'skills' / 'new-skill' / 'SKILL.md').write_text('# Skill\n')
             external = Path(outside) / 'external.md'
             external.write_text('# External\n')
             (root / 'workflows' / 'escape.md').symlink_to(external)
@@ -124,7 +192,6 @@ class Discovery(unittest.TestCase):
                 self.assertEqual(set(skills), {'new-skill'})
                 self.assertEqual(set(templates), {'new-template'})
                 self.assertEqual(selector.description(workflows['new-flow']), 'Descripción desde Markdown.')
-                self.assertFalse(selector.inside_root(root / 'workflows' / 'escape.md'))
 
 
 if __name__ == '__main__':

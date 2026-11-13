@@ -1,6 +1,6 @@
 # Project OS v3
 
-Kit Markdown-first para pasar de una intención a un resultado verificable con la menor fricción útil. Un workflow describe un resultado; una skill aporta una técnica; un template ayuda cuando existe un artefacto; el selector descubre y prepara texto, sin ejecutar ni autorizar acciones. Lee solo lo que sirva a la tarea. Una skill pedida explícitamente se selecciona, pero no amplía permisos.
+Kit Markdown-first para pasar de una intención a un resultado verificable con la menor fricción útil. Un workflow describe un resultado; una skill aporta una técnica; un template ayuda cuando existe un artefacto; el selector previsualiza y guarda prompts Markdown, sin ejecutar workflows ni autorizar acciones. Lee solo lo que sirva a la tarea. Una skill pedida explícitamente se selecciona, pero no amplía permisos.
 
 ## Ruta común
 
