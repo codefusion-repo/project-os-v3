@@ -4,12 +4,22 @@ Kit Markdown-first para pasar de una intención a un resultado verificable con l
 
 ## Ruta común
 
-1. Entiende el resultado y consulta evidencia viva: instrucciones del repositorio, archivos pertinentes y, si existe acceso, issue/PR y checks. Distingue hechos, inferencias y propuestas.
+1. Con el repositorio identificado, recupera objetivo y estado desde instrucciones, archivos y fuentes GitHub vivas disponibles: issues, PRs, commits, diffs, checks, findings y blockers pertinentes. No dependas del historial del chat. Distingue hechos, inferencias y propuestas; pide como máximo un locator primario solo ante ambigüedad material no resoluble con evidencia y continúa el trabajo seguro.
 2. Comprueba target, rama, cambios existentes, capacidades, visibilidad y alcance autorizado antes de escribir. Conserva trabajo ajeno; toma decisiones técnicas reversibles sin pedir metadata disponible.
 3. Trabaja y valida proporcionalmente al riesgo. Registra comandos, resultados y exit codes reales; identifica lo no probado y no inventes cobertura, aprobaciones ni estado remoto.
-4. Entrega resultado, rutas o referencias, evidencia, riesgos y siguiente paso. Un issue/PR es opcional si aporta trazabilidad y está autorizado; reutiliza el mismo para revisión y correcciones.
+4. Entrega resultado, rutas o referencias, evidencia, riesgos y siguiente paso. Un issue/PR es opcional si aporta trazabilidad y está autorizado; cuando exista, reutiliza el mismo durante implementación, review y correcciones. Relaciona las referencias verificadas de issue, PR, commits, diff, checks, findings, decisiones y correcciones; verifica el resultado de cada acción remota ejecutada.
 
 Para un prototipo, [implement](workflows/implement.md) con [rapid-prototype](skills/rapid-prototype/SKILL.md) recorre idea → slice vertical → validación, sin exigir issue ni PR. Los [templates](templates/) son adaptables, nunca formularios obligatorios.
+
+## Respuesta y continuidad
+
+Usa una respuesta breve en el formato que corresponda, sin exigir un reporte por paso:
+
+- **Ejecución:** resultado y rutas o refs; comandos/checks y resultados observados; riesgos y pendientes. Guía: [execution](templates/execution.md).
+- **Review:** findings priorizados con ubicación, impacto y evidencia; checks y límites. Si no hay findings, indícalo sin inventar aprobación. Guía: [review](templates/review.md).
+- **Decisión pendiente:** acción material bloqueada, hechos, opciones y próximo trabajo seguro. Guía: [decision](templates/decision.md).
+
+Estos criterios de evidencia y veracidad son comunes a todos los workflows y adapters: distingue preparado, ejecutado y confirmado; indica lo no probado y nunca inventes resultados. Para continuidad, [handoff](templates/handoff.md) recoge objetivo, estado, refs vivas, validaciones, blockers materiales y siguiente acción segura. GitHub es la fuente persistente cuando está disponible: agrega un resumen al issue/PR existente solo si aporta contexto difícil de recuperar, está autorizado y no duplica comentarios.
 
 ## Límites
 

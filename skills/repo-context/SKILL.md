@@ -11,9 +11,9 @@ Repositorio o checkout accesible; locator primario si no se deduce del contexto.
 
 ## Procedimiento concreto
 1. Comprobar repo, branch y objetivo; leer README/AGENTS y archivos de entrada pertinentes, no recorrer todo el árbol.
-2. Inspeccionar issues/PR/commits/checks relevantes si GitHub está disponible; priorizar datos vivos a resúmenes anteriores.
+2. Inspeccionar issues, PRs, commits, diffs, checks, findings y blockers relevantes si GitHub está disponible; priorizar datos vivos al historial o resúmenes anteriores.
 3. Identificar stack, comandos de verificación y archivos de alcance por evidencia; distinguir incertidumbres secundarias.
-4. Proponer o ejecutar el próximo paso seguro sin exigir metadata inferible.
+4. Recuperar objetivo, estado, referencias, validación, blockers y siguiente paso seguro; pedir como máximo un locator primario solo ante ambigüedad material no resoluble.
 
 ## Validación y salida
 Refs, archivos y comandos observados; siguiente acción y límites de acceso. No afirmar estado remoto si no fue consultado.

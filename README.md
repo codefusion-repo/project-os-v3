@@ -35,4 +35,4 @@ Añade, por ejemplo: «Quiero comprobar si un PM encuentra una tarea: crea una p
 
 ## Contenido y adopción
 
-Los seis [workflows](workflows/), nueve [skills](skills/), catorce [templates](templates/) y [adapters](adapters/) son independientes del selector. Los templates se rellenan solo cuando aportan valor. Consulta [adopción](docs/ADOPTION.md), [reglas compartidas](PROJECT_OS.md) y el [contrato MVP](docs/V3_SPEC.md) y su [addendum](docs/V3_ADDENDUM.md). Valida el paquete con `python3 -m unittest discover -s tests -v`.
+Los seis [workflows](workflows/), nueve [skills](skills/), catorce [templates](templates/) y [adapters](adapters/) son independientes del selector. Los templates se rellenan solo cuando aportan valor. Consulta [adopción](docs/ADOPTION.md), [reglas compartidas](PROJECT_OS.md) y el [contrato MVP](docs/V3_SPEC.md), el [encargo de implementación](docs/IMPLEMENTATION_TASK.md) y sus [addenda](docs/V3_ADDENDUM.md). Valida el paquete con `python3 -m unittest discover -s tests -v`.

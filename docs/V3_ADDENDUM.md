@@ -9,3 +9,7 @@ Complementa [V3_SPEC.md](V3_SPEC.md). Ante contradicciones, prevalecen estas dec
 ## Templates operativos GitHub
 
 La biblioteca se amplía de diez a catorce templates: [merge](../templates/merge.md), [close](../templates/close.md), [comment](../templates/comment.md) y [review-comment](../templates/review-comment.md) preparan mensajes y acciones con referencias y resultados verificados. Se integran con implement, review, close y github-traceability y se descubren mediante el selector. Preparación, ejecución y confirmación son distintas; merge y cierre requieren autorización específica. Se reutilizan la unidad y conversación existentes.
+
+## Garantías esenciales
+
+El PM requiere cold start desde el repositorio y GitHub, respuestas comunes de Ejecución, Review y Decisión pendiente, trazabilidad de toda la unidad y continuidad entre agentes con fuentes vivas. El selector y los catorce templates permanecen obligatorios como artefactos; su uso no es un gate. Continuar lo seguro ante incertidumbre secundaria y detener solo acciones sensibles sin autorización. Los escenarios de aceptación y sus límites se describen en [V3_SPEC.md](V3_SPEC.md) y [ADOPTION.md](ADOPTION.md).

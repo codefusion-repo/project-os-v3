@@ -1,6 +1,6 @@
 # Project OS v3 — Especificación implementable del MVP
 
-> El [addendum del PM](V3_ADDENDUM.md) prevalece sobre las instrucciones contradictorias de este documento, incluida la restricción histórica por visibilidad pública.
+> Esta especificación incorpora las decisiones del PM y sus [addenda](V3_ADDENDUM.md); prevalecen las instrucciones más recientes ante contradicciones.
 
 **Estado:** borrador para implementación, no adoptado ni validado en producción.
 
@@ -14,7 +14,7 @@ Project OS v3 es un **kit operativo Markdown-first** de **workflows + skills + t
 
 **Hipótesis por medir, no promesa:** menor tiempo, tokens/créditos e intervenciones humanas que v2 en tareas equivalentes, sin empeorar calidad o seguridad. No construir infraestructura propia para justificar la hipótesis.
 
-**Decisiones que sustituyen al handoff inicial:** (a) el **selector se entrega obligatoriamente** en el MVP; (b) hay una biblioteca utilizable de skills, no un directorio vacío; (c) se entregan **diez templates base**, no tres. Los workflows siguen siendo seis. Son obligatorios como *artefactos distribuidos*, no una barrera de acceso: un agente con una intención clara puede leer los Markdown directamente sin ejecutar un script.
+**Decisiones que sustituyen al handoff inicial:** (a) el **selector se entrega obligatoriamente** en el MVP; (b) hay una biblioteca utilizable de skills, no un directorio vacío; (c) se entregan **catorce templates**, incluidos los diez base y cuatro operativos GitHub. Los workflows siguen siendo seis. Son obligatorios como *artefactos distribuidos*, no una barrera de acceso: un agente con una intención clara puede leer los Markdown directamente sin ejecutar un script.
 
 ## 2. Modelo operativo
 
@@ -64,6 +64,10 @@ templates/
   handoff.md
   release.md
   dogfood.md
+  merge.md
+  close.md
+  comment.md
+  review-comment.md
 tools/
   select.py
 tests/
@@ -74,7 +78,7 @@ docs/
   ADOPTION.md
 ```
 
-Los nombres son la interfaz inicial. Se permiten ajustes pequeños de organización, **no eliminar selector, biblioteca de skills ni los diez templates**. No se admiten duplicados de reglas centrales en cada archivo, catálogo paralelo obligatorio ni dependencia de v2.
+Los nombres son la interfaz inicial. Se permiten ajustes pequeños de organización, **no eliminar selector, biblioteca de skills ni los catorce templates**. No se admiten duplicados de reglas centrales en cada archivo, catálogo paralelo obligatorio ni dependencia de v2.
 
 `AGENTS.md` es un bootstrap breve; `PROJECT_OS.md` concentra reglas compartidas. `README.md` enseña un inicio en 30 segundos, selección interactiva, invocación directa de Markdown y prototipo rápido. `docs/ADOPTION.md` explica cómo integrar este kit a un repositorio existente sin sobrescribir instrucciones propias ni copiar historia Git.
 
@@ -123,16 +127,16 @@ python3 tools/select.py --workflow review --locator 123
 
 **Comportamiento de aceptación:**
 
-1. **Descubrimiento de archivos Markdown** en `workflows/*.md` y `skills/*/SKILL.md`; no mantener catálogo JSON/CSV paralelo. El orden de los seis workflows es estable y explícito para la UI, pero existencia y descripciones salen de los Markdown.
-2. `continue` es predeterminado. Menú legible con descripción y acceso fácil a skills; combinación explícita, no autoorquestación opaca. `--prototype` es un **atajo**, no un séptimo workflow.
-3. `--workflow`, `--skill`, `--locator`, `--list`, `--prototype`, `--help`; combinaciones incompatibles o desconocidas fallan con mensaje claro y exit code distinto de cero. `--locator` es texto contextual validado (issue/PR/URL GitHub opcional), no entrada para ejecución de comandos ni path arbitrario.
+1. **Descubrimiento de archivos Markdown** en `workflows/*.md`, `skills/*/SKILL.md` y `templates/*.md`; no mantener catálogo JSON/CSV paralelo. El orden de los seis workflows es estable y explícito para la UI, pero existencia y descripciones salen de los Markdown.
+2. `continue` es predeterminado. Menú legible con descripción y acceso fácil a skills y templates; combinación explícita, no autoorquestación opaca. `--prototype` es un **atajo**, no un séptimo workflow.
+3. `--workflow`, `--skill`, `--template`, `--locator`, `--list`, `--prototype`, `--help`; combinaciones incompatibles o desconocidas fallan con mensaje claro y exit code distinto de cero. `--locator` es texto contextual validado (issue/PR/URL GitHub opcional), no entrada para ejecución de comandos ni path arbitrario.
 4. Salida estándar: **prompt corto y copiable** con rutas relativas verificadas a los Markdown seleccionados y locator opcional. También se puede imprimir `Modo directo: lee workflows/…` para entornos sin Python.
 5. **Sin efectos laterales:** no abre archivos para edición, no lanza agente, no hace checkout, no ejecuta workflows, no llama GitHub ni modifica archivos. Rechaza traversal/symlinks fuera de raíz y no ejecuta código derivado del Markdown.
 6. El selector es **parte obligatoria del paquete y debe tener pruebas**. El uso del selector por un agente no es obligatorio: el fallback Markdown preserva portabilidad y cold start.
 
 El terminal puede agregar UX simple (búsqueda de nombre o filtros), siempre que no introduzca dependencias, tiempo de arranque innecesario, configuración o permisos.
 
-## 7. Diez templates livianos
+## 7. Catorce templates livianos
 
 **Todos se distribuyen**, pero se llenan **solo cuando producen un artefacto útil**:
 
@@ -148,8 +152,19 @@ El terminal puede agregar UX simple (búsqueda de nombre o filtros), siempre que
 | `handoff.md` | Cold start entre sesiones/agentes: refs vivas, hechos, pendientes |
 | `release.md` | Readiness y checklist de acciones de riesgo; nunca autorización implícita |
 | `dogfood.md` | Datos observados de v3 vs benchmark comparable v2 |
+| `merge.md` | Readiness y mensaje de merge; acción y confirmación separadas |
+| `close.md` | Readiness y mensaje para cerrar la unidad existente |
+| `comment.md` | Avance, bloqueo, corrección o readiness en issue/PR |
+| `review-comment.md` | Finding o respuesta de corrección en PR/hilo existente |
 
 Los campos irrelevantes se omiten; indicar `no ejecutado` o `sin evidencia` en vez de inventar. Evitar secciones kilométricas, recibos y múltiples reportes para un mismo cambio. No usar templates como sustituto de leer el código/diff real.
+
+## 7.1 Garantías operativas compartidas
+
+- **Cold start:** con solo el repositorio identificado, inspeccionar instrucciones y fuentes GitHub vivas relevantes: issues, PRs, commits, diffs, checks, findings y blockers. Identificar objetivo y siguiente paso sin historial; solicitar como máximo un locator primario solo si hay ambigüedad material que no se puede resolver con evidencia. Si no hay acceso o fuentes suficientes, informar el límite y continuar lo seguro.
+- **Respuestas comunes:** usar según el resultado [Ejecución](../templates/execution.md), [Review](../templates/review.md) o [Decisión pendiente](../templates/decision.md): resultado y validación; findings con ubicación, impacto y evidencia; o acción bloqueada, hechos, opciones y trabajo seguro, respectivamente. Aplicar criterios idénticos de evidencia y veracidad en terminal y browser; respuestas breves por defecto, sin generar un informe por paso.
+- **Trazabilidad y continuidad:** conservar relaciones verificables entre issue, PR, commits, diff, checks, findings, decisiones y correcciones cuando existan. Reutilizar la misma unidad y verificar el resultado de acciones remotas realmente ejecutadas. El handoff mínimo recupera objetivo, estado, referencias vivas, validaciones, blockers materiales y próxima acción segura. Persistir un resumen en el issue/PR existente solo cuando aporte contexto difícil de recuperar, esté autorizado y no duplique comentarios.
+- **Permisos:** los templates no autorizan acciones; separar preparación, ejecución y comprobación. Detener exclusivamente la acción sensible sin permiso y continuar trabajo seguro ante incertidumbre secundaria.
 
 ## 8. Autonomía, evidencia y permisos
 
@@ -163,7 +178,7 @@ Los campos irrelevantes se omiten; indicar `no ejecutado` o `sin evidencia` en v
 - Secretos: nunca mostrar sus valores ni volcados de entorno; usar `[REDACTED]` y reportar ruta/nombre de variable/tipo de riesgo únicamente. Para web/API considerar riesgos OWASP aplicables.
 - GitHub: un issue/PR por outcome si aporta trazabilidad; un blocker en review se corrige en **el mismo PR**. No falsificar aprobaciones ni inventar estado remoto.
 
-**Observación actual del repositorio objetivo al preparar el borrador:** GitHub reportó `public`, `main`, únicamente `README.md` y sin PR. Revalidar antes de escribir. El handoff **prefiere privado inicialmente**; si continúa público y no existe autorización explícita para publicar contenido, el agente puede trabajar y probar localmente, pero no hacer push ni crear PR remoto del MVP. No cambiar visibilidad desde este encargo.
+**Repositorio público autorizado:** el PM autoriza desarrollar y publicar el código y documentación del MVP en `codefusion-repo/project-os-v3`, incluido push y draft PR. La visibilidad pública por sí sola no bloquea estas acciones. No incluir secretos ni datos privados; merge, release, deploy y cambios sensibles siguen sujetos a autorización específica.
 
 ## 9. Adaptadores por superficie
 
@@ -175,12 +190,14 @@ Otros agentes: Markdown directo. Añadir adapter cuando una diferencia real lo e
 
 ## 10. Validación mínima y aceptación del MVP
 
-- Existencia y enlaces correctos de **6 workflows, 9 skills, 10 templates, 2 adapters, selector y tests**, además de `AGENTS.md`, `PROJECT_OS.md`, `README.md`, esta spec y `docs/ADOPTION.md`.
+- Existencia y enlaces correctos de **6 workflows, 9 skills, 14 templates, 2 adapters, selector y tests**, además de `AGENTS.md`, `PROJECT_OS.md`, `README.md`, esta spec y `docs/ADOPTION.md`.
 - `tools/select.py`: menú default, `--list`, selección simple/combinada, `--prototype`, errores, locator, discovery desde Markdown y protección de rutas. Pruebas automatizadas stdlib (`unittest`), sin red ni writes de producción.
 - Pruebas de estructura/referencias Markdown y revisión humana de legibilidad; **no** tests frágiles de wording.
 - Ejemplo documentado y reproducible de inicio `continue`, de prototipo rápido y de review. Se puede usar el kit leyendo los Markdown sin Python; Python se usa para el selector entregado.
-- Cold start en nuevo chat: identifica repo/issue/PR y trabajo siguiente desde fuentes vivas, no historial del chat.
-- Agente terminal autorizado: tarea normal → diff validado → commit → **un draft PR**, y corrección de findings en mismo PR. Si el PR remoto se bloquea por visibilidad/permiso, reportarlo sin fingir aceptación completa.
+- Un chat nuevo recibe solo el repositorio y recupera el trabajo relevante desde GitHub; otro agente retoma sin repetir preguntas respondibles desde evidencia. Verificar el objetivo, referencias, checks, blockers y siguiente acción; si faltan fuentes, registrar el límite.
+- Terminal y browser chat aplican los mismos formatos y criterios de evidencia con sus capacidades reales; una acción sensible no autorizada se detiene sin bloquear el resto del trabajo.
+- Selector interactivo: workflow y skills producen prompt reutilizable; `continue` es default y Markdown directo sigue disponible.
+- Agente terminal autorizado: tarea normal → diff validado → commit → **un draft PR**, y corrección de findings en mismo PR. Si falta capacidad o permiso para una acción remota, reportarlo sin fingir aceptación completa.
 - No inventar test/permiso/estado; no realizar acciones de riesgo no autorizadas; inspeccionar riesgos del cambio.
 
 **Criterio para empezar dogfood:** selector y biblioteca funcionan, Markdown directo funciona, trazabilidad/cold start están documentados y la implementación terminal tiene validación verificable. **No declarar el MVP probado antes del proyecto piloto.**

@@ -7,12 +7,12 @@ Recuperar contexto suficiente para actuar sin depender del historial del chat.
 ## Cuándo usar
 Cold start, cambio de sesión o continuación de un issue/PR.
 ## Ruta rápida
-1. Identifica repo, objetivo y restricciones desde la petición y fuentes accesibles.
-2. Inspecciona instrucciones, rama, cambios, archivos y referencias pertinentes; consulta issue/PR y checks vivos si están disponibles.
-3. Distingue hechos, incertidumbres y trabajo pendiente; sigue con el siguiente paso seguro.
+1. Con solo el repo identificado, inspecciona instrucciones y fuentes accesibles; recupera objetivo y restricciones sin historial del chat.
+2. Consulta issues, PRs, commits, diffs, checks, findings y blockers relevantes en GitHub si está disponible; inspecciona rama y cambios locales cuando existan.
+3. Reúne objetivo, estado, refs, validaciones, blockers y próximo paso seguro; continúa sin repetir preguntas respondibles desde evidencia.
 ## Evidencia y validación
 Cita refs, estado y checks observados; no afirmes estado remoto sin consultarlo. Skills sugeridas: [repo-context](../skills/repo-context/SKILL.md), [github-traceability](../skills/github-traceability/SKILL.md).
 ## Salida
 Estado actual, evidencia, limitaciones y próximo paso o resultado realizado.
 ## Escalación localizada
-Pide solo el dato imprescindible que no puedas descubrir o autorización para una acción sensible; continúa lo demás.
+Pide como máximo un locator primario si existe ambigüedad material no resoluble; explica falta de acceso y continúa lo seguro. Detén solo la acción sensible sin autorización.

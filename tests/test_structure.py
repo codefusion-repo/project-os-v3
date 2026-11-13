@@ -14,7 +14,7 @@ TEMPLATES = {'task', 'issue', 'pull-request', 'review', 'execution', 'decision',
 class Structure(unittest.TestCase):
     def test_required_files(self):
         for path in ['AGENTS.md', 'PROJECT_OS.md', 'README.md', 'docs/V3_SPEC.md',
-                     'docs/ADOPTION.md', 'adapters/terminal-agent.md', 'adapters/browser-chat.md',
+                     'docs/ADOPTION.md', 'docs/IMPLEMENTATION_TASK.md', 'adapters/terminal-agent.md', 'adapters/browser-chat.md',
                      'tools/select.py', 'tests/test_select.py', 'tests/test_structure.py']:
             self.assertTrue((ROOT / path).is_file(), path)
         self.assertEqual({p.stem for p in (ROOT / 'workflows').glob('*.md')}, WORKFLOWS)
@@ -32,6 +32,13 @@ class Structure(unittest.TestCase):
             content = path.read_text()
             for heading in ('Para qué sirve', 'Cuándo conviene', 'Entradas mínimas', 'Procedimiento concreto', 'Validación y salida', 'Riesgos/limitaciones'):
                 self.assertIn('## ' + heading, content, str(path))
+
+    def test_shared_response_formats_are_linked_from_both_adapters(self):
+        shared = (ROOT / 'PROJECT_OS.md').read_text()
+        for name in ('execution', 'review', 'decision'):
+            self.assertIn(f'templates/{name}.md', shared)
+        for adapter in ('terminal-agent.md', 'browser-chat.md'):
+            self.assertIn('../PROJECT_OS.md', (ROOT / 'adapters' / adapter).read_text())
 
     def test_relative_markdown_links(self):
         for path in ROOT.rglob('*.md'):
