@@ -50,6 +50,6 @@ La decisión posterior del PM sustituye el orden original: seleccionar operació
 
 Instalar una vez, adaptar cada proyecto una vez y utilizar el wizard diariamente. No copiar el kit ni mantener perfiles centrales. `--project` selecciona explícitamente el proyecto o workspace; configuraciones anidadas incompatibles no se fusionan. El wizard protege y administra configuración y prompts locales; el agente adapta los archivos versionados y registra la trazabilidad autorizada. Cada repositorio fija un SHA verificable en su `AGENTS.md`. El selector utiliza documentos de ese commit mediante Git y no presenta archivos locales alterados como equivalentes. El SHA objetivo de un encargo de adopción se confirma también contra el repositorio canónico; si no puede verificarse, se prepara únicamente un borrador marcado como no verificado, que no permite fijar el SHA sin confirmación. La seguridad y la protección antes de publicar son transversales. Véanse [especificación](V3_SPEC.md) y [adopción](ADOPTION.md).
 
-## Prompt autocontenido y breve
+## Prompt acotado
 
 El selector produce un único prompt con tarea, contexto, versión, límites y pasos esenciales. No copia el kit completo. El agente verifica y recupera las instrucciones aplicables y reporta cualquier límite de acceso.

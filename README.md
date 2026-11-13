@@ -36,7 +36,7 @@ project-os-v3 --project /ruta/al/proyecto --output-dir /ruta/a/mis-prompts
 
 Antes de guardar, el wizard comprueba las reglas Git efectivas y si existen archivos privados bajo seguimiento. Cuando es seguro, prepara y verifica una exclusión local en Git; el agente debe agregar la exclusión versionada a `.gitignore`. Si no puede proteger el proyecto, conserva la vista previa y solicita un destino externo explícito. Los prompts propios anteriores se reemplazan solo después de escribir el nuevo; archivos ajenos y otros proyectos se conservan. El detector de secretos es heurístico y no sustituye revisar lo que se comparte.
 
-El selector genera un único prompt autocontenido y breve: conserva el contexto del PM y los pasos esenciales para iniciar; señala también los documentos y la versión que el agente debe verificar. No copia el kit completo en el prompt.
+El selector genera un único prompt acotado: conserva el contexto del PM y los pasos esenciales para iniciar; señala también los documentos y la versión que el agente debe verificar. No copia el kit completo en el prompt.
 
 Para usar el selector sin la dependencia opcional: `python3 /ruta/al/kit/tools/select.py --project /ruta/al/proyecto`. Con una terminal que no soporte bracketed paste, usa flags para entrada multilínea.
 

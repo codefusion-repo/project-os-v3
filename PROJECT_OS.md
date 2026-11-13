@@ -21,6 +21,25 @@ Toda implementación, corrección o modificación versionada destinada a integra
 4. Cuando exista issue/PR y la publicación esté autorizada, añade por cada ejecución material un comentario nuevo en la unidad existente: resultado, cambio o intento, SHA si existe, tests/checks observados —incluidas fallas—, riesgos o bloqueos y siguiente paso. Incluye intentos fallidos; verifica que el comentario se publicó. No edites ni reemplaces comentarios anteriores, ni uses la descripción del PR como sustituto del historial. Evita duplicar el mismo resultado; una nueva ejecución material requiere una entrada nueva. Si no hay acceso o autorización, prepara el comentario como borrador e informa trazabilidad pendiente.
 5. Una consulta o review de solo lectura no crea commits artificiales. Solo un experimento expresamente local y descartable puede terminar sin publicación; si no tiene repositorio, tampoco exige consultas GitHub; la excepción no aplica a cambios destinados a integrarse. Registra decisiones y bloqueos materiales en la entrada nueva autorizada; evita comentarios redundantes.
 
+## Selección de templates
+
+Cuando debas producir un artefacto, evalúa y consulta el template pertinente si aporta valor. Adapta su estructura a la evidencia y al resultado solicitado: omite campos irrelevantes o sin datos; no inventes resultados ni fuerces formularios. Si no puedes acceder al template, informa el límite y entrega lo seguro con la evidencia disponible. Preparar un borrador no autoriza publicarlo ni ejecutar la acción.
+
+- [task](templates/task.md): concretar una tarea o resultado verificable.
+- [issue](templates/issue.md): preparar un issue cuando aporta valor y está autorizado.
+- [pull-request](templates/pull-request.md): describir un PR con cambios y validación reales.
+- [review](templates/review.md): presentar findings de un PR o alcance revisado.
+- [review-comment](templates/review-comment.md): preparar un comentario de review o respuesta con ubicación y SHA verificados.
+- [execution](templates/execution.md): informar cambios, comandos y trazabilidad de una ejecución.
+- [decision](templates/decision.md): explicar una decisión material bloqueada y el trabajo que puede continuar.
+- [prototype](templates/prototype.md): documentar hipótesis, slice y validación observada.
+- [handoff](templates/handoff.md): facilitar continuidad con referencias y estado vivos.
+- [release](templates/release.md): preparar evidencia de release-readiness sin ejecutar una release.
+- [dogfood](templates/dogfood.md): registrar datos observados de un piloto realmente ejecutado.
+- [merge](templates/merge.md): preparar contenido de merge sin inferir autorización para ejecutarlo.
+- [close](templates/close.md): preparar contenido de cierre sin inferir autorización para cerrar.
+- [comment](templates/comment.md): preparar una entrada de ejecución en la unidad existente.
+
 ## Respuesta y continuidad
 
 Usa una respuesta breve en el formato que corresponda, sin exigir un reporte por paso:

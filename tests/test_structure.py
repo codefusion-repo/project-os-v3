@@ -41,6 +41,18 @@ class Structure(unittest.TestCase):
         for adapter in ('terminal-agent.md', 'browser-chat.md'):
             self.assertIn('../PROJECT_OS.md', (ROOT / 'adapters' / adapter).read_text())
 
+    def test_adapters_can_find_all_templates_and_do_not_require_invented_fields(self):
+        shared = (ROOT / 'PROJECT_OS.md').read_text()
+        mapping = shared.split('## Selección de templates', 1)[1].split('## Respuesta y continuidad', 1)[0]
+        for name in TEMPLATES:
+            self.assertIn(f'templates/{name}.md', mapping, name)
+        for adapter in ('terminal-agent.md', 'browser-chat.md'):
+            content = (ROOT / 'adapters' / adapter).read_text().lower()
+            self.assertIn('../project_os.md#selección-de-templates', content)
+            self.assertIn('evidencia real', content)
+            self.assertRegex(content, r'om(?:ite|itir)')
+            self.assertRegex(content, r'(?:no|nunca) invent')
+
     def test_direct_markdown_bootstrap_links_both_base_skills(self):
         for filename in ('AGENTS.md', 'PROJECT_OS.md'):
             content = (ROOT / filename).read_text()
