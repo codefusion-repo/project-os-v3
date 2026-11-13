@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Prepare and safely persist a Project OS prompt using only Python stdlib."""
+"""Asistente local de prompts Project OS; no ejecuta operaciones ni usa la red."""
 import argparse
 import json
 import os
@@ -10,16 +10,28 @@ import uuid
 from pathlib import Path
 from urllib.parse import urlsplit
 
+# The script is named select.py; do not shadow Python's select extension when
+# optional terminal libraries import asyncio/selectors from this entry point.
+if sys.path and Path(sys.path[0]).resolve() == Path(__file__).resolve().parent:
+    sys.path.pop(0)
+
 try:
-    import readline  # Enable standard terminal line editing when available.
+    import readline
 except ImportError:
     readline = None
 
+try:
+    from prompt_toolkit import prompt as terminal_prompt
+    from prompt_toolkit.completion import Completer, Completion
+except ImportError:
+    terminal_prompt = None
+    Completer = object
+
 ROOT = Path(__file__).resolve().parent.parent
-DEFAULT_OUTPUT = ROOT / '.project-os' / 'prompts'
-WORKFLOW_ORDER = ('continue', 'create', 'implement', 'review', 'close', 'release')
-BASE_SKILLS = ('repo-context', 'github-traceability')
-INPUT_LABELS = {
+DEFAULT_DIR = ROOT / '.project-os' / 'prompts'
+BASE = ('repo-context', 'github-traceability')
+ORDER = ('continue', 'create', 'implement', 'review', 'close', 'release')
+LABELS = {
     'continue': 'Fuente de continuación o último reporte',
     'create': 'Idea o requerimiento',
     'implement': 'Especificación, issue o reporte de corrección',
@@ -27,12 +39,12 @@ INPUT_LABELS = {
     'close': 'Resultado de validación o QA',
     'release': 'Evidencia de release-readiness',
 }
-UNIT_WORKFLOWS = frozenset(('continue', 'implement', 'review', 'close', 'release'))
+UNIT_OPERATIONS = frozenset(('continue', 'implement', 'review', 'close', 'release'))
 NAME = re.compile(r'[a-z0-9]+(?:-[a-z0-9]+)*\Z')
 OWNED_NAME = re.compile(r'project-os-prompt-[0-9a-f]{32}\.md\Z')
 MARKER = '<!-- project-os-v3-selector: generated-prompt v1 -->'
-
-# Recognize common credential shapes; this is intentionally not an exhaustive scanner.
+COMPLETIONS = ()
+COMPLETION_DESCRIPTIONS = {}
 SECRET_PATTERNS = tuple(re.compile(pattern, re.I) for pattern in (
     r'-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----',
     r'\b(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,})\b',
@@ -45,106 +57,50 @@ SECRET_PATTERNS = tuple(re.compile(pattern, re.I) for pattern in (
 ))
 
 
-class SensitiveInput(ValueError):
+class InputError(ValueError):
     pass
 
 
-def require_safe(*values):
+class Cancel(Exception):
+    pass
+
+
+class Back(Exception):
+    pass
+
+
+def check_sensitive(*values):
     if any(pattern.search(str(value)) for value in values if value is not None for pattern in SECRET_PATTERNS):
-        raise SensitiveInput('Se detectó posible información sensible; retírala antes de continuar.')
+        raise InputError('Se detectó posible información sensible; retírala antes de continuar.')
 
 
-class SafeParser(argparse.ArgumentParser):
-    def error(self, message):
-        # argparse may include an unrecognized user-provided argument in its error.
-        if message.startswith('unrecognized arguments:') or any(p.search(message) for p in SECRET_PATTERNS):
-            message = 'argumentos inválidos o información sensible detectada; consulta --help'
-        super().error(message)
-
-
-def inside_root(path):
-    try:
-        path.resolve(strict=True).relative_to(ROOT.resolve(strict=True))
-        return path.is_file()
-    except (ValueError, OSError, RuntimeError):
-        return False
-
-
-def read_source(path):
-    if not inside_root(path):
-        raise ValueError(f'fuente no segura o inexistente: {path}')
-    return path.read_text(encoding='utf-8')
-
-
-def description(path):
-    for line in read_source(path).splitlines():
-        line = line.strip()
-        if line and not line.startswith(('#', '<!--')):
-            return line
-    return 'Sin descripción.'
-
-
-def discover():
-    workflows, skills, templates = {}, {}, {}
-    for path in (ROOT / 'workflows').glob('*.md'):
-        if NAME.fullmatch(path.stem) and inside_root(path):
-            workflows[path.stem] = path
-    for path in (ROOT / 'skills').glob('*/SKILL.md'):
-        if NAME.fullmatch(path.parent.name) and inside_root(path):
-            skills[path.parent.name] = path
-    for path in (ROOT / 'templates').glob('*.md'):
-        if NAME.fullmatch(path.stem) and inside_root(path):
-            templates[path.stem] = path
-    return workflows, skills, templates
-
-
-def ordered(items):
-    return sorted(items, key=lambda n: (WORKFLOW_ORDER.index(n) if n in WORKFLOW_ORDER else len(WORKFLOW_ORDER), n))
-
-
-def locator_value(value):
-    value = value.strip()
-    try:
-        require_safe(value)
-    except SensitiveInput as exc:
-        raise argparse.ArgumentTypeError(str(exc)) from None
-    if re.fullmatch(r'#?[1-9][0-9]*', value):
-        return value
-    if value.startswith('https://'):
-        url = urlsplit(value)
-        if (url.netloc.lower() == 'github.com' and not url.query and not url.fragment and
-                re.fullmatch(r'/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/(?:issues|pull)/[1-9][0-9]*/?', url.path)):
-            return value
-    raise argparse.ArgumentTypeError('locator inválido: usa número, #número o URL de issue/PR de github.com')
-
-
-def output_path(value):
-    require_safe(value)
+def safe_path(value):
+    check_sensitive(value)
     path = Path(value).expanduser()
     if '..' in path.parts:
-        raise ValueError('la carpeta de salida no admite ..')
+        raise InputError('La carpeta no puede contener ..')
     return Path(os.path.abspath(path))
 
 
-def open_output_dir(path, create=True):
-    """Open each component without following symlinks; optionally create directories."""
-    path = output_path(path)
-    if not hasattr(os, 'O_NOFOLLOW') or not hasattr(os, 'O_DIRECTORY'):
-        raise OSError('la plataforma no permite verificar directorios sin seguir symlinks')
+def directory_fd(value, create=False):
+    """Open directory components without following symlinks."""
+    path = safe_path(value)
+    if not hasattr(os, 'O_DIRECTORY') or not hasattr(os, 'O_NOFOLLOW'):
+        raise OSError('La plataforma no permite comprobar enlaces simbólicos.')
     flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
     fd = os.open(path.anchor, flags)
     try:
-        for part in path.parts[1:]:
+        for component in path.parts[1:]:
             try:
-                child = os.open(part, flags, dir_fd=fd)
+                child = os.open(component, flags, dir_fd=fd)
             except FileNotFoundError:
                 if not create:
                     raise
                 try:
-                    os.mkdir(part, mode=0o700, dir_fd=fd)
+                    os.mkdir(component, 0o700, dir_fd=fd)
                 except FileExistsError:
                     pass
-                child = os.open(part, flags, dir_fd=fd)
+                child = os.open(component, flags, dir_fd=fd)
             os.close(fd)
             fd = child
         return fd
@@ -154,20 +110,76 @@ def open_output_dir(path, create=True):
 
 
 def repo_value(value):
-    require_safe(value)
+    check_sensitive(value)
     value = value.strip()
     if value == '-':
         return ''
     parts = value.split('/')
     if (len(parts) != 2 or not re.fullmatch(r'[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?', parts[0])
             or not re.fullmatch(r'[A-Za-z0-9_.-]{1,100}', parts[1]) or parts[1] in ('.', '..')):
-        raise ValueError('repositorio inválido: usa owner/repo o - para un experimento sin repositorio')
+        raise InputError('Usa owner/repo, o - para un experimento local sin repositorio.')
     return value
+
+
+def locator_value(value):
+    check_sensitive(value)
+    value = value.strip()
+    if not value or re.fullmatch(r'#?[1-9][0-9]*', value):
+        return value
+    url = urlsplit(value)
+    if (url.scheme == 'https' and url.netloc.lower() == 'github.com' and not url.query and not url.fragment
+            and re.fullmatch(r'/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/(?:issues|pull)/[1-9][0-9]*/?', url.path)):
+        return value
+    raise InputError('Usa número, #número o URL de issue/PR de github.com.')
+
+
+def source(path):
+    try:
+        path.resolve(strict=True).relative_to(ROOT.resolve(strict=True))
+        if path.is_file():
+            return path.read_text(encoding='utf-8')
+    except (OSError, ValueError, RuntimeError):
+        pass
+    raise InputError('No se pudo leer un documento del kit de forma segura.')
+
+
+def discover():
+    operations, skills, templates = {}, {}, {}
+    for path in (ROOT / 'workflows').glob('*.md'):
+        if NAME.fullmatch(path.stem):
+            try:
+                source(path)
+            except InputError:
+                continue
+            operations[path.stem] = path
+    for path in (ROOT / 'skills').glob('*/SKILL.md'):
+        if NAME.fullmatch(path.parent.name):
+            try:
+                source(path)
+            except InputError:
+                continue
+            skills[path.parent.name] = path
+    for path in (ROOT / 'templates').glob('*.md'):
+        if NAME.fullmatch(path.stem):
+            try:
+                source(path)
+            except InputError:
+                continue
+            templates[path.stem] = path
+    return operations, skills, templates
+
+
+def description(path):
+    for line in source(path).splitlines():
+        line = line.strip()
+        if line and not line.startswith(('#', '<!--')):
+            return line
+    return 'Sin descripción.'
 
 
 def load_config():
     try:
-        fd = open_output_dir(ROOT / '.project-os', create=False)
+        fd = directory_fd(ROOT / '.project-os')
     except FileNotFoundError:
         return {}
     try:
@@ -175,48 +187,45 @@ def load_config():
             config_fd = os.open('config.json', os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=fd)
         except FileNotFoundError:
             return {}
-        with os.fdopen(config_fd, encoding='utf-8') as file:
-            if not stat.S_ISREG(os.fstat(file.fileno()).st_mode):
-                raise ValueError('config.json no es un archivo regular')
-            data = json.load(file)
-        if not isinstance(data, dict) or set(data) - {'repo', 'output_dir'}:
-            raise ValueError('config.json contiene preferencias desconocidas')
-        if any(not isinstance(value, str) for value in data.values()):
-            raise ValueError('config.json contiene valores inválidos')
+        with os.fdopen(config_fd, encoding='utf-8') as stream:
+            if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
+                raise InputError('La configuración local no es un archivo regular.')
+            data = json.load(stream)
+        if not isinstance(data, dict) or set(data) - {'repo', 'output_dir'} or any(not isinstance(v, str) for v in data.values()):
+            raise InputError('La configuración local contiene valores no admitidos.')
         if data.get('repo'):
             data['repo'] = repo_value(data['repo'])
         if data.get('output_dir'):
-            data['output_dir'] = str(output_path(data['output_dir']))
+            data['output_dir'] = str(safe_path(data['output_dir']))
         return data
     finally:
         os.close(fd)
 
 
-def save_config(repo, destination):
-    """Persist only non-sensitive preferences, atomically and without following symlinks."""
-    data = {'output_dir': str(output_path(destination))}
+def save_config(repo, folder):
+    prefs = {'output_dir': str(safe_path(folder))}
     if repo:
-        data['repo'] = repo_value(repo)
-    fd = open_output_dir(ROOT / '.project-os')
-    temp_name = '.config-tmp-' + uuid.uuid4().hex
+        prefs['repo'] = repo_value(repo)
+    fd = directory_fd(ROOT / '.project-os', create=True)
+    temporary = '.config-' + uuid.uuid4().hex
     try:
         try:
-            current = os.stat('config.json', dir_fd=fd, follow_symlinks=False)
-            if not stat.S_ISREG(current.st_mode):
-                raise ValueError('config.json no es un archivo regular seguro')
+            existing = os.stat('config.json', dir_fd=fd, follow_symlinks=False)
+            if not stat.S_ISREG(existing.st_mode):
+                raise InputError('La configuración local no es un archivo regular seguro.')
         except FileNotFoundError:
             pass
-        temp_fd = os.open(temp_name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=fd)
+        handle = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=fd)
         try:
-            with os.fdopen(temp_fd, 'w', encoding='utf-8') as file:
-                json.dump(data, file, ensure_ascii=False, indent=2)
-                file.write('\n')
-                file.flush()
-                os.fsync(file.fileno())
-            os.replace(temp_name, 'config.json', src_dir_fd=fd, dst_dir_fd=fd)
+            with os.fdopen(handle, 'w', encoding='utf-8') as stream:
+                json.dump(prefs, stream, ensure_ascii=False, indent=2)
+                stream.write('\n')
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(temporary, 'config.json', src_dir_fd=fd, dst_dir_fd=fd)
         except BaseException:
             try:
-                os.unlink(temp_name, dir_fd=fd)
+                os.unlink(temporary, dir_fd=fd)
             except FileNotFoundError:
                 pass
             raise
@@ -224,450 +233,473 @@ def save_config(repo, destination):
         os.close(fd)
 
 
-def owned_files(dir_fd):
-    """Only regular files with both the reserved name and exact first-line marker."""
-    result = []
-    for name in os.listdir(dir_fd):
+def owned_files(fd):
+    found = []
+    for name in os.listdir(fd):
         if not OWNED_NAME.fullmatch(name):
             continue
         try:
-            fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=dir_fd)
-            with os.fdopen(fd, 'rb') as file:
-                info = os.fstat(file.fileno())
-                if stat.S_ISREG(info.st_mode) and file.readline(256).rstrip(b'\n') == MARKER.encode():
-                    result.append((name, info.st_dev, info.st_ino))
+            handle = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=fd)
+            with os.fdopen(handle, 'rb') as stream:
+                info = os.fstat(stream.fileno())
+                if stat.S_ISREG(info.st_mode) and stream.readline(256).rstrip(b'\n') == MARKER.encode():
+                    found.append((name, info.st_dev, info.st_ino))
         except OSError:
             continue
-    return result
+    return found
 
 
-def save_prompt(path, content):
-    """Atomic new file first; delete only verified previous owned files afterward."""
-    path = output_path(path)
-    dir_fd = open_output_dir(path)
-    temp_name = '.project-os-tmp-' + uuid.uuid4().hex
+def save_prompt(folder, content):
+    folder = safe_path(folder)
+    check_sensitive(content)
+    fd = directory_fd(folder, create=True)
+    temporary = '.prompt-' + uuid.uuid4().hex
     name = 'project-os-prompt-' + uuid.uuid4().hex + '.md'
     try:
-        old = owned_files(dir_fd)
-        fd = os.open(temp_name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=dir_fd)
+        previous = owned_files(fd)
+        handle = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=fd)
         try:
-            with os.fdopen(fd, 'w', encoding='utf-8', newline='\n') as file:
-                file.write(content)
-                file.flush()
-                os.fsync(file.fileno())
-            # A hard-link publishes the fully written inode atomically without
-            # ever replacing an unrelated file, even on a name collision.
-            os.link(temp_name, name, src_dir_fd=dir_fd, dst_dir_fd=dir_fd, follow_symlinks=False)
-            os.unlink(temp_name, dir_fd=dir_fd)
+            with os.fdopen(handle, 'w', encoding='utf-8', newline='\n') as stream:
+                stream.write(content)
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.link(temporary, name, src_dir_fd=fd, dst_dir_fd=fd, follow_symlinks=False)
+            os.unlink(temporary, dir_fd=fd)
         except BaseException:
             try:
-                os.unlink(temp_name, dir_fd=dir_fd)
+                os.unlink(temporary, dir_fd=fd)
             except FileNotFoundError:
                 pass
             raise
         failures = []
-        still_owned = set(owned_files(dir_fd))
-        for old_name, device, inode in old:
+        still_owned = set(owned_files(fd))
+        for old_name, device, inode in previous:
             if (old_name, device, inode) not in still_owned:
                 continue
             try:
-                current = os.stat(old_name, dir_fd=dir_fd, follow_symlinks=False)
-                if stat.S_ISREG(current.st_mode) and (current.st_dev, current.st_ino) == (device, inode):
-                    os.unlink(old_name, dir_fd=dir_fd)
+                info = os.stat(old_name, dir_fd=fd, follow_symlinks=False)
+                if stat.S_ISREG(info.st_mode) and (info.st_dev, info.st_ino) == (device, inode):
+                    os.unlink(old_name, dir_fd=fd)
             except FileNotFoundError:
                 continue
-            except OSError as exc:
+            except OSError:
                 failures.append(old_name)
-        return path / name, failures
+        return folder / name, failures
     finally:
-        os.close(dir_fd)
+        os.close(fd)
 
 
-def show(title, names, items):
-    print(title)
-    for i, name in enumerate(names, 1):
-        print(f'  {i}. {name} — {description(items[name])}')
-
-
-class Back(Exception):
-    pass
-
-
-class Preview(Exception):
-    pass
-
-
-def choose(prompt, options, items, title, default=None, multiple=False, all_options=None, clear_value=None):
-    visible = options
-    while True:
-        raw = input(prompt).strip()
-        require_safe(raw)
-        if raw == '/cancelar':
-            raise KeyboardInterrupt
-        if raw == '/volver':
-            raise Back
-        if raw == '/preview':
-            raise Preview
-        if raw == '/limpiar':
-            return [] if multiple else clear_value
-        if raw == '/todas' and all_options is not None:
-            options = all_options
-            visible = options
-            show(title, visible, items)
-            continue
-        if raw.startswith('/'):
-            query = raw[1:].strip().casefold()
-            visible = [n for n in options if query in n.casefold() or query in description(items[n]).casefold()]
-            show(title, visible, items)
-            if not visible:
-                print('Sin coincidencias; escribe / para ver todas.')
-            continue
-        if not raw:
-            return (default if default is not None else []) if multiple else default
-        if multiple and raw == "-":
-            return []
-        result = []
-        for token in raw.split(',') if multiple else [raw]:
-            token = token.strip()
-            if token.isdecimal() and 1 <= int(token) <= len(visible):
-                token = visible[int(token) - 1]
-            if token not in options:
-                print('Selección desconocida. Usa nombre, número o /texto para filtrar.')
-                break
-            if token not in result:
-                result.append(token)
-        else:
-            return result if multiple else result[0]
-
-
-def suggested_skills(workflow, skills):
-    found = re.findall(r'\.\./skills/([a-z0-9-]+)/SKILL\.md', read_source(workflow))
-    return list(dict.fromkeys(name for name in found if name in skills))
-
-
-def reference_warning(repo, locator, *texts):
-    """Flag explicit PR disagreements without assuming an issue and PR share a number."""
+def reference_warning(repo, locator, *values):
     if not locator:
         return ''
-    parsed = urlsplit(locator)
-    segments = parsed.path.strip('/').split('/') if parsed.scheme else []
-    if len(segments) == 4 and segments[2] == 'issues':
-        return ''  # An issue and its related PR can legitimately differ.
-    expected = segments[3] if len(segments) == 4 else locator.lstrip('#')
-    def same_number(number):
-        return (number.lstrip('0') or '0') == (expected.lstrip('0') or '0')
-    combined = '\n'.join(texts)
-    explicit = re.findall(r'(?i)\b(?:pr|pull\s+request)\s*(?:#|n[úu]m(?:ero)?\.?\s*)?(\d+)\b', combined)
-    urls = re.findall(r'(?i)https://github\.com/([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)/pull/([1-9][0-9]*)', combined)
-    if any(not same_number(number) for number in explicit):
-        return 'Posible inconsistencia: el locator difiere de un PR mencionado; verifica la referencia antes de actuar.'
-    if any(not same_number(number) or (repo and f'{owner}/{name}'.lower() != repo.lower())
-           for owner, name, number in urls):
-        return 'Posible inconsistencia: el locator difiere de un PR mencionado; verifica la referencia antes de actuar.'
-    if len(segments) == 4 and repo and '/'.join(segments[:2]).lower() != repo.lower():
-        return 'Posible inconsistencia: el locator apunta a otro repositorio; verifica la referencia antes de actuar.'
+    parts = urlsplit(locator).path.strip('/').split('/') if locator.startswith('https://') else []
+    if len(parts) == 4 and parts[2] == 'issues':
+        return ''
+    expected = (parts[3] if len(parts) == 4 else locator.lstrip('#')).lstrip('0') or '0'
+    text = '\n'.join(values)
+    numbers = re.findall(r'(?i)\b(?:pr|pull\s+request)\s*(?:#|n[úu]m(?:ero)?\.?\s*)?(\d+)\b', text)
+    urls = re.findall(r'(?i)https://github\.com/([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)/pull/([1-9][0-9]*)', text)
+    if (any((n.lstrip('0') or '0') != expected for n in numbers)
+            or any((n.lstrip('0') or '0') != expected or (repo and f'{o}/{r}'.lower() != repo.lower()) for o, r, n in urls)
+            or (len(parts) == 4 and repo and '/'.join(parts[:2]).lower() != repo.lower())):
+        return 'Posible inconsistencia entre el locator y el PR indicado; verifica antes de actuar.'
     return ''
 
 
-def render(workflow, selected, context, locator, workflows, skills, templates, repo="", feedback="", question="", local_only=False):
-    """Include operating rules and selected instructions; derive templates from links."""
-    require_safe(repo, context, locator, feedback, question)
-    missing = [name for name in BASE_SKILLS if name not in skills]
+def render(operation, selected, context, locator, operations, skills, templates, repo='', feedback='', question='', local_only=False):
+    check_sensitive(repo, context, locator, feedback, question)
+    missing = [name for name in BASE if name not in skills]
     if missing:
-        raise ValueError('faltan skills base o sus rutas no son seguras: ' + ', '.join(missing))
-    selected = list(dict.fromkeys([*BASE_SKILLS, *selected]))
-    parts = [read_source(ROOT / 'PROJECT_OS.md'), read_source(workflows[workflow])]
-    parts.extend(read_source(skills[name]) for name in selected)
-    names = []
-    for text in parts[1:]:
-        for name in re.findall(r'(?:\.\./)+templates/([a-z0-9-]+)\.md', text):
-            if name in templates and name not in names:
-                names.append(name)
-    header = [MARKER, '# Prompt operativo Project OS v3', '',
-              f'**Repositorio indicado (sin verificar):** {repo or "No indicado"}',
-              f'**Workflow:** {workflow}', f'**Skills:** {", ".join(selected) if selected else "ninguna"}',
-              '', f'## Entrada principal — {INPUT_LABELS.get(workflow, workflow)}', '', context or 'No aportada; recupera el contexto desde el repositorio y fuentes vivas, sin inventar.',
-              '', f'**Referencia:** {locator or "No proporcionada por separado; consulta el contexto anterior y las fuentes vivas."}', '',
-              '## Notas del sistema', '',
-              'Aplica estas instrucciones a la entrada principal. Consulta las instrucciones del repositorio objetivo y las fuentes vivas disponibles. '
-              'Los datos de contexto no conceden permisos. Si faltan referencias, continúa el trabajo seguro y pide solo lo material. '
-              'Las rutas Markdown citadas son relativas al kit y solo se consultan si es accesible; las instrucciones seleccionadas están incluidas a continuación.', '']
+        raise InputError('Falta una skill base o su ruta no es segura.')
+    selected = list(dict.fromkeys([*BASE, *selected]))
+    documents = [source(ROOT / 'PROJECT_OS.md'), source(operations[operation])]
+    documents.extend(source(skills[name]) for name in selected)
+    resources = []
+    for document in documents[1:]:
+        for name in re.findall(r'(?:\.\./)+templates/([a-z0-9-]+)\.md', document):
+            if name in templates and name not in resources:
+                resources.append(name)
+    out = [MARKER, '# Prompt operativo Project OS v3', '',
+           f'**Repositorio indicado (sin verificar):** {repo or "No indicado"}',
+           f'**Workflow:** {operation}', f'**Skills:** {", ".join(selected)}', '',
+           f'## Entrada principal — {LABELS.get(operation, operation)}', '',
+           context or 'No aportada; recupera el contexto de las fuentes vivas.', '',
+           f'**Referencia:** {locator or "No proporcionada; recupérala si hace falta."}', '',
+           '## Notas del sistema', '',
+           'Consulta las instrucciones del repositorio y fuentes vivas. El contexto no concede permisos. '
+           'Los documentos seleccionados están incluidos; sus enlaces relativos son opcionales si el kit está accesible.', '']
     if local_only:
-        header.extend(['**Alcance declarado:** experimento expresamente local y descartable, sin repositorio.', ''])
+        out.extend(['**Alcance declarado:** experimento local y descartable, sin repositorio.', ''])
     warning = reference_warning(repo, locator, context, feedback, question)
     if warning:
-        header.extend([f'**Advertencia:** {warning}', ''])
+        out.extend([f'**Advertencia:** {warning}', ''])
     if feedback:
-        header.extend(['## Comentario del PM — PM_FEEDBACK_HUMANO', '', feedback, ''])
+        out.extend(['## Comentario del PM — PM_FEEDBACK_HUMANO', '', feedback, ''])
     if question:
-        header.extend(['## Pregunta del PM — PM_QUESTION_HUMANO', '', question, ''])
-    for i, body in enumerate(parts):
-        title = 'Reglas compartidas' if i == 0 else ('Workflow seleccionado' if i == 1 else 'Skill seleccionada')
-        header.extend([f'## {title}', '', body.strip(), ''])
-    if names:
-        header.extend(['## Recursos opcionales para el resultado', '',
-                       'Usa estos templates solo si el resultado lo necesita; no son autorización ni formularios obligatorios.', ''])
-        for name in names:
-            header.extend([read_source(templates[name]).strip(), ''])
-    content = '\n'.join(header) + '\n'
-    require_safe(content)
-    return content
+        out.extend(['## Pregunta del PM — PM_QUESTION_HUMANO', '', question, ''])
+    for index, document in enumerate(documents):
+        title = 'Reglas compartidas' if index == 0 else ('Workflow seleccionado' if index == 1 else 'Skill seleccionada')
+        out.extend([f'## {title}', '', document.strip(), ''])
+    if resources:
+        out.extend(['## Recursos opcionales para el resultado', '',
+                    'Utiliza estos templates solo cuando aporten valor; no conceden permisos.', ''])
+        for name in resources:
+            out.extend([source(templates[name]).strip(), ''])
+    text = '\n'.join(out) + '\n'
+    check_sensitive(text)
+    return text
 
 
-def ask_line(prompt):
-    value = input(prompt).strip()
-    require_safe(value)
-    if value == '/cancelar':
-        raise KeyboardInterrupt
-    if value == '/volver':
-        raise Back
-    if value == '/preview':
-        raise Preview
-    return value
+def prepare_terminal():
+    """Ask compatible terminals to send a paste as a single editing event."""
+    if readline is None:
+        return False
+    try:
+        readline.parse_and_bind('set enable-bracketed-paste on')
+        readline.parse_and_bind('tab: complete')
+        return True
+    except (AttributeError, ValueError):
+        return False
 
 
-def preserve_line(prompt, current):
-    value = ask_line(prompt)
-    if value == '/limpiar':
-        return ''
-    return value if value else current
-
-
-def ask_multiline(label, current=''):
-    print(f'{label} actual:\n{current if current else "(vacío)"}')
-    line = input(f'{label} [Enter: conservar; /limpiar: borrar; /m: varias líneas; /preview]: ')
-    require_safe(line)
-    if line == '/cancelar':
-        raise KeyboardInterrupt
-    if line == '/volver':
-        raise Back
-    if line == '/preview':
-        raise Preview
-    if line == '/limpiar':
-        return ''
-    if not line:
-        return current
-    if line != '/m':
-        return line
-    print('Modo multilínea: escribe cada línea y termina con una línea vacía o un punto solo.')
-    lines = []
+def ask(prompt, current='', allow_back=True, strip=False, editable=False):
+    """Read one logical input. Bracketed paste can contain multiple lines."""
     while True:
-        line = input('> ')
-        require_safe(line)
-        if line == '/cancelar':
-            raise KeyboardInterrupt
-        if line == '/volver':
-            raise Back
-        if line == '/preview':
-            raise Preview
-        if line == '.' or not line:
-            value = '\n'.join(lines) if lines else current
-            require_safe(value)
-            return value
-        lines.append(line)
-
-
-def wizard(workflows, skills, templates, destination, saved_repo):
-    """Navigate the interactive form; choices are not workflow execution state."""
-    names = ordered(workflows)
-    optional_skills = [name for name in sorted(skills) if name not in BASE_SKILLS]
-    repo, workflow, selected, context, locator, feedback, question = saved_repo, 'continue', [], '', '', '', ''
-    local_only = False
-    step = 'repo'
-    if sys.stdin.isatty() and readline is None:
-        print('Aviso: este Python no dispone de readline; la edición con flechas puede no estar disponible.')
-    while True:
+        if terminal_prompt is not None and sys.stdin.isatty() and sys.stdout.isatty():
+            value = terminal_prompt(prompt, default=current if editable else '',
+                                    completer=LiveCompleter() if COMPLETIONS else None,
+                                    complete_while_typing=bool(COMPLETIONS))
+        else:
+            value = input(prompt)
+        value = value.replace('\r\n', '\n').replace('\r', '\n')
         try:
-            if step == 'repo':
-                repo_display = repo or ('sin repo (local descartable)' if local_only else 'sin seleccionar')
-                raw = ask_line(f'Repositorio owner/repo [{repo_display}; -: experimento sin repo]: ')
-                if not raw and not repo and not local_only:
-                    print('Indica owner/repo, o - para un experimento local y descartable sin repo.')
+            check_sensitive(value)
+        except InputError as exc:
+            print(str(exc))
+            continue
+        if value == '/cancelar':
+            raise Cancel
+        if value == '/volver' and allow_back:
+            raise Back
+        if value == '/limpiar':
+            return ''
+        if not value:
+            return current
+        return value.strip() if strip else value
+
+
+def complete_from(candidates, descriptions=None):
+    """Offer name completion in the stdlib terminal editor when available."""
+    global COMPLETIONS, COMPLETION_DESCRIPTIONS
+    COMPLETIONS = tuple(candidates)
+    COMPLETION_DESCRIPTIONS = descriptions or {}
+    if readline is None:
+        return
+    def complete(text, index):
+        matches = [name for name in candidates if name.lower().startswith(text.lower())]
+        return matches[index] if index < len(matches) else None
+    readline.set_completer(complete)
+
+
+class LiveCompleter(Completer):
+    """Live suggestions for the current input, without a parallel catalog."""
+    def get_completions(self, document, complete_event):
+        text = document.text_before_cursor
+        prefix = text.rsplit(',', 1)[-1].lstrip()
+        for name in COMPLETIONS:
+            details = COMPLETION_DESCRIPTIONS.get(name, '')
+            if prefix.casefold() in name.casefold() or prefix.casefold() in details.casefold():
+                yield Completion(name, start_position=-len(prefix), display_meta=details)
+
+
+def clear_completion():
+    global COMPLETIONS, COMPLETION_DESCRIPTIONS
+    COMPLETIONS = ()
+    COMPLETION_DESCRIPTIONS = {}
+    if readline is not None:
+        readline.set_completer(None)
+
+
+def choose_operation(operations, current='continue', session_controls=True):
+    names = sorted(operations, key=lambda name: (ORDER.index(name) if name in ORDER else len(ORDER), name))
+    visible = names
+    print('\n1/3 — Buscar y seleccionar operación')
+    print('Escribe nombre, número o texto para buscar. Enter conserva la operación; /cancelar sale.')
+    if session_controls:
+        print('Usa /repo para cambiar repositorio o /carpeta para cambiar destino.')
+    while True:
+        for index, name in enumerate(visible, 1):
+            print(f'  {index}. {name} — {description(operations[name])}')
+        complete_from(names, {name: description(operations[name]) for name in names})
+        try:
+            query = ask(f'Operación [{current}]: ', current=current, strip=True)
+        finally:
+            clear_completion()
+        if session_controls and query in ('/repo', '/carpeta'):
+            return query
+        if query == '/':
+            visible = names
+            continue
+        if query.isdecimal() and 1 <= int(query) <= len(visible):
+            return visible[int(query) - 1]
+        if query in operations:
+            return query
+        matches = [name for name in names if query.casefold() in name.casefold() or query.casefold() in description(operations[name]).casefold()]
+        if not matches:
+            if session_controls:
+                print('Sin coincidencias: se usará continue y el texto como pregunta del PM.')
+                return ('continue', query)
+            print('Sin coincidencias. Prueba otra búsqueda o / para ver todas.')
+            visible = names
+        else:
+            visible = matches
+
+
+def choose_skills(operation, operations, skills, current, edit=False):
+    selected = list(dict.fromkeys(name for name in current if name not in BASE))
+    suggested = list(dict.fromkeys(name for name in re.findall(r'\.\./skills/([a-z0-9-]+)/SKILL\.md', source(operations[operation]))
+                                   if name in skills and name not in BASE))
+    choices = suggested
+    print('\nSkills base: repo-context y github-traceability (automáticas).')
+    while True:
+        print('Skills sugeridas:')
+        for index, name in enumerate(choices, 1):
+            print(f'  {index}. {name} — {description(skills[name])}')
+        print('Actuales:', ', '.join(selected) if selected else '(ninguna)')
+        complete_from(choices, {name: description(skills[name]) for name in choices})
+        try:
+            raw = ask('Skills [Enter conserva; /todas; /limpiar; /volver]: ', current=','.join(selected), strip=True, editable=edit)
+        finally:
+            clear_completion()
+        if raw == '/todas':
+            choices = sorted(name for name in skills if name not in BASE)
+            continue
+        if not raw:
+            return []
+        values = []
+        for item in raw.split(','):
+            item = item.strip()
+            if item.isdecimal() and 1 <= int(item) <= len(choices):
+                item = choices[int(item) - 1]
+            if item not in skills or item in BASE:
+                print('Skill desconocida; usa nombre, número o /todas.')
+                break
+            if item not in values:
+                values.append(item)
+        else:
+            return values
+
+
+def ask_repo(current):
+    while True:
+        raw = ask(f'Repositorio owner/repo [{current or "sin seleccionar"}; -: local descartable]: ', current=current, strip=True)
+        try:
+            return repo_value(raw)
+        except InputError as exc:
+            print(str(exc))
+
+
+def ask_locator(current, edit=False):
+    while True:
+        raw = ask(f'Issue/PR opcional [{current or "sin referencia"}]: ', current=current, strip=True, editable=edit)
+        try:
+            return locator_value(raw)
+        except InputError as exc:
+            print(str(exc))
+
+
+def fill_fields(operation, operations, skills, values, edit=False):
+    print('\n2/3 — Completar datos de la operación')
+    print('Pega texto directamente; Enter confirma. /limpiar borra, /volver cambia operación, /cancelar sale.')
+    values['skills'] = choose_skills(operation, operations, skills, values['skills'], edit=edit)
+    label = LABELS.get(operation, 'Contexto')
+    for key, prompt in (('context', label), ('locator', 'Issue/PR'),
+                        ('feedback', 'Comentario del PM'), ('question', 'Pregunta del PM')):
+        if key == 'locator':
+            if values['repo'] and operation in UNIT_OPERATIONS:
+                values[key] = ask_locator(values[key], edit=edit)
+            continue
+        current = values[key]
+        print(f'\n{prompt} actual: {current if current else "(vacío)"}')
+        values[key] = ask(f'{prompt} [Enter conserva/omite]: ', current=current, editable=edit)
+    return values
+
+
+def operation_prompt(operation, operations, skills, templates, values):
+    return render(operation, values['skills'], values['context'], values['locator'], operations, skills, templates,
+                  repo=values['repo'], feedback=values['feedback'], question=values['question'], local_only=values['local_only'])
+
+
+def preview(operation, content, folder):
+    print('\n3/3 — Vista previa')
+    print(f'Operación: {operation} | Carpeta: {folder}')
+    print('Al guardar se reemplazan solo los prompts anteriores del selector de esta carpeta, después de escribir el nuevo.')
+    print('\n' + content + '\n--- Fin de vista previa ---')
+    while True:
+        action = ask('[G]uardar / [E]ditar / [O]tra operación / [C]ancelar: ', strip=True).lower()
+        if action in ('g', 'guardar', 'write', 'w'):
+            return 'write'
+        if action in ('e', 'editar', 'edit'):
+            return 'edit'
+        if action in ('o', 'otra', 'operation'):
+            return 'operation'
+        if action in ('c', 'cancelar', 'cancel'):
+            raise Cancel
+        print('Elige guardar, editar, otra operación o cancelar.')
+
+
+def interactive(operations, skills, templates, folder, repo):
+    if sys.stdin.isatty() and terminal_prompt is None and not prepare_terminal():
+        print('Este Python no dispone de edición segura de terminal; usa los flags del CLI para texto multilínea.', file=sys.stderr)
+        return 1
+    operation, last_path = 'continue', None
+    values = {'repo': repo, 'local_only': False, 'skills': [], 'context': '', 'locator': '', 'feedback': '', 'question': ''}
+    while True:
+        print(f'\nRepositorio: {values["repo"] or "(sin seleccionar)"} | Carpeta: {folder}')
+        try:
+            selection = choose_operation(operations, current=operation)
+            if isinstance(selection, tuple):
+                operation, values['question'] = selection
+            else:
+                operation = selection
+            if operation == '/repo':
+                values['repo'] = ask_repo(values['repo'])
+                values['local_only'] = not values['repo']
+                operation = 'continue'
+                continue
+            if operation == '/carpeta':
+                while True:
+                    try:
+                        folder = safe_path(ask(f'Carpeta [{folder}]: ', current=str(folder), strip=True))
+                        break
+                    except (InputError, ValueError):
+                        print('Carpeta inválida.')
+                operation = 'continue'
+                continue
+            if not values['repo'] and not values['local_only']:
+                values['repo'] = ask_repo('')
+                values['local_only'] = not values['repo']
+            values = fill_fields(operation, operations, skills, values)
+            while True:
+                content = operation_prompt(operation, operations, skills, templates, values)
+                action = preview(operation, content, folder)
+                if action == 'operation':
+                    values.update(skills=[], context='', locator='', feedback='', question='')
+                    break
+                if action == 'edit':
+                    # Keep repo and all current fields; operation and skills remain editable.
+                    operation = choose_operation(operations, current=operation, session_controls=False)
+                    values = fill_fields(operation, operations, skills, values, edit=True)
                     continue
+                last_path, failures = save_prompt(folder, content)
+                print(f'Prompt guardado: {last_path}')
                 try:
-                    if raw == '/limpiar':
-                        repo, local_only = '', False
-                    elif raw:
-                        repo = repo_value(raw)
-                        local_only = raw == '-'
-                except ValueError as exc:
-                    print(exc)
-                    continue
-                if local_only:
-                    print('Sin repositorio: experimento expresamente local y descartable.')
-                elif repo:
-                    print('Repositorio indicado; el agente deberá verificarlo en fuentes vivas cuando corresponda.')
-                else:
-                    print('Repositorio borrado; recupera el contexto antes de actuar.')
-                step = 'workflow'
-            elif step == 'workflow':
-                show('Workflows:', names, workflows)
-                workflow = choose(f'Workflow [{workflow}; /limpiar: continue; /texto filtra; /volver]: ', names, workflows,
-                                  'Workflows:', default=workflow, clear_value='continue')
-                step = 'skills'
-            elif step == 'skills':
-                print('Skills base automáticas: repo-context (si hay repositorio) y github-traceability; sin permisos adicionales.')
-                suggested = [name for name in suggested_skills(workflows[workflow], skills) if name not in BASE_SKILLS]
-                if not suggested:
-                    print('Este workflow no sugiere skills adicionales; Enter continúa.')
-                show('Skills sugeridas (opcionales):', suggested, skills)
-                print('Skills adicionales actuales: ' + (', '.join(selected) if selected else '(ninguna)'))
-                selected = choose('Skills [Enter: conservar; /limpiar: ninguna; /todas: ver otras; /texto: filtrar; /volver]: ',
-                                  suggested, skills, 'Skills:', default=selected, multiple=True, all_options=optional_skills)
-                step = 'context'
-            elif step == 'context':
-                label = INPUT_LABELS.get(workflow, 'Entrada principal')
-                print(f'{label} actual: {context or "(vacío)"}')
-                context = preserve_line(f'{label} [Enter: conservar/inferir; /limpiar; /volver; /preview]: ', context)
-                step = 'locator' if repo and workflow in UNIT_WORKFLOWS else 'feedback'
-            elif step == 'locator':
-                print(f'Issue/PR actual: {locator or "(vacío)"}')
-                raw = preserve_line('Issue/PR (número, #número o URL) [Enter: conservar/inferir; /limpiar; /volver; /preview]: ', locator)
-                try:
-                    locator = locator_value(raw) if raw else ''
-                except argparse.ArgumentTypeError as exc:
-                    print(str(exc))
-                    continue
-                step = 'feedback'
-            elif step == 'feedback':
-                feedback = ask_multiline('Comentario del PM — PM_FEEDBACK_HUMANO', feedback)
-                step = 'question'
-            elif step == 'question':
-                question = ask_multiline('Pregunta del PM — PM_QUESTION_HUMANO', question)
-                step = 'preview'
-            elif step == 'preview':
-                content = render(workflow, selected, context, locator, workflows, skills, templates,
-                                 repo=repo, feedback=feedback, question=question, local_only=local_only)
-                print('\n--- Vista previa del prompt ---\n' + content + '--- Fin de vista previa ---')
-                print(f'Destino actual: {destination}. Al guardar se eliminarán los prompts anteriores identificados del selector en esa carpeta, después de escribir el nuevo.')
-                action = ask_line('[G]uardar / [E]ditar / [C]ancelar / [V]olver: ').lower()
-                if action in ('c', 'cancelar'):
-                    print('Cancelado; no se guardó ni eliminó ningún prompt.')
-                    return 0
-                if action in ('v', 'volver'):
-                    step = 'question'
-                elif action in ('e', 'editar'):
-                    step = 'repo'
-                elif action in ('g', 'guardar'):
-                    step = 'directory'
-                else:
-                    print('Acción desconocida.')
-            elif step == 'directory':
-                raw = ask_line(f'Carpeta de salida [{destination}]: ')
-                try:
-                    destination = output_path(raw) if raw else destination
-                except ValueError as exc:
-                    print(exc)
-                    continue
-                print(f'Se guardará en {destination}; tras guardar se reemplazarán solo prompts anteriores del selector en esa carpeta.')
-                path, failures = save_prompt(destination, content)
-                print(f'Prompt guardado: {path}')
-                try:
-                    save_config(repo, destination)
-                except (ValueError, OSError):
+                    save_config(values['repo'], folder)
+                except (OSError, ValueError):
                     print('El prompt se guardó, pero no se pudo guardar la configuración.', file=sys.stderr)
                     return 1
                 if failures:
-                    print('No se pudieron eliminar algunos prompts anteriores: ' + '; '.join(failures), file=sys.stderr)
+                    print('No se pudieron quitar algunos prompts anteriores.', file=sys.stderr)
                     return 1
-                step = 'again'
-            elif step == 'again':
-                again = ask_line('[M]isma operación / [N]ueva selección / cambiar [R]epositorio / [S]alir: ').lower()
-                if again not in ('', 's', 'salir', 'm', 'misma', 'n', 'nueva', 'r', 'repositorio'):
-                    print('Acción desconocida.')
-                    continue
-                # PM content belongs to one operation only; never reuse it automatically.
-                context = locator = feedback = question = ''
-                if again in ('m', 'misma'):
-                    step = 'context'
-                elif again in ('n', 'nueva'):
-                    selected = []
-                    step = 'workflow'
-                elif again in ('r', 'repositorio'):
-                    selected = []
-                    step = 'repo'
-                else:
-                    return 0
-        except Preview:
-            step = 'preview'
-        except SensitiveInput as exc:
-            print(str(exc))
-            if step == 'preview':
-                print('Revisa el contexto y los campos del PM, o cancela; usa /limpiar para borrar un valor.')
-                step = 'context'
+                while True:
+                    action = ask('[N]ueva / [M]isma / [E]ditar / [P]ath / [S]alir: ', strip=True).lower()
+                    if action in ('p', 'path'):
+                        print(f'Prompt actual: {last_path}')
+                    elif action in ('e', 'editar', 'edit'):
+                        operation = choose_operation(operations, current=operation, session_controls=False)
+                        values = fill_fields(operation, operations, skills, values, edit=True)
+                        break
+                    elif action in ('n', 'nueva', 'new'):
+                        values.update(skills=[], context='', locator='', feedback='', question='')
+                        break
+                    elif action in ('m', 'misma', 'same'):
+                        values.update(context='', locator='', feedback='', question='')
+                        values = fill_fields(operation, operations, skills, values)
+                        break
+                    elif action in ('s', 'salir', 'exit'):
+                        return 0
+                    else:
+                        print('Elige nueva, misma, editar, path o salir.')
+                if action in ('n', 'nueva', 'new'):
+                    break
         except Back:
-            step = {'repo': 'repo', 'workflow': 'repo', 'skills': 'workflow',
-                    'context': 'skills', 'locator': 'context', 'feedback': 'locator' if repo and workflow in UNIT_WORKFLOWS else 'context', 'question': 'feedback',
-                    'preview': 'question', 'directory': 'preview', 'again': 'again'}[step]
+            print('Volviendo a elegir operación; se conservan los valores.')
+            continue
+        except Cancel:
+            print('Cancelado; no se escribió el prompt actual.')
+            return 0
+        except InputError as exc:
+            print(str(exc))
+            continue
+
+
+class Parser(argparse.ArgumentParser):
+    def error(self, message):
+        if message.startswith('unrecognized arguments:') or any(pattern.search(message) for pattern in SECRET_PATTERNS):
+            message = 'Argumentos inválidos o información sensible detectada; consulta --help.'
+        super().error(message)
 
 
 def main(argv=None):
-    parser = SafeParser(description='Genera y guarda un prompt Project OS; no ejecuta workflows.')
-    parser.add_argument('--list', action='store_true', help='listar workflows y skills')
-    parser.add_argument('--repo', help='repositorio owner/repo, indicado sin verificación remota')
-    parser.add_argument('--workflow', help='workflow por nombre (default: continue)')
-    parser.add_argument('--skill', action='append', default=[], help='skill por nombre; se puede repetir')
-    parser.add_argument('--locator', type=locator_value, help='número o URL de issue/PR, o texto contextual')
-    parser.add_argument('--objective', help='objetivo y contexto material')
-    parser.add_argument('--feedback', help='comentario opcional del PM')
-    parser.add_argument('--question', help='pregunta opcional del PM')
-    parser.add_argument('--output-dir', help='carpeta de prompts; el wizard recuerda la última')
-    parser.add_argument('--prototype', action='store_true', help='atajo implement + rapid-prototype; permite --skill adicional')
+    parser = Parser(description='Genera prompts Markdown sin ejecutar operaciones.')
+    parser.add_argument('--list', action='store_true', help='listar operaciones y skills')
+    parser.add_argument('--repo', help='repositorio owner/repo')
+    parser.add_argument('--workflow', help='operación (default: continue)')
+    parser.add_argument('--skill', action='append', default=[])
+    parser.add_argument('--locator', help='número o URL de issue/PR')
+    parser.add_argument('--objective', help='entrada principal de la operación')
+    parser.add_argument('--feedback', help='comentario del PM')
+    parser.add_argument('--question', help='pregunta del PM')
+    parser.add_argument('--output-dir', help='carpeta de salida')
+    parser.add_argument('--prototype', action='store_true', help='implement + rapid-prototype')
     args = parser.parse_args(argv)
     try:
-        require_safe(args.repo, args.workflow, *args.skill, args.objective, args.feedback, args.question, args.output_dir)
-    except SensitiveInput as exc:
-        parser.error(str(exc))
-    if args.list and (args.repo or args.workflow or args.skill or args.locator or args.objective or args.feedback or args.question or args.prototype):
-        parser.error('--list no se combina con selección ni contexto')
-    if args.prototype and args.workflow:
-        parser.error('--prototype no se combina con --workflow')
-    try:
-        workflows, skills, templates = discover()
-        names, skill_names = ordered(workflows), sorted(skills)
+        check_sensitive(args.repo, args.workflow, *args.skill, args.locator, args.objective, args.feedback, args.question, args.output_dir)
+        if args.list and (args.repo or args.workflow or args.skill or args.locator or args.objective or args.feedback or args.question or args.prototype):
+            parser.error('--list no se combina con selección ni contexto')
+        if args.prototype and args.workflow:
+            parser.error('--prototype no se combina con --workflow')
+        operations, skills, templates = discover()
         if args.list:
-            show('Workflows:', names, workflows)
-            show('Skills:', skill_names, skills)
+            for name in ORDER:
+                if name in operations:
+                    print(f'{name} — {description(operations[name])}')
+            for name in sorted(skills):
+                print(f'{name} — {description(skills[name])}')
             return 0
-        missing = [name for name in BASE_SKILLS if name not in skills]
-        if missing:
-            parser.error('faltan skills base o sus rutas no son seguras: ' + ', '.join(missing))
-        workflow = 'implement' if args.prototype else (args.workflow or 'continue')
+        if any(name not in skills for name in BASE):
+            parser.error('Faltan skills base o sus rutas no son seguras.')
+        operation = 'implement' if args.prototype else (args.workflow or 'continue')
         selected = list(dict.fromkeys((['rapid-prototype'] if args.prototype else []) + args.skill))
-        if workflow not in workflows:
-            parser.error('workflow desconocido o ruta no segura')
-        for skill in selected:
-            if skill not in skills:
-                parser.error('skill desconocida o ruta no segura')
-        interactive = not (args.repo or args.workflow or args.skill or args.locator or args.objective or args.feedback or args.question or args.prototype)
-        if interactive:
+        if operation not in operations or any(name not in skills for name in selected):
+            parser.error('Operación o skill desconocida.')
+        cli = bool(args.repo or args.workflow or args.skill or args.locator or args.objective or args.feedback or args.question or args.prototype)
+        if not cli:
             config = load_config()
-            destination = output_path(args.output_dir or config.get('output_dir') or DEFAULT_OUTPUT)
-            return wizard(workflows, skills, templates, destination, config.get('repo', ''))
+            folder = safe_path(args.output_dir or config.get('output_dir') or DEFAULT_DIR)
+            return interactive(operations, skills, templates, folder, config.get('repo', ''))
         repo = repo_value(args.repo) if args.repo else ''
-        destination = output_path(args.output_dir or DEFAULT_OUTPUT)
-        content = render(workflow, selected, args.objective or '', args.locator or '', workflows, skills, templates,
+        locator = locator_value(args.locator or '')
+        folder = safe_path(args.output_dir or DEFAULT_DIR)
+        content = render(operation, selected, args.objective or '', locator, operations, skills, templates,
                          repo=repo, feedback=args.feedback or '', question=args.question or '', local_only=args.repo == '-')
-        print('\n--- Vista previa del prompt ---\n' + content + '--- Fin de vista previa ---')
-        print(f'Destino: {destination}. Al guardar se eliminarán los prompts anteriores identificados del selector en esta carpeta, después de escribir el nuevo.')
-        path, failures = save_prompt(destination, content)
+        print('\n--- Vista previa ---\n' + content)
+        print('Se reemplazarán solo prompts anteriores del selector después de escribir el nuevo.')
+        path, failures = save_prompt(folder, content)
         print(f'Prompt guardado: {path}')
         if failures:
-            print('No se pudieron eliminar algunos prompts anteriores: ' + '; '.join(failures), file=sys.stderr)
+            print('No se pudieron quitar algunos prompts anteriores.', file=sys.stderr)
             return 1
         return 0
-    except KeyboardInterrupt:
-        print('\nCancelado; no se modificaron prompts en esta operación.')
-        return 0
-    except EOFError:
-        print('\nEntrada incompleta; no se guardó el prompt actual.', file=sys.stderr)
-        return 2
-    except SensitiveInput as exc:
-        print(f'Error: {exc}', file=sys.stderr)
+    except InputError as exc:
+        print(str(exc), file=sys.stderr)
         return 1
     except (OSError, ValueError):
-        print('Error de entrada, acceso o escritura; revisa los argumentos y permisos.', file=sys.stderr)
+        print('No se pudo leer o escribir de forma segura; revisa los permisos y la plataforma.', file=sys.stderr)
         return 1
+    except (EOFError, KeyboardInterrupt, Cancel):
+        print('\nCancelado; no se escribió el prompt actual.')
+        return 0
 
 
 if __name__ == '__main__':

@@ -1,27 +1,23 @@
 # Validación del MVP
 
-Resultados observados durante las correcciones del wizard y la trazabilidad histórica:
+Resultados observados al reconstruir el selector, en Linux con Python 3.12.13:
 
-| Comando | Exit code | Resultado |
+| Comando | Exit | Resultado |
 |---|---:|---|
-| `python3 -m unittest discover -s tests -v` | 0 | 43 tests: edición secuencial, locator, campos PM, advertencias, contrato de historial y browser, PTY, configuración, secretos, persistencia y estructura. |
-| `python3 tools/select.py --workflow review --skill code-review --locator 1 --objective 'Revisar el PR 1 de codefusion-repo/project-os-v3, incluyendo selector y pruebas; no hacer merge.' > /tmp/project-os-v3-selector-preview.txt` | 0 | Vista previa y archivo Markdown real en `.project-os/prompts/`, carpeta ignorada por Git. |
-| `python3 tools/select.py --prototype --skill testing --skill security-review --output-dir /tmp/project-os-v3-validation-20261113 --objective 'Experimento local y descartable sin repositorio: validar un filtro.' > /tmp/project-os-v3-validation-preview.txt` | 0 | Prompt guardado con ambas skills base, rapid-prototype, testing y security-review una vez cada una. |
-| `git check-ignore -v .project-os/config.json .project-os/prompts/example.md` | 0 | Ambos paths están cubiertos por `.project-os/`. |
-| `git diff --check` | 0 | Sin errores de whitespace en los cambios observados. |
+| `python3 -m unittest discover -s tests -v` | 0 | 30 tests; uno omitido porque `prompt_toolkit` no está instalado en el Python del sistema. |
+| `.project-os/venv/bin/python -m unittest discover -s tests -v` | 0 | 30 tests sin omisiones con `prompt_toolkit` 3.0.53. |
+| `git check-ignore -v .project-os/config.json .project-os/prompts/example.md .project-os/venv/bin/python` | 0 | Configuración, prompts y entorno local ignorados por Git. |
+| `git diff --check` | 0 | Sin errores de whitespace en el diff comprobado. |
+| `gh pr view 1 --json number,headRefName,headRefOid,url,state,isDraft,statusCheckRollup` | 0 | Draft PR #1 y checks existentes recuperados; consultar nuevamente tras el push. |
 
-Durante el desarrollo, tres ejecuciones de la suite terminaron con exit 1: una detectó exposición de una cadena sintética dividida en líneas, y dos detectaron aserciones del contrato demasiado estrictas. Se corrigieron y la suite final terminó con exit 0. Se realizó una demostración PTY aislada de edición secuencial, con valores preservados y exit 0.
+Ambas ejecuciones de la suite incluyen una sesión en pseudo-terminal: pega un reporte con líneas vacías y líneas que parecen opciones de menú, comprueba que no se avanza hasta Enter, pega un comentario, usa las flechas, guarda y edita el prompt preservando el contenido. La prueba simula una terminal que envía el protocolo bracketed paste; no demuestra el comportamiento de terminales incompatibles. También se comprueban selección y edición de workflow y múltiples skills, preferencias entre sesiones sin reutilizar campos PM, cancelación, reemplazo, errores de escritura, rutas, detección heurística de secretos y ausencia de llamadas Git/GitHub artificiales. El test de sugerencias dinámicas solo se ejecuta con el paquete opcional.
 
-Se ejecutaron dos sesiones interactivas adicionales en una copia aislada del kit: ambas terminaron con exit 0; la segunda recuperó repo y carpeta sin reutilizar los campos PM. Un proceso independiente leyó únicamente un prompt generado y resolvió mediante GitHub el PR #1 incluido en su locator; no se ejecutó un chat nuevo. El reemplazo y los fallos de escritura se comprobaron en carpetas temporales mediante la suite, sin borrar archivos ajenos ni usar datos de producción. La publicación atómica requiere soporte de enlaces duros en la carpeta de salida; el selector falla si la plataforma no ofrece apertura de directorios sin seguimiento de symlinks.
+Se generó un prompt `review` real en una carpeta temporal, con repositorio `codefusion-repo/project-os-v3`, referencia `https://github.com/codefusion-repo/project-os-v3/pull/1`, las dos skills base, `code-review`, `testing` y contexto explícito; el comando terminó con exit 0. La ruta temporal pertenece a esta sesión y puede desaparecer. Las pruebas verifican el contenido, pero no se ejecutó un chat nuevo con ese archivo.
 
-## Evidencia adicional de fuentes vivas
+Durante la reconstrucción hubo fallos intermedios: una suite anterior con 43 tests falló por una expectativa interactiva; la primera suite de la reimplementación falló en un test por una entrada de prueba incompleta; otra ejecución detectó un error de sintaxis en el test editado. Al añadir el paquete opcional, la primera suite falló porque `tools/select.py` ocultaba el módulo estándar `select` al cargar `asyncio`. Se corrigieron y se ejecutaron las suites indicadas arriba. Estos intentos no representan validaciones exitosas.
 
-En la implementación previa, las consultas `gh repo view`, `gh pr list`, `gh issue list` y `gh pr view` terminaron con exit 0 desde esta sesión y recuperaron el repositorio y draft PR #1. Las pruebas automáticas verifican el contenido y los enlaces de las instrucciones, pero no prueban el comportamiento de un chat nuevo ni otro agente. Los escenarios de aceptación de continuidad, comparación entre superficies y detención de acción sensible en una sesión real siguen sin ejecutar. El dogfood de rendimiento y la comparación con v2 tampoco se han ejecutado.
+## Límites y CI
 
-## Plataforma y CI
+El selector base usa Python stdlib; la interfaz enriquecida requiere instalar `prompt_toolkit` en el entorno elegido. El pegado multilinea requiere una terminal que soporte bracketed paste; para terminales incompatibles se pueden usar los flags. La protección de secretos es heurística y no exhaustiva. Se requiere soporte POSIX para apertura sin seguir symlinks y enlaces duros en destino.
 
-Validación local observada: Linux, Python 3.12.13. La plataforma soportada es Linux con Python 3.9 o superior y un filesystem con soporte POSIX de apertura sin seguir symlinks y enlaces duros. El check GitHub Actions ejecuta `python3 -m unittest discover -s tests -v` en Ubuntu; su resultado remoto debe consultarse tras el push. La detección de secretos usa patrones comunes y no es exhaustiva.
-
-## Límite de aceptación de browser chat
-
-La suite comprueba la conexión estructural de las instrucciones de `review.read`, `review.publish`, SHA, reintentos y fallback; no ejecuta un agente browser ni simula sus permisos. Las pruebas de publicación de review, falta de permiso, fallos remotos, reintentos, cambio de SHA y recuperación desde otra sesión siguen pendientes de una sesión browser con las capacidades y autorizaciones reales.
+El workflow de GitHub Actions ejecuta la suite con stdlib y luego con el paquete opcional; el resultado del nuevo commit debe verificarse en GitHub después del push. Las pruebas de publicación de reviews de browser, fallos remotos y recuperación en otra sesión real continúan pendientes. No se ha ejecutado dogfood de rendimiento ni comparación de rendimiento con v2.

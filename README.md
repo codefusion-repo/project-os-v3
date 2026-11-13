@@ -4,22 +4,24 @@ Kit Markdown-first para llevar una intención a un resultado verificable con wor
 
 ## Abrir el selector
 
-Plataforma soportada: Linux con Python 3.9 o superior; validación local con Python 3.12. Se requiere un sistema de archivos con enlaces duros y soporte POSIX de apertura de directorios sin seguir symlinks. La edición con flechas usa `readline` cuando está disponible. Desde la raíz del kit:
+Plataforma soportada: Linux con Python 3.9 o superior y un sistema de archivos que admita enlaces duros y apertura de directorios sin seguir symlinks. La interfaz enriquecida usa `prompt_toolkit` opcional: ofrece sugerencias mientras escribes y edición directa de valores, como el wizard de v2. Desde la raíz del kit:
 
 ```bash
-python3 tools/select.py
+python3 -m venv .project-os/venv
+.project-os/venv/bin/python -m pip install 'prompt_toolkit>=3.0.43,<4'
+.project-os/venv/bin/python tools/select.py
 ```
 
-En la primera sesión indica el repositorio como `owner/repo`; el wizard valida el formato, pero el agente deberá verificarlo en GitHub. En siguientes sesiones Enter confirma el último repositorio. Para un experimento expresamente local y descartable sin repositorio escribe `-`.
+Sin instalar paquetes también puedes ejecutar `python3 tools/select.py`; usa la interfaz de terminal de la biblioteca estándar. Para pegar reportes con saltos de línea en cualquiera de las dos interfaces, la terminal debe admitir *bracketed paste*. Se comprobó con un pseudo-terminal compatible; una terminal que no respete ese protocolo puede interpretar un pegado como varias respuestas. La alternativa segura en ese caso es usar los flags del CLI.
 
-Elige un workflow (Enter usa `continue`); el menú muestra sus skills adicionales sugeridas. Usa `/todas` si necesitas seleccionar otra. `repo-context` y `github-traceability` se incluyen sin pedir selección y se aplican según el contexto. El wizard solicita una entrada principal adaptada al workflow y, para continuar, implementar, revisar, cerrar o preparar una release con repositorio, ofrece una sola referencia opcional de issue/PR: número, `#número` o URL de GitHub. Puedes omitirla para que el agente la recupere. Si un PR mencionado explícitamente parece contradecir el locator, muestra una advertencia sin bloquear. Ofrece en todos los workflows **Comentario del PM** y **Pregunta del PM**, ambos opcionales: escribe una línea y pulsa Enter para continuar, o pulsa Enter sin texto para omitir. Para varias líneas escribe `/m`, pulsa Enter y termina con una línea vacía o un punto `.` en una línea propia. Las flechas permiten editar cuando Python dispone de `readline`. El texto PM se conserva tal como se introduce: se eliminan los finales de línea de la terminal y, en modo multilínea, las líneas se unen con `\n`; una línea vacía o un punto termina la entrada. Las notas automáticas aparecen en una sección independiente y no autorizan acciones sensibles.
+1. Busca una operación escribiendo su nombre, un número o parte de su descripción; Enter selecciona `continue`. Si escribes una intención sin coincidencia, se usa `continue` y se conserva como pregunta del PM. El wizard pide el repositorio `owner/repo` si no está guardado; valida solo su formato, no su existencia remota. Para un experimento local descartable sin repositorio escribe `-`.
+2. Selecciona cero o varias skills sugeridas, separadas por comas; `/todas` muestra otras. `repo-context` y `github-traceability` se incluyen automáticamente y se aplican según el contexto. Completa la entrada específica del workflow; cuando corresponda puedes indicar una referencia opcional de issue/PR por separado. El comentario y la pregunta del PM son opcionales en todos los workflows. Pega reportes y texto multilínea directamente en el campo y pulsa Enter para confirmarlos. Las flechas permiten editar. El texto conserva los saltos de línea, con CRLF o CR normalizados a LF; las notas del sistema aparecen por separado.
+3. Revisa el prompt completo: `g` guarda, `e` vuelve a elegir workflow y skills y editar los campos sin volver a pedir el repositorio, `o` elige otra operación y `c` cancela. Al editar, Enter conserva los valores y `/limpiar` borra el campo. `/volver` vuelve a operaciones y `/cancelar` sale. Después de guardar puedes crear otra operación (`n`), reutilizar la misma (`m`), editar (`e`), mostrar la ruta (`p`) o salir (`s`). Una operación nueva no reutiliza el contexto ni los campos PM anteriores.
 
-Revisa el prompt completo y pulsa `g` para guardarlo, `e` para editar o `c` para cancelar. Al editar vuelve a recorrer los campos mostrando sus valores: Enter conserva, una entrada nueva reemplaza y `/limpiar` borra explícitamente. `/volver` retrocede, `/preview` regresa a la vista previa, `/cancelar` cancela y `/texto` filtra los menús. Después puedes reutilizar la operación, seleccionar otra o cambiar de repositorio; el comentario y la pregunta no se reutilizan.
-
-Al guardar, el wizard permite elegir la carpeta. Recuerda ese destino y el último repositorio en `.project-os/config.json`, ignorado por Git; solo guarda esas preferencias, no los campos del PM ni credenciales. Sin preferencia guardada, el destino es `.project-os/prompts/`. También puedes indicar una carpeta al iniciar:
+El repositorio y la carpeta se muestran al empezar. Usa `/repo` o `/carpeta` en la selección de operación para cambiarlos. Se recuerdan en `.project-os/config.json`, ignorado por Git; no se guardan campos PM ni credenciales en la configuración. Sin preferencia, la carpeta es `.project-os/prompts/`. También puedes elegirla al iniciar:
 
 ```bash
-python3 tools/select.py --output-dir "/ruta/a/mis-prompts"
+.project-os/venv/bin/python tools/select.py --output-dir "/ruta/a/mis-prompts"
 ```
 
 El selector rechaza patrones comunes de credenciales antes de previsualizar o guardar y no reproduce su contenido en los errores. La detección es heurística y no identifica todos los secretos; revisa el prompt antes de compartirlo.

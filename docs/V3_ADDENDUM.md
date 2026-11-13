@@ -28,7 +28,7 @@ El selector previsualiza y guarda prompts Markdown operativos en `--output-dir` 
 
 ## Wizard-first y configuración local
 
-El wizard inicia por repositorio, continúa con workflow, skills, contexto del PM, preview y guardado. Recuerda únicamente repositorio y carpeta en `.project-os/config.json` ignorado por Git; un repositorio indicado no se considera verificado. Comentario y pregunta del PM son opcionales, multilínea y exclusivos de la operación; no se guardan en la configuración ni se reutilizan. El selector no exige referencias issue/PR que puedan recuperarse. Los flags siguen disponibles para automatización sin leer ni escribir la configuración del wizard.
+El wizard comienza por buscar o seleccionar el workflow y luego solicita el repositorio si falta, skills, contexto del PM, preview y guardado. Recuerda únicamente repositorio y carpeta en `.project-os/config.json` ignorado por Git; un repositorio indicado no se considera verificado. Comentario y pregunta del PM son opcionales, multilínea y exclusivos de la operación; no se guardan en la configuración ni se reutilizan. El selector no exige referencias issue/PR que puedan recuperarse. Los flags siguen disponibles para automatización sin leer ni escribir la configuración del wizard.
 
 ## Correcciones de review del selector
 
@@ -41,3 +41,7 @@ Editar recorre secuencialmente los campos mostrando valores actuales; Enter cons
 ## Reviews de browser chat
 
 El [adapter browser](../adapters/browser-chat.md), [review](../workflows/review.md) y [github-traceability](../skills/github-traceability/SKILL.md) distinguen `review.read` y `review.publish`, reutilizan la autorización previa efectiva de su alcance, publican reviews materiales como comentarios nuevos verificables y previenen duplicados al reintentar. El prompt de corrección solo referencia repo, PR, SHA y URL confirmada; ante falta de permiso o error ambiguo se entrega review/borrador con `review no publicado` y sin URL inventada.
+
+## Rediseño del wizard según la experiencia de v2
+
+La decisión posterior del PM sustituye el orden original: seleccionar operación primero, completar skills y campos, previsualizar, guardar o editar y reutilizar la sesión. Editar vuelve a permitir elegir workflow y skills sin preguntar el repositorio. La interfaz opcional con `prompt_toolkit` incorpora sugerencias dinámicas y edición directa; la alternativa stdlib continúa disponible. Ambas aceptan pegado de reportes mediante bracketed paste de una terminal compatible. La implementación se rehace en v3 sin importar ni ejecutar el código, resolver, kernel o catálogo de v2.
