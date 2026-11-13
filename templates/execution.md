@@ -15,6 +15,8 @@ Resumir cambios, comandos ejecutados y resultados observados.
 ## Riesgos y trabajo pendiente
 {{pendientes_y_límites}}
 
-**Estado de la acción remota:** {{realizada_o_bloqueada_con_motivo}}
+**Trazabilidad remota:** {{sha_o_url_verificados_y_pr_checks_disponibles_o_trazabilidad_pendiente_con_bloqueo}}
+
+> Un commit local sin push no acredita publicación; una consulta read-only no requiere commit.
 
 > Nunca usar “tests pasaron” sin comandos, resultados o CI real.

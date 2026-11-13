@@ -4,14 +4,14 @@
 Recuperar contexto técnico y estado vivo de un repositorio para empezar o retomar trabajo sin recapturar información.
 
 ## Cuándo conviene
-Cold start, cambio de agente, petición que menciona issue/PR o stack desconocido.
+Siempre que la tarea involucre un repositorio: cold start, continuidad, issue/PR o stack desconocido.
 
 ## Entradas mínimas
-Repositorio o checkout accesible; locator primario si no se deduce del contexto.
+Repositorio o checkout accesible; locator primario solo ante ambigüedad material no resoluble. Si el experimento es expresamente local y descartable y no hay repo, omite inspección de repositorio y GitHub.
 
 ## Procedimiento concreto
-1. Comprobar repo, branch y objetivo; leer README/AGENTS y archivos de entrada pertinentes, no recorrer todo el árbol.
-2. Inspeccionar issues, PRs, commits, diffs, checks, findings y blockers relevantes si GitHub está disponible; priorizar datos vivos al historial o resúmenes anteriores.
+1. Comprobar repo, branch y objetivo; leer instrucciones y archivos de entrada pertinentes. Hacer cold start completo solo si se necesita; al continuar, acotar la inspección a lo cambiado o relevante y no recorrer todo el árbol.
+2. Inspeccionar issues, PRs, commits, diffs, checks, findings y blockers relevantes si GitHub está disponible; priorizar datos vivos al historial o resúmenes anteriores y no consultar todos los issues/PRs sin justificación.
 3. Identificar stack, comandos de verificación y archivos de alcance por evidencia; distinguir incertidumbres secundarias.
 4. Recuperar objetivo, estado, referencias, validación, blockers y siguiente paso seguro; pedir como máximo un locator primario solo ante ambigüedad material no resoluble.
 

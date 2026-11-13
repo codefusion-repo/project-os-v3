@@ -11,7 +11,7 @@ Evaluación de publicación, versión o despliegue.
 2. Evalúa compatibilidad, migraciones, datos, seguridad y rollback cuando apliquen.
 3. Registra riesgos y preparación; ejecuta una acción de producción solo con autorización explícita.
 ## Evidencia y validación
-Usa checks y controles observados; indica los no disponibles. Skills sugeridas: [security-review](../skills/security-review/SKILL.md), [github-traceability](../skills/github-traceability/SKILL.md), [documentation](../skills/documentation/SKILL.md).
+Usa checks y controles observados; indica los no disponibles. Skills sugeridas: [security-review](../skills/security-review/SKILL.md), [documentation](../skills/documentation/SKILL.md).
 ## Salida
 Ref, readiness, riesgos, rollback y pendientes; [release](../templates/release.md) es opcional.
 ## Escalación localizada

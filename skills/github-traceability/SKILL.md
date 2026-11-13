@@ -10,14 +10,14 @@ Crear unidad de trabajo, implementar, revisar, cambiar de agente o preparar cier
 Repo, scope autorizado y locator de issue/PR si existe.
 
 ## Procedimiento concreto
-1. Verificar repo, issue, PR, commits, diff, checks, findings, decisiones y correcciones relevantes en GitHub; conservar sus relaciones reales y no asumirlas desde una nota.
-2. Reusar issue/PR del outcome existente; crear uno nuevo solo si agrega trazabilidad y está autorizado.
-3. Preparar actualizaciones con [comment](../../templates/comment.md) o findings/respuestas con [review-comment](../../templates/review-comment.md); comprobar el hilo antes de publicar para evitar duplicados.
-4. Ante findings, corregir en el mismo PR y revalidar; no cerrar/mergear sin autorización específica.
-5. Usar [merge](../../templates/merge.md) o [close](../../templates/close.md) para preparar readiness y mensajes cuando corresponda. Con autorización específica, ejecutar y verificar el estado real por separado; preparar handoff con objetivo, estado, refs, validaciones, blockers y próximo paso seguro. Persistir resumen en la unidad existente solo si agrega contexto difícil de recuperar, está autorizado y no duplica comentarios.
+1. Para tareas con repositorio, consultar issue, PR, commits, diff, checks, findings y bloqueos pertinentes; en un experimento expresamente local y descartable sin repo, omitir consultas GitHub; recuperar la unidad existente y no crear otro PR para el mismo outcome.
+2. Para cambios versionados destinados a integración, implementar y validar el alcance autorizado; preparar un commit significativo solo con cambios propios, sin commits vacíos.
+3. Si hay autorización y capacidad, publicar el commit y actualizar el mismo PR existente. Verificar el SHA en GitHub, estado del PR y checks disponibles; registrar comandos/tests, resultados y riesgos reales.
+4. Si falta acceso, permiso o autorización, continuar el trabajo seguro y reportar **trazabilidad pendiente**, bloqueo y siguiente paso. Un commit solo local no es publicación remota ni entrega completa en GitHub.
+5. Persistir decisiones o bloqueos en el hilo existente solo si aportan al cold start y está autorizado; evitar comentarios redundantes. Las consultas o reviews de solo lectura no producen commits. Solo los experimentos expresamente locales y descartables se exceptúan de publicación; si además no hay repositorio, no requieren consultas GitHub. Los cambios destinados a integración no se exceptúan.
 
 ## Validación y salida
-Links GitHub, estado verificado, evidencia y acciones pendientes.
+SHA o URL remotos verificados, issue/PR y checks disponibles, tests ejecutados, riesgos y estado real. No inventar resultados ni declarar publicación sin evidencia.
 
 ## Riesgos/limitaciones
-Capacidad del conector no equivale a permiso del PM; no mutar por la sola existencia de APIs de escritura.
+La skill no concede permisos. Merge, cierre, release y deploy requieren autorización separada; no mutar por la sola existencia de APIs de escritura.

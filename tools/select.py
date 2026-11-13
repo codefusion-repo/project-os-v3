@@ -12,6 +12,7 @@ from urllib.parse import urlsplit
 ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_OUTPUT = ROOT / '.project-os' / 'prompts'
 WORKFLOW_ORDER = ('continue', 'create', 'implement', 'review', 'close', 'release')
+BASE_SKILLS = ('repo-context', 'github-traceability')
 NAME = re.compile(r'[a-z0-9]+(?:-[a-z0-9]+)*\Z')
 OWNED_NAME = re.compile(r'project-os-prompt-[0-9a-f]{32}\.md\Z')
 MARKER = '<!-- project-os-v3-selector: generated-prompt v1 -->'
@@ -206,6 +207,10 @@ def suggested_skills(workflow, skills):
 
 def render(workflow, selected, context, locator, workflows, skills, templates):
     """Include operating rules and selected instructions; derive templates from links."""
+    missing = [name for name in BASE_SKILLS if name not in skills]
+    if missing:
+        raise ValueError('faltan skills base o sus rutas no son seguras: ' + ', '.join(missing))
+    selected = list(dict.fromkeys([*BASE_SKILLS, *selected]))
     parts = [read_source(ROOT / 'PROJECT_OS.md'), read_source(workflows[workflow])]
     parts.extend(read_source(skills[name]) for name in selected)
     names = []
@@ -239,12 +244,12 @@ def main(argv=None):
     parser.add_argument('--locator', type=locator_value, help='número o URL de issue/PR, o texto contextual')
     parser.add_argument('--objective', help='objetivo, contexto y restricciones materiales')
     parser.add_argument('--output-dir', default=str(DEFAULT_OUTPUT), help='carpeta de prompts (default: .project-os/prompts del kit)')
-    parser.add_argument('--prototype', action='store_true', help='atajo implement + rapid-prototype')
+    parser.add_argument('--prototype', action='store_true', help='atajo implement + rapid-prototype; permite --skill adicional')
     args = parser.parse_args(argv)
     if args.list and (args.workflow or args.skill or args.locator or args.objective or args.prototype):
         parser.error('--list no se combina con selección ni contexto')
-    if args.prototype and (args.workflow or args.skill):
-        parser.error('--prototype no se combina con --workflow ni --skill')
+    if args.prototype and args.workflow:
+        parser.error('--prototype no se combina con --workflow')
     try:
         destination = output_path(args.output_dir)
         workflows, skills, templates = discover()
@@ -253,8 +258,12 @@ def main(argv=None):
             show('Workflows:', names, workflows)
             show('Skills:', skill_names, skills)
             return 0
+        missing = [name for name in BASE_SKILLS if name not in skills]
+        if missing:
+            parser.error('faltan skills base o sus rutas no son seguras: ' + ', '.join(missing))
+        optional_skills = [name for name in skill_names if name not in BASE_SKILLS]
         workflow = 'implement' if args.prototype else (args.workflow or 'continue')
-        selected = ['rapid-prototype'] if args.prototype else list(dict.fromkeys(args.skill))
+        selected = list(dict.fromkeys((['rapid-prototype'] if args.prototype else []) + args.skill))
         if workflow not in workflows:
             parser.error(f'workflow desconocido o ruta no segura: {workflow}')
         for skill in selected:
@@ -269,11 +278,12 @@ def main(argv=None):
                 show('Workflows:', names, workflows)
                 default_workflow = workflow if editing else 'continue'
                 workflow = choose(f'Workflow [{default_workflow}; /texto filtra; /cancelar]: ', names, workflows, 'Workflows:', default=default_workflow)
-                suggested = suggested_skills(workflows[workflow], skills)
+                print('Skills base automáticas: repo-context (si hay repositorio) y github-traceability; sin permisos adicionales.')
+                suggested = [name for name in suggested_skills(workflows[workflow], skills) if name not in BASE_SKILLS]
                 if suggested:
                     print('Skills sugeridas (opcionales): ' + ', '.join(suggested))
-                show('Skills (opcionales; números o nombres separados por coma):', skill_names, skills)
-                selected = choose('Skills [Enter: conservar si editas; -: ninguna; /texto filtra]: ', skill_names, skills, 'Skills:', default=selected if editing else None, multiple=True)
+                show('Skills adicionales (opcionales; números o nombres separados por coma):', optional_skills, skills)
+                selected = choose('Skills adicionales [Enter: conservar si editas; -: ninguna; /texto filtra]: ', optional_skills, skills, 'Skills:', default=selected if editing else None, multiple=True)
                 new_context = input('Objetivo, repo, referencias y restricciones relevantes [Enter: conservar o inferir]: ').strip()
                 if new_context == '/cancelar':
                     raise KeyboardInterrupt

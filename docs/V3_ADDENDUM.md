@@ -17,3 +17,11 @@ El PM requiere cold start desde el repositorio y GitHub, respuestas comunes de E
 ## Corrección del selector tras review
 
 El selector previsualiza y guarda prompts Markdown operativos en `--output-dir` o en su carpeta local ignorada por Git. Tras guardar, reemplaza solo sus prompts anteriores identificados en la misma carpeta, con escritura atómica y protección de archivos ajenos, traversal y symlinks. Permite editar, cancelar y reutilizar la operación. No solicita selección de templates; véase [V3_SPEC.md](V3_SPEC.md).
+
+## Trazabilidad GitHub obligatoria
+
+`github-traceability` es una skill base transversal: el selector la incluye una vez sin pedir selección, y [PROJECT_OS.md](../PROJECT_OS.md) obliga a aplicarla también con Markdown directo. Cambios versionados destinados a integración necesitan commit significativo y evidencia remota verificada; si falta acceso, permiso o autorización, se reporta trazabilidad pendiente, sin declarar entrega remota. Reutilizar issue/PR existentes, no crear commits ni comentarios artificiales y verificar SHA, PR y checks disponibles. Solo un experimento expresamente local y descartable se exceptúa. La política no concede permisos de push, merge, cierre, release o deploy.
+
+## Skills base y composición múltiple
+
+`repo-context` se aplica a tareas con repositorio y ajusta la profundidad a la evidencia necesaria; `github-traceability` conserva su contrato. El selector incorpora ambas una sola vez sin pedir selección, y admite varias skills especializadas opcionales incluso con `--prototype`. En un experimento expresamente local y descartable sin repo no se requieren consultas GitHub ni publicación. El uso directo de Markdown aplica las mismas reglas.

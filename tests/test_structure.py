@@ -40,6 +40,12 @@ class Structure(unittest.TestCase):
         for adapter in ('terminal-agent.md', 'browser-chat.md'):
             self.assertIn('../PROJECT_OS.md', (ROOT / 'adapters' / adapter).read_text())
 
+    def test_direct_markdown_bootstrap_links_both_base_skills(self):
+        for filename in ('AGENTS.md', 'PROJECT_OS.md'):
+            content = (ROOT / filename).read_text()
+            for skill in ('repo-context', 'github-traceability'):
+                self.assertIn(f'skills/{skill}/SKILL.md', content)
+
     def test_relative_markdown_links(self):
         for path in ROOT.rglob('*.md'):
             if '.git' in path.parts or '.project-os' in path.parts:

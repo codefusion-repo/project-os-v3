@@ -11,7 +11,7 @@ Idea ambigua, oportunidad o nueva unidad de trabajo.
 2. Define alcance mínimo y cómo comprobarlo; decide supuestos reversibles.
 3. Usa un brief o issue solo si aporta valor y está autorizado; comienza el trabajo seguro cuando corresponda.
 ## Evidencia y validación
-Contrasta criterios con el repo y hechos disponibles. Skills sugeridas: [repo-context](../skills/repo-context/SKILL.md), [rapid-prototype](../skills/rapid-prototype/SKILL.md), [documentation](../skills/documentation/SKILL.md).
+Contrasta criterios con el repo y hechos disponibles. Skills sugeridas: [rapid-prototype](../skills/rapid-prototype/SKILL.md), [documentation](../skills/documentation/SKILL.md).
 ## Salida
 Outcome, criterios, referencias y próximo paso; [task](../templates/task.md) o [issue](../templates/issue.md) son opcionales.
 ## Escalación localizada

@@ -25,7 +25,7 @@ Project OS v3 es un **kit operativo Markdown-first** de **workflows + skills + t
 - **Adapter = capacidades reales de la superficie.** Terminal y browser comparten reglas; sus diferencias están en acceso al filesystem, shell, GitHub y acciones disponibles.
 - **GitHub = fuente de trazabilidad viva**, nunca registry o estado propio. Mantener una unidad de trabajo y un mismo issue/PR para implementación, review y correcciones de un outcome.
 
-**Fast path:** petición clara → elegir workflow/skill si ayuda → inspección mínima del repo/GitHub → trabajar/validar → informar con evidencia. Para un prototipo pequeño, **`implement` + `rapid-prototype`** puede producir un resultado local sin crear issue ni PR si no fueron solicitados/autorizados.
+**Fast path:** petición clara → workflow y skills adicionales útiles, con `repo-context` y `github-traceability` transversales según su ámbito → inspección mínima del repo/GitHub → trabajar/validar → evidencia remota o bloqueo explícito. Solo un experimento expresamente local y descartable puede finalizar sin publicación; no se exige crear issue/PR si no aporta valor o no está autorizado.
 
 ## 3. Estructura mínima entregable
 
@@ -84,14 +84,14 @@ Los nombres son la interfaz inicial. Se permiten ajustes pequeños de organizaci
 
 ## 4. Workflows (seis, conservados)
 
-| Archivo | Outcome | Skills sugeridas, nunca obligatorias |
+| Archivo | Outcome | Skills especializadas sugeridas; `repo-context` y `github-traceability` son base |
 |---|---|---|
-| `continue.md` | Cold start y continuación desde evidencia viva | `repo-context`, `github-traceability` |
-| `create.md` | Convertir idea en outcome con criterios verificables; issue o borrador si aporta valor | `repo-context`, `rapid-prototype`, `documentation` |
+| `continue.md` | Cold start y continuación desde evidencia viva | — |
+| `create.md` | Convertir idea en outcome con criterios verificables; issue o borrador si aporta valor | `rapid-prototype`, `documentation` |
 | `implement.md` | Construir feature, fix o **prototipo rápido**, validar y registrar cambios autorizados | `implement-change`, `rapid-prototype`, `debug`, `testing` |
 | `review.md` | Revisar diff/código/tests/riesgos y entregar findings accionables | `code-review`, `security-review`, `testing` |
-| `close.md` | Verificar readiness y preparar/realizar únicamente acciones permitidas | `github-traceability`, `testing` |
-| `release.md` | Evaluar release-readiness y preparar ejecución con controles de producción | `security-review`, `github-traceability`, `documentation` |
+| `close.md` | Verificar readiness y preparar/realizar únicamente acciones permitidas | `testing` |
+| `release.md` | Evaluar release-readiness y preparar ejecución con controles de producción | `security-review`, `documentation` |
 
 Cada archivo define en lenguaje natural: `Objetivo`, `Cuándo usar`, `Ruta rápida` (máximo 5 pasos prácticos), `Evidencia y validación`, `Salida` y `Escalación localizada`. Debe funcionar sin selector y sin crear subissues/handoffs automáticos. La combinación sugerida es una ayuda de UX, no un grafo de aprobaciones.
 
@@ -111,7 +111,7 @@ Cada `skills/<nombre>/SKILL.md` debe ser **ejecutable como instrucción para un 
 | `github-traceability` | Issue/PR/commit/checks, continuidad del mismo PR, registros breves y verificables |
 | `documentation` | README, contratos y handoff útiles; reducir documentación que no sirva para operar |
 
-**Regla de carga:** leer el workflow seleccionado y **solo** las skills útiles para el outcome; no cargar nueve skills por defecto. Una instrucción explícita `usa skill X` tiene prioridad como selección de capacidad, pero no concede autoridad extra. No introducir un framework de plugins ni manifiestos de dependencias.
+**Regla de carga:** aplicar `repo-context` en tareas con repositorio y `github-traceability` según su contrato, incluso sin selector; leer el workflow y solo las skills especializadas útiles. El selector incluye ambas skills base sin pedirlas. Cold start completo solo cuando haga falta; al continuar, inspección acotada y sin recorrer todo el repo o todos los issues/PRs sin justificación. Para experimento expresamente local y descartable sin repo, no exigir GitHub ni publicación. Una instrucción explícita `usa skill X` tiene prioridad como selección de capacidad, pero no concede autoridad extra. No introducir un framework de plugins ni manifiestos de dependencias.
 
 ## 6. Selector requerido (`tools/select.py`)
 
@@ -125,9 +125,9 @@ python3 tools/select.py --prototype
 python3 tools/select.py --workflow review --locator 123
 ```
 
-1. Descubre `workflows/*.md`, `skills/*/SKILL.md` y recursos `templates/*.md` sin catálogo paralelo. La selección interactiva permite búsqueda, workflow `continue` por defecto, skills sugeridas opcionales, captura de contexto material, edición, cancelación y reutilización de operación.
-2. Previsualiza el prompt completo antes de guardar. Contiene reglas compartidas, workflow y skills seleccionadas, objetivo/contexto, referencias, restricciones operativas y templates pertinentes resueltos desde los vínculos de los Markdown. Los templates son recursos internos opcionales; no se solicita su selección al PM.
-3. `--workflow`, `--skill`, `--locator`, `--objective`, `--output-dir`, `--list`, `--prototype` y `--help` permiten uso no interactivo. `--prototype` es atajo de implement + rapid-prototype. El modo no interactivo previsualiza y guarda directamente; combinaciones incompatibles, nombres desconocidos y locators inválidos fallan con mensaje claro.
+1. Descubre `workflows/*.md`, `skills/*/SKILL.md` y recursos `templates/*.md` sin catálogo paralelo. La selección interactiva permite búsqueda, workflow `continue` por defecto, skills adicionales sugeridas opcionales, inclusión automática sin duplicados de `repo-context` y `github-traceability` según su ámbito, captura de contexto material, edición, cancelación y reutilización de operación.
+2. Previsualiza el prompt completo antes de guardar. Contiene reglas compartidas, workflow, skills base `repo-context` y `github-traceability` y skills adicionales seleccionadas, objetivo/contexto, referencias, restricciones operativas y templates pertinentes resueltos desde los vínculos de los Markdown. Los templates son recursos internos opcionales; no se solicita su selección al PM.
+3. `--workflow`, `--skill`, `--locator`, `--objective`, `--output-dir`, `--list`, `--prototype` y `--help` permiten uso no interactivo. `--prototype` preselecciona implement + rapid-prototype y admite `--skill` adicionales. El modo no interactivo previsualiza y guarda directamente; combinaciones incompatibles, nombres desconocidos y locators inválidos fallan con mensaje claro.
 4. Por defecto guarda en `.project-os/prompts/`, ignorado por Git. Informa antes de reemplazar: tras publicar atómicamente el nuevo archivo, elimina solo los prompts anteriores identificables mediante nombre reservado y marcador del selector en la misma carpeta. Nunca elimina Markdown ajenos, symlinks ni archivos de otras carpetas. Si se cancela o falla la escritura, conserva los anteriores; informa si la limpieza posterior falla.
 5. Rechaza traversal y symlinks en rutas de destino y fuentes externas. Usa escritura temporal seguida de publicación atómica sin sobrescribir archivos existentes; no ejecuta código derivado del Markdown ni llama GitHub. Requiere soporte del sistema para abrir directorios sin seguir symlinks y enlaces duros en la carpeta destino.
 6. El selector se entrega y prueba obligatoriamente, pero su uso no es requisito para operar con Markdown. No concede permisos ni ejecuta workflows.
@@ -159,7 +159,7 @@ Los campos irrelevantes se omiten; indicar `no ejecutado` o `sin evidencia` en v
 
 - **Cold start:** con solo el repositorio identificado, inspeccionar instrucciones y fuentes GitHub vivas relevantes: issues, PRs, commits, diffs, checks, findings y blockers. Identificar objetivo y siguiente paso sin historial; solicitar como máximo un locator primario solo si hay ambigüedad material que no se puede resolver con evidencia. Si no hay acceso o fuentes suficientes, informar el límite y continuar lo seguro.
 - **Respuestas comunes:** usar según el resultado [Ejecución](../templates/execution.md), [Review](../templates/review.md) o [Decisión pendiente](../templates/decision.md): resultado y validación; findings con ubicación, impacto y evidencia; o acción bloqueada, hechos, opciones y trabajo seguro, respectivamente. Aplicar criterios idénticos de evidencia y veracidad en terminal y browser; respuestas breves por defecto, sin generar un informe por paso.
-- **Trazabilidad y continuidad:** conservar relaciones verificables entre issue, PR, commits, diff, checks, findings, decisiones y correcciones cuando existan. Reutilizar la misma unidad y verificar el resultado de acciones remotas realmente ejecutadas. El handoff mínimo recupera objetivo, estado, referencias vivas, validaciones, blockers materiales y próxima acción segura. Persistir un resumen en el issue/PR existente solo cuando aporte contexto difícil de recuperar, esté autorizado y no duplique comentarios.
+- **Trazabilidad y continuidad obligatorias:** toda implementación, corrección o modificación versionada destinada a integrarse en GitHub prepara un commit significativo con cambios propios y exige evidencia remota verificable. Reutilizar issue/PR existentes, publicar con autorización y capacidad, y verificar SHA remoto, PR y checks disponibles. Un commit solo local no satisface trazabilidad remota: reportar **trazabilidad pendiente** y el bloqueo si no puede publicarse; no declarar entrega completa en GitHub. Una consulta de solo lectura no genera commits. Solo experimentos expresamente locales y descartables pueden finalizar sin publicación; si no hay repo, tampoco exigen consultas GitHub. La excepción no aplica a cambios destinados a integración. La obligación no concede permisos. Conservar relaciones verificables entre issue, PR, commits, diff, checks, findings, decisiones y correcciones cuando existan. El handoff mínimo recupera objetivo, estado, referencias vivas, validaciones, blockers materiales y próxima acción segura. Persistir un resumen en el issue/PR existente solo cuando aporte contexto difícil de recuperar, esté autorizado y no duplique comentarios.
 - **Permisos:** los templates no autorizan acciones; separar preparación, ejecución y comprobación. Detener exclusivamente la acción sensible sin permiso y continuar trabajo seguro ante incertidumbre secundaria.
 
 ## 8. Autonomía, evidencia y permisos
@@ -172,7 +172,7 @@ Los campos irrelevantes se omiten; indicar `no ejecutado` o `sin evidencia` en v
 - Antes de escritura: preflight de target, rama, cambios ajenos, capacidad real de herramienta, visibilidad y scope de autorización. Un workflow/skill/template jamás concede permisos.
 - **Acción sensible = confirmación concreta separada:** merge, cierre final sin autorización, release/publicación, despliegue de producción, borrado destructivo, cambiar secrets, credenciales, permisos, repo settings, configuración productiva de auth/pagos y equivalentes. Detener solo esa acción y seguir la parte segura.
 - Secretos: nunca mostrar sus valores ni volcados de entorno; usar `[REDACTED]` y reportar ruta/nombre de variable/tipo de riesgo únicamente. Para web/API considerar riesgos OWASP aplicables.
-- GitHub: un issue/PR por outcome si aporta trazabilidad; un blocker en review se corrige en **el mismo PR**. No falsificar aprobaciones ni inventar estado remoto.
+- GitHub: reutilizar issue/PR del outcome cuando existan; un blocker se corrige y valida en **el mismo PR**. Publicar commits autorizados y verificar SHA, PR y checks disponibles; si no es posible, informar trazabilidad pendiente. No crear unidades ni comentarios redundantes, falsificar aprobaciones ni inventar estado remoto.
 
 **Repositorio público autorizado:** el PM autoriza desarrollar y publicar el código y documentación del MVP en `codefusion-repo/project-os-v3`, incluido push y draft PR. La visibilidad pública por sí sola no bloquea estas acciones. No incluir secretos ni datos privados; merge, release, deploy y cambios sensibles siguen sujetos a autorización específica.
 
@@ -192,7 +192,7 @@ Otros agentes: Markdown directo. Añadir adapter cuando una diferencia real lo e
 - Ejemplo documentado y reproducible de inicio `continue`, de prototipo rápido y de review. Se puede usar el kit leyendo los Markdown sin Python; Python se usa para el selector entregado.
 - Un chat nuevo recibe solo el repositorio y recupera el trabajo relevante desde GitHub; otro agente retoma sin repetir preguntas respondibles desde evidencia. Verificar el objetivo, referencias, checks, blockers y siguiente acción; si faltan fuentes, registrar el límite.
 - Terminal y browser chat aplican los mismos formatos y criterios de evidencia con sus capacidades reales; una acción sensible no autorizada se detiene sin bloquear el resto del trabajo.
-- Selector interactivo: workflow y skills producen prompt reutilizable; `continue` es default y Markdown directo sigue disponible.
+- Selector interactivo: workflow y skills producen prompt reutilizable que incluye una vez cada skill base; `continue` es default y Markdown directo aplica la misma regla. Comprobar deduplicación y skill base ausente o insegura.
 - Agente terminal autorizado: tarea normal → diff validado → commit → **un draft PR**, y corrección de findings en mismo PR. Si falta capacidad o permiso para una acción remota, reportarlo sin fingir aceptación completa.
 - No inventar test/permiso/estado; no realizar acciones de riesgo no autorizadas; inspeccionar riesgos del cambio.
 
