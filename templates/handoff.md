@@ -11,4 +11,4 @@ Continuar el trabajo desde referencias y evidencia vivas.
 **Próximo paso seguro:** {{accion_siguiente}}
 **Bloqueos materiales:** {{si_existen}}
 
-> Debe permitir cold start sin depender del chat previo; Persistir en el issue/PR existente solo con autorización y si agrega contexto difícil de recuperar; no duplicar contenido ya disponible por enlace.
+> Debe permitir cold start sin depender del chat previo; Un resumen adicional se persiste solo con autorización y cuando aporte contexto; el comentario nuevo por cada ejecución material autorizada es independiente de este handoff.

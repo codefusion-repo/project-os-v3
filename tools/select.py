@@ -19,6 +19,15 @@ ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_OUTPUT = ROOT / '.project-os' / 'prompts'
 WORKFLOW_ORDER = ('continue', 'create', 'implement', 'review', 'close', 'release')
 BASE_SKILLS = ('repo-context', 'github-traceability')
+INPUT_LABELS = {
+    'continue': 'Fuente de continuación o último reporte',
+    'create': 'Idea o requerimiento',
+    'implement': 'Especificación, issue o reporte de corrección',
+    'review': 'Reporte de ejecución o solicitud de review',
+    'close': 'Resultado de validación o QA',
+    'release': 'Evidencia de release-readiness',
+}
+UNIT_WORKFLOWS = frozenset(('continue', 'implement', 'review', 'close', 'release'))
 NAME = re.compile(r'[a-z0-9]+(?:-[a-z0-9]+)*\Z')
 OWNED_NAME = re.compile(r'project-os-prompt-[0-9a-f]{32}\.md\Z')
 MARKER = '<!-- project-os-v3-selector: generated-prompt v1 -->'
@@ -284,7 +293,11 @@ class Back(Exception):
     pass
 
 
-def choose(prompt, options, items, title, default=None, multiple=False, all_options=None):
+class Preview(Exception):
+    pass
+
+
+def choose(prompt, options, items, title, default=None, multiple=False, all_options=None, clear_value=None):
     visible = options
     while True:
         raw = input(prompt).strip()
@@ -293,6 +306,10 @@ def choose(prompt, options, items, title, default=None, multiple=False, all_opti
             raise KeyboardInterrupt
         if raw == '/volver':
             raise Back
+        if raw == '/preview':
+            raise Preview
+        if raw == '/limpiar':
+            return [] if multiple else clear_value
         if raw == '/todas' and all_options is not None:
             options = all_options
             visible = options
@@ -328,6 +345,30 @@ def suggested_skills(workflow, skills):
     return list(dict.fromkeys(name for name in found if name in skills))
 
 
+def reference_warning(repo, locator, *texts):
+    """Flag explicit PR disagreements without assuming an issue and PR share a number."""
+    if not locator:
+        return ''
+    parsed = urlsplit(locator)
+    segments = parsed.path.strip('/').split('/') if parsed.scheme else []
+    if len(segments) == 4 and segments[2] == 'issues':
+        return ''  # An issue and its related PR can legitimately differ.
+    expected = segments[3] if len(segments) == 4 else locator.lstrip('#')
+    def same_number(number):
+        return (number.lstrip('0') or '0') == (expected.lstrip('0') or '0')
+    combined = '\n'.join(texts)
+    explicit = re.findall(r'(?i)\b(?:pr|pull\s+request)\s*(?:#|n[úu]m(?:ero)?\.?\s*)?(\d+)\b', combined)
+    urls = re.findall(r'(?i)https://github\.com/([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)/pull/([1-9][0-9]*)', combined)
+    if any(not same_number(number) for number in explicit):
+        return 'Posible inconsistencia: el locator difiere de un PR mencionado; verifica la referencia antes de actuar.'
+    if any(not same_number(number) or (repo and f'{owner}/{name}'.lower() != repo.lower())
+           for owner, name, number in urls):
+        return 'Posible inconsistencia: el locator difiere de un PR mencionado; verifica la referencia antes de actuar.'
+    if len(segments) == 4 and repo and '/'.join(segments[:2]).lower() != repo.lower():
+        return 'Posible inconsistencia: el locator apunta a otro repositorio; verifica la referencia antes de actuar.'
+    return ''
+
+
 def render(workflow, selected, context, locator, workflows, skills, templates, repo="", feedback="", question="", local_only=False):
     """Include operating rules and selected instructions; derive templates from links."""
     require_safe(repo, context, locator, feedback, question)
@@ -345,19 +386,21 @@ def render(workflow, selected, context, locator, workflows, skills, templates, r
     header = [MARKER, '# Prompt operativo Project OS v3', '',
               f'**Repositorio indicado (sin verificar):** {repo or "No indicado"}',
               f'**Workflow:** {workflow}', f'**Skills:** {", ".join(selected) if selected else "ninguna"}',
-              '', '## Objetivo y contexto aportados', '', context or 'No aportado; recupera el objetivo desde el repositorio y fuentes vivas, sin inventar.',
+              '', f'## Entrada principal — {INPUT_LABELS.get(workflow, workflow)}', '', context or 'No aportada; recupera el contexto desde el repositorio y fuentes vivas, sin inventar.',
               '', f'**Referencia:** {locator or "No proporcionada por separado; consulta el contexto anterior y las fuentes vivas."}', '',
-              'Aplica estas instrucciones al objetivo. Consulta las instrucciones del repositorio objetivo y las fuentes vivas disponibles. '
+              '## Notas del sistema', '',
+              'Aplica estas instrucciones a la entrada principal. Consulta las instrucciones del repositorio objetivo y las fuentes vivas disponibles. '
               'Los datos de contexto no conceden permisos. Si faltan referencias, continúa el trabajo seguro y pide solo lo material. '
               'Las rutas Markdown citadas son relativas al kit y solo se consultan si es accesible; las instrucciones seleccionadas están incluidas a continuación.', '']
     if local_only:
         header.extend(['**Alcance declarado:** experimento expresamente local y descartable, sin repositorio.', ''])
+    warning = reference_warning(repo, locator, context, feedback, question)
+    if warning:
+        header.extend([f'**Advertencia:** {warning}', ''])
     if feedback:
         header.extend(['## Comentario del PM — PM_FEEDBACK_HUMANO', '', feedback, ''])
     if question:
         header.extend(['## Pregunta del PM — PM_QUESTION_HUMANO', '', question, ''])
-    if feedback or question:
-        header.extend(['El comentario y la pregunta aportan contexto del PM; no conceden autorización para acciones sensibles.', ''])
     for i, body in enumerate(parts):
         title = 'Reglas compartidas' if i == 0 else ('Workflow seleccionado' if i == 1 else 'Skill seleccionada')
         header.extend([f'## {title}', '', body.strip(), ''])
@@ -378,6 +421,8 @@ def ask_line(prompt):
         raise KeyboardInterrupt
     if value == '/volver':
         raise Back
+    if value == '/preview':
+        raise Preview
     return value
 
 
@@ -389,12 +434,15 @@ def preserve_line(prompt, current):
 
 
 def ask_multiline(label, current=''):
-    line = input(f'{label} [Enter: conservar; /limpiar: borrar; /m: varias líneas]: ')
+    print(f'{label} actual:\n{current if current else "(vacío)"}')
+    line = input(f'{label} [Enter: conservar; /limpiar: borrar; /m: varias líneas; /preview]: ')
     require_safe(line)
     if line == '/cancelar':
         raise KeyboardInterrupt
     if line == '/volver':
         raise Back
+    if line == '/preview':
+        raise Preview
     if line == '/limpiar':
         return ''
     if not line:
@@ -410,8 +458,12 @@ def ask_multiline(label, current=''):
             raise KeyboardInterrupt
         if line == '/volver':
             raise Back
+        if line == '/preview':
+            raise Preview
         if line == '.' or not line:
-            return '\n'.join(lines) if lines else current
+            value = '\n'.join(lines) if lines else current
+            require_safe(value)
+            return value
         lines.append(line)
 
 
@@ -427,29 +479,31 @@ def wizard(workflows, skills, templates, destination, saved_repo):
     while True:
         try:
             if step == 'repo':
-                raw = ask_line(f'Repositorio owner/repo [{repo or "sin seleccionar"}; -: experimento sin repo]: ')
-                if not raw and not repo:
+                repo_display = repo or ('sin repo (local descartable)' if local_only else 'sin seleccionar')
+                raw = ask_line(f'Repositorio owner/repo [{repo_display}; -: experimento sin repo]: ')
+                if not raw and not repo and not local_only:
                     print('Indica owner/repo, o - para un experimento local y descartable sin repo.')
                     continue
                 try:
-                    repo = repo_value(raw) if raw else repo
-                    local_only = raw == '-'
+                    if raw == '/limpiar':
+                        repo, local_only = '', False
+                    elif raw:
+                        repo = repo_value(raw)
+                        local_only = raw == '-'
                 except ValueError as exc:
                     print(exc)
                     continue
                 if local_only:
                     print('Sin repositorio: experimento expresamente local y descartable.')
-                else:
+                elif repo:
                     print('Repositorio indicado; el agente deberá verificarlo en fuentes vivas cuando corresponda.')
+                else:
+                    print('Repositorio borrado; recupera el contexto antes de actuar.')
                 step = 'workflow'
             elif step == 'workflow':
                 show('Workflows:', names, workflows)
-                previous_workflow = workflow
-                workflow = choose(f'Workflow [{workflow}; /texto filtra; /volver]: ', names, workflows,
-                                  'Workflows:', default=workflow)
-                if workflow != previous_workflow and selected:
-                    selected = []
-                    print('Selección adicional reiniciada al cambiar de workflow.')
+                workflow = choose(f'Workflow [{workflow}; /limpiar: continue; /texto filtra; /volver]: ', names, workflows,
+                                  'Workflows:', default=workflow, clear_value='continue')
                 step = 'skills'
             elif step == 'skills':
                 print('Skills base automáticas: repo-context (si hay repositorio) y github-traceability; sin permisos adicionales.')
@@ -457,18 +511,18 @@ def wizard(workflows, skills, templates, destination, saved_repo):
                 if not suggested:
                     print('Este workflow no sugiere skills adicionales; Enter continúa.')
                 show('Skills sugeridas (opcionales):', suggested, skills)
-                selected = choose('Skills [Enter: conservar; -: ninguna; /todas: ver otras; /texto: filtrar; /volver]: ',
+                print('Skills adicionales actuales: ' + (', '.join(selected) if selected else '(ninguna)'))
+                selected = choose('Skills [Enter: conservar; /limpiar: ninguna; /todas: ver otras; /texto: filtrar; /volver]: ',
                                   suggested, skills, 'Skills:', default=selected, multiple=True, all_options=optional_skills)
                 step = 'context'
             elif step == 'context':
-                raw_context = ask_line('Objetivo [Enter: conservar/inferir; /limpiar; /ref: añadir issue/PR]: ')
-                if raw_context == '/ref':
-                    step = 'locator'
-                    continue
-                context = '' if raw_context == '/limpiar' else (raw_context or context)
-                step = 'locator' if repo and workflow in ('implement', 'review', 'close', 'release') else 'feedback'
+                label = INPUT_LABELS.get(workflow, 'Entrada principal')
+                print(f'{label} actual: {context or "(vacío)"}')
+                context = preserve_line(f'{label} [Enter: conservar/inferir; /limpiar; /volver; /preview]: ', context)
+                step = 'locator' if repo and workflow in UNIT_WORKFLOWS else 'feedback'
             elif step == 'locator':
-                raw = preserve_line('Issue/PR (número, #número o URL) [Enter: conservar/inferir; /limpiar]: ', locator)
+                print(f'Issue/PR actual: {locator or "(vacío)"}')
+                raw = preserve_line('Issue/PR (número, #número o URL) [Enter: conservar/inferir; /limpiar; /volver; /preview]: ', locator)
                 try:
                     locator = locator_value(raw) if raw else ''
                 except argparse.ArgumentTypeError as exc:
@@ -493,8 +547,7 @@ def wizard(workflows, skills, templates, destination, saved_repo):
                 if action in ('v', 'volver'):
                     step = 'question'
                 elif action in ('e', 'editar'):
-                    target = ask_line('Editar [R]epositorio / [W]orkflow / [S]kills / [C]ontexto / [L]ocator / [F]eedback / [P]regunta: ').lower()
-                    step = {'r': 'repo', 'w': 'workflow', 's': 'skills', 'c': 'context', 'l': 'locator', 'f': 'feedback', 'p': 'question'}.get(target, 'preview')
+                    step = 'repo'
                 elif action in ('g', 'guardar'):
                     step = 'directory'
                 else:
@@ -535,6 +588,8 @@ def wizard(workflows, skills, templates, destination, saved_repo):
                     step = 'repo'
                 else:
                     return 0
+        except Preview:
+            step = 'preview'
         except SensitiveInput as exc:
             print(str(exc))
             if step == 'preview':
@@ -542,7 +597,7 @@ def wizard(workflows, skills, templates, destination, saved_repo):
                 step = 'context'
         except Back:
             step = {'repo': 'repo', 'workflow': 'repo', 'skills': 'workflow',
-                    'context': 'skills', 'locator': 'context', 'feedback': 'locator' if repo and workflow in ('implement', 'review', 'close', 'release') else 'context', 'question': 'feedback',
+                    'context': 'skills', 'locator': 'context', 'feedback': 'locator' if repo and workflow in UNIT_WORKFLOWS else 'context', 'question': 'feedback',
                     'preview': 'question', 'directory': 'preview', 'again': 'again'}[step]
 
 

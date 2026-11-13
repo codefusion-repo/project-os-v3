@@ -32,4 +32,12 @@ El wizard inicia por repositorio, continúa con workflow, skills, contexto del P
 
 ## Correcciones de review del selector
 
-El wizard conserva objetivo y locator en campos separados cuando corresponda y permite añadir un locator opcional con `/ref`. La edición preserva los valores y `/limpiar` los elimina explícitamente. Antes de previsualizar o persistir se rechazan patrones comunes de secretos sin imprimirlos en errores; la detección es heurística. La plataforma validada y el check CI están descritos en [V3_SPEC.md](V3_SPEC.md).
+El wizard conserva la entrada principal y el locator en campos separados cuando corresponde. La edición preserva los valores y `/limpiar` los elimina explícitamente. Antes de previsualizar o persistir se rechazan patrones comunes de secretos sin imprimirlos en errores; la detección es heurística. La plataforma validada y el check CI están descritos en [V3_SPEC.md](V3_SPEC.md).
+
+## Wizard y trazabilidad histórica
+
+Editar recorre secuencialmente los campos mostrando valores actuales; Enter conserva y `/limpiar` borra. Cada workflow tiene una etiqueta propia y una sola referencia contextual opcional cuando usa una unidad. Los campos PM contienen solo lo proporcionado; las notas automáticas se separan. Por cada ejecución material con unidad y autorización se crea y verifica un comentario nuevo, incluidos fallos y bloqueos; nunca se reemplaza el historial ni lo sustituye la descripción del PR. Sin autorización o acceso se prepara un borrador y se informa trazabilidad pendiente.
+
+## Reviews de browser chat
+
+El [adapter browser](../adapters/browser-chat.md), [review](../workflows/review.md) y [github-traceability](../skills/github-traceability/SKILL.md) distinguen `review.read` y `review.publish`, reutilizan la autorización previa efectiva de su alcance, publican reviews materiales como comentarios nuevos verificables y previenen duplicados al reintentar. El prompt de corrección solo referencia repo, PR, SHA y URL confirmada; ante falta de permiso o error ambiguo se entrega review/borrador con `review no publicado` y sin URL inventada.

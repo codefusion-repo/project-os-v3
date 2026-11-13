@@ -47,6 +47,34 @@ class Structure(unittest.TestCase):
             for skill in ('repo-context', 'github-traceability'):
                 self.assertIn(f'skills/{skill}/SKILL.md', content)
 
+    def test_material_execution_history_contract_and_failed_attempts(self):
+        shared = (ROOT / 'PROJECT_OS.md').read_text().lower()
+        skill = (ROOT / 'skills/github-traceability/SKILL.md').read_text().lower()
+        template = (ROOT / 'templates/comment.md').read_text().lower()
+        for content in (shared, skill, template):
+            self.assertIn('comentario nuevo', content)
+            self.assertIn('ejecución material', content)
+            self.assertIn('autorizad', content)
+            self.assertIn('fall', content)
+            self.assertRegex(content, r'(?:no|nunca) edit')
+        self.assertIn('borrador', skill)
+        self.assertIn('verifica', template)
+
+    def test_browser_review_publication_contract_is_connected(self):
+        adapter = (ROOT / 'adapters/browser-chat.md').read_text().lower()
+        skill = (ROOT / 'skills/github-traceability/SKILL.md').read_text().lower()
+        workflow = (ROOT / 'workflows/review.md').read_text().lower()
+        for content in (adapter, skill):
+            for term in ('review.read', 'review.publish', 'autorización', 'sha',
+                         'identificador', 'reintento', 'review no publicado'):
+                self.assertIn(term, content)
+            self.assertIn('comentario nuevo', content)
+        for link in ('../adapters/browser-chat.md', '../skills/github-traceability/SKILL.md'):
+            self.assertIn(link.lower(), workflow)
+        self.assertIn('../../adapters/browser-chat.md', skill)
+        self.assertIn('../workflows/review.md', adapter)
+        self.assertIn('<url_permanente_del_comentario>', adapter)
+
     def test_relative_markdown_links(self):
         for path in ROOT.rglob('*.md'):
             if '.git' in path.parts or '.project-os' in path.parts:

@@ -211,7 +211,7 @@ class SelectorCLI(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             dest = Path(tmp) / 'out'
             session = ('owner/repo\n/prototipo\n1\nrapid-prototype,testing\nPrimera idea\n\n\n\n'
-                       'e\nc\nIdea editada\n\n\n\ng\n\nm\nSegunda idea\n\n\n\ng\n\ns\n')
+                       'e\n\n\n\nIdea editada\n\n\n\ng\n\nm\nSegunda idea\n\n\n\ng\n\ns\n')
             result = run(dest, input_text=session)
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertIn('Skills sugeridas', result.stdout)
@@ -231,7 +231,7 @@ class SelectorCLI(unittest.TestCase):
             self.assertEqual(run(dest, '--prototype').returncode, 0)
             previous = generated(dest)[0]
             before = previous.read_bytes()
-            result = run(dest, input_text='owner/repo\n\n\nContexto\n\n\nc\n')
+            result = run(dest, input_text='owner/repo\n\n\nContexto\n\n\n\nc\n')
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertIn('Cancelado', result.stdout)
             self.assertEqual(generated(dest), [previous])
@@ -243,7 +243,7 @@ class SelectorCLI(unittest.TestCase):
     def test_default_continue_and_direct_prototype(self):
         with tempfile.TemporaryDirectory() as tmp:
             dest = Path(tmp)
-            result = run(dest, input_text='owner/repo\n\n\n\n\n\ng\n\ns\n')
+            result = run(dest, input_text='owner/repo\n\n\n\n\n\n\ng\n\ns\n')
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertIn('**Workflow:** continue', generated(dest)[0].read_text())
             result = run(dest, '--prototype')
@@ -321,7 +321,7 @@ class TerminalInteraction(unittest.TestCase):
                 os.write(master, b'review\n')
                 wait_for(b'Skills [Enter:')
                 os.write(master, b'\n')
-                wait_for(b'Objetivo [')
+                wait_for('Reporte de ejecución o solicitud de review actual'.encode())
                 os.write(master, b'\n')
                 wait_for(b'Issue/PR (')
                 os.write(master, b'\n')
@@ -352,7 +352,7 @@ class WizardConfiguration(unittest.TestCase):
             root = Path(tmp)
             install = copy_install(root / 'kit')
             destination = root / 'selected'
-            first_input = ('repo-invalido\norg/uno\n\n/todas\ndebug,testing\n\n'
+            first_input = ('repo-invalido\norg/uno\n\n/todas\ndebug,testing\n\n\n'
                            '/m\nfeedback privado línea uno\nfeedback línea dos\n.\n'
                            '/m\npregunta privada uno\npregunta dos\n.\n'
                            'g\n' + str(destination) + '\ns\n')
@@ -370,7 +370,7 @@ class WizardConfiguration(unittest.TestCase):
             self.assertEqual(config, {'repo': 'org/uno', 'output_dir': str(destination)})
             self.assertNotIn('privado', config_path.read_text())
             self.assertEqual(config_path.stat().st_mode & 0o777, 0o600)
-            second = self.invoke(install, '\n\n\n#77\n\n\ng\n\ns\n')
+            second = self.invoke(install, '\n\n\n\n#77\n\n\ng\n\ns\n')
             self.assertEqual(second.returncode, 0, second.stderr)
             self.assertIn('Repositorio owner/repo [org/uno;', second.stdout)
             self.assertIn(f'Carpeta de salida [{destination}]', second.stdout)
@@ -378,7 +378,7 @@ class WizardConfiguration(unittest.TestCase):
             self.assertIn('#77', prompt)
             self.assertNotIn('feedback privado', prompt)
             self.assertNotIn('pregunta privada', prompt)
-            third = self.invoke(install, 'org/dos\n\n\n\n\n\ng\n\ns\n')
+            third = self.invoke(install, 'org/dos\n\n\n\n\n\n\ng\n\ns\n')
             self.assertEqual(third.returncode, 0, third.stderr)
             self.assertEqual(json.loads(config_path.read_text())['repo'], 'org/dos')
             self.assertIn('org/dos', generated(destination)[0].read_text())
@@ -402,6 +402,61 @@ class WizardConfiguration(unittest.TestCase):
             self.assertNotIn('PM_FEEDBACK_HUMANO', text)
             self.assertNotIn('PM_QUESTION_HUMANO', text)
 
+    def test_sequential_edit_shows_values_and_preserves_exact_pm_text(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            install = copy_install(root / 'kit')
+            dest = root / 'out'
+            feedback = '  Primera línea  \nsegunda línea  '
+            question = ' ¿Qué falta?  '
+            inputs = ('org/repo\nreview\ncode-review\nRevisar PR #55\n#55\n/m\n' + feedback +
+                      '\n.\n' + question + '\ne\n\n\n\n\n\n\n\ng\n' + str(dest) + '\ns\n')
+            result = self.invoke(install, inputs)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertNotIn('Editar [R]epositorio', result.stdout)
+            for value in ('Workflow [review;', 'Skills adicionales actuales: code-review',
+                          'Reporte de ejecución o solicitud de review actual: Revisar PR #55',
+                          'Issue/PR actual: #55', 'Comentario del PM — PM_FEEDBACK_HUMANO actual:\n' + feedback,
+                          'Pregunta del PM — PM_QUESTION_HUMANO actual:\n' + question):
+                self.assertIn(value, result.stdout)
+            text = generated(dest)[0].read_text()
+            feedback_body = text.split('## Comentario del PM — PM_FEEDBACK_HUMANO\n\n', 1)[1].split('\n\n## ', 1)[0]
+            question_body = text.split('## Pregunta del PM — PM_QUESTION_HUMANO\n\n', 1)[1].split('\n\n## ', 1)[0]
+            self.assertEqual(feedback_body, feedback)
+            self.assertEqual(question_body, question)
+            self.assertIn('## Notas del sistema\n', text)
+
+    def test_edit_can_return_to_preview_without_clearing_values(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            install = copy_install(root / 'kit')
+            dest = root / 'out'
+            inputs = ('org/repo\nreview\n\nReporte\n#5\nFeedback\nPregunta\n'
+                      'e\n/preview\ng\n' + str(dest) + '\ns\n')
+            result = self.invoke(install, inputs)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(result.stdout.count('--- Vista previa del prompt ---'), 2)
+            text = generated(dest)[0].read_text()
+            for value in ('Reporte', '**Referencia:** #5', 'Feedback', 'Pregunta'):
+                self.assertIn(value, text)
+
+    def test_inconsistent_locator_warns_without_altering_pm_fields(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            install = copy_install(root / 'kit')
+            dest = root / 'out'
+            inputs = ('org/repo\nreview\n\nRevisar PR #7\n#9\nNota exacta\nConsulta exacta\ng\n' + str(dest) + '\ns\n')
+            result = self.invoke(install, inputs)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(result.stdout.count('Issue/PR (número'), 1)
+            text = generated(dest)[0].read_text()
+            self.assertIn('**Advertencia:** Posible inconsistencia', text)
+            self.assertIn('## Comentario del PM — PM_FEEDBACK_HUMANO\n\nNota exacta\n\n##', text)
+            self.assertIn('## Pregunta del PM — PM_QUESTION_HUMANO\n\nConsulta exacta\n\n##', text)
+            self.assertFalse(selector.reference_warning('org/repo', 'https://github.com/org/repo/issues/7', 'PR #9'))
+            self.assertFalse(selector.reference_warning('org/repo', '#7', 'Revisar PR #7'))
+            self.assertTrue(selector.reference_warning('org/repo', '#7', 'Revisar PR #9'))
+
     def test_review_locator_and_partial_edit_preserve_pm_fields(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -409,8 +464,7 @@ class WizardConfiguration(unittest.TestCase):
             dest = root / 'out'
             locator = 'https://github.com/codefusion-repo/project-os-v3/pull/1'
             inputs = ('codefusion-repo/project-os-v3\nreview\ncode-review\nObjetivo inicial\n' + locator +
-                      '\nComentario original\nPregunta original\ne\np\nPregunta editada\n'
-                      'e\nc\nObjetivo actualizado\n\n\n\ng\n' + str(dest) + '\ns\n')
+                      '\nComentario original\nPregunta original\ne\n\n\n\nObjetivo actualizado\n\n\nPregunta editada\ng\n' + str(dest) + '\ns\n')
             result = self.invoke(install, inputs)
             self.assertEqual(result.returncode, 0, result.stderr)
             text = generated(dest)[0].read_text()
@@ -427,7 +481,7 @@ class WizardConfiguration(unittest.TestCase):
             install = copy_install(root / 'kit')
             dest = root / 'out'
             inputs = ('org/repo\nreview\n\nObjetivo\n#123\nComentario\nPregunta\n'
-                      'e\nf\n/limpiar\n\ng\n' + str(dest) + '\ns\n')
+                      'e\n\n\n\n\n\n/limpiar\n\ng\n' + str(dest) + '\ns\n')
             result = self.invoke(install, inputs)
             self.assertEqual(result.returncode, 0, result.stderr)
             text = generated(dest)[0].read_text()
@@ -436,17 +490,19 @@ class WizardConfiguration(unittest.TestCase):
             self.assertIn('Pregunta', text)
             self.assertNotIn('## Comentario del PM — PM_FEEDBACK_HUMANO', text)
 
-    def test_continue_optional_structured_locator_and_no_forced_reference(self):
+    def test_continue_has_one_optional_structured_locator(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             install = copy_install(root / 'kit')
             dest = root / 'out'
-            result = self.invoke(install, 'org/repo\ncontinue\n\n/ref\n#77\n\n\ng\n' + str(dest) + '\ns\n')
+            result = self.invoke(install, 'org/repo\ncontinue\n\n\n#77\n\n\ng\n' + str(dest) + '\ns\n')
             self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(result.stdout.count('Issue/PR (número'), 1)
             self.assertIn('**Referencia:** #77', generated(dest)[0].read_text())
-            result = self.invoke(install, '\ncontinue\n\n\n\n\nc\n')
+            result = self.invoke(install, '\ncontinue\n\n\n\n\n\nc\n')
             self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertNotIn('Issue/PR (número', result.stdout)
+            self.assertEqual(result.stdout.count('Issue/PR (número'), 1)
+            self.assertIn('No proporcionada por separado', result.stdout)
 
     def test_sensitive_interactive_fields_are_rejected_without_leaking(self):
         secret = 'ghp_' + 'B' * 36
@@ -470,7 +526,7 @@ class WizardConfiguration(unittest.TestCase):
             dest = root / 'out'
             secret_part = 'z' * 24
             inputs = ('org/repo\nreview\n\nObjetivo\n\n/m\nBearer\n' + secret_part +
-                      '\n.\n\n\n\n/limpiar\n\ng\n' + str(dest) + '\ns\n')
+                      '\n.\n/limpiar\n\ng\n' + str(dest) + '\ns\n')
             result = self.invoke(install, inputs)
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertIn('posible información sensible', result.stdout)
@@ -481,7 +537,7 @@ class WizardConfiguration(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             install = copy_install(root / 'kit')
-            result = self.invoke(install, 'org/repo\n\n\n\n\n\nc\n')
+            result = self.invoke(install, 'org/repo\n\n\n\n\n\n\nc\n')
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertFalse((install / '.project-os').exists())
             outside = root / 'external.json'
@@ -498,11 +554,12 @@ class WizardConfiguration(unittest.TestCase):
             install = copy_install(Path(tmp) / 'kit')
             for workflow in selector.WORKFLOW_ORDER:
                 with self.subTest(workflow=workflow):
-                    locator_line = '\n' if workflow in ('implement', 'review', 'close', 'release') else ''
+                    locator_line = '\n' if workflow in selector.UNIT_WORKFLOWS else ''
                     result = self.invoke(install, 'org/repo\n' + workflow + '\n\n\n' + locator_line + '\n\nc\n')
                     self.assertEqual(result.returncode, 0, result.stderr)
                     self.assertIn('Comentario del PM — PM_FEEDBACK_HUMANO', result.stdout)
                     self.assertIn('Pregunta del PM — PM_QUESTION_HUMANO', result.stdout)
+                    self.assertIn(selector.INPUT_LABELS[workflow], result.stdout)
                     self.assertFalse((install / '.project-os').exists())
 
     def test_cli_flags_do_not_read_or_write_wizard_configuration(self):

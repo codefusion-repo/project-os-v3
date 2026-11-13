@@ -18,7 +18,8 @@ Toda implementación, corrección o modificación versionada destinada a integra
 1. Recupera el issue y PR existentes cuando los haya; implementa y valida el alcance autorizado sin alterar trabajo ajeno.
 2. Prepara un commit significativo con los cambios propios, sin commits vacíos. Con capacidad y autorización, publica el commit y actualiza el mismo PR si existe; no abras otro PR para corregir el mismo outcome.
 3. Verifica el SHA en el remoto, el PR y los checks disponibles. Informa SHA o URL reales, comandos/tests y resultados, riesgos y el estado remoto observado. Si falta acceso, permiso o autorización, conserva el trabajo seguro e informa **trazabilidad pendiente**, bloqueo y siguiente paso; un commit local sin push no satisface trazabilidad remota ni permite declarar entrega en GitHub.
-4. Una consulta o review de solo lectura no crea commits artificiales. Solo un experimento expresamente local y descartable puede terminar sin publicación; si no tiene repositorio, tampoco exige consultas GitHub; la excepción no aplica a cambios destinados a integrarse. Persiste decisiones o bloqueos en el hilo existente solo cuando ayuden al cold start y estén autorizados, sin comentarios redundantes.
+4. Cuando exista issue/PR y la publicación esté autorizada, añade por cada ejecución material un comentario nuevo en la unidad existente: resultado, cambio o intento, SHA si existe, tests/checks observados —incluidas fallas—, riesgos o bloqueos y siguiente paso. Incluye intentos fallidos; verifica que el comentario se publicó. No edites ni reemplaces comentarios anteriores, ni uses la descripción del PR como sustituto del historial. Evita duplicar el mismo resultado; una nueva ejecución material requiere una entrada nueva. Si no hay acceso o autorización, prepara el comentario como borrador e informa trazabilidad pendiente.
+5. Una consulta o review de solo lectura no crea commits artificiales. Solo un experimento expresamente local y descartable puede terminar sin publicación; si no tiene repositorio, tampoco exige consultas GitHub; la excepción no aplica a cambios destinados a integrarse. Registra decisiones y bloqueos materiales en la entrada nueva autorizada; evita comentarios redundantes.
 
 ## Respuesta y continuidad
 
@@ -28,7 +29,7 @@ Usa una respuesta breve en el formato que corresponda, sin exigir un reporte por
 - **Review:** findings priorizados con ubicación, impacto y evidencia; checks y límites. Si no hay findings, indícalo sin inventar aprobación. Guía: [review](templates/review.md).
 - **Decisión pendiente:** acción material bloqueada, hechos, opciones y próximo trabajo seguro. Guía: [decision](templates/decision.md).
 
-Estos criterios de evidencia y veracidad son comunes a todos los workflows y adapters: distingue preparado, ejecutado y confirmado; indica lo no probado y nunca inventes resultados. Para continuidad, [handoff](templates/handoff.md) recoge objetivo, estado, refs vivas, validaciones, blockers materiales y siguiente acción segura. GitHub es la fuente persistente cuando está disponible: agrega un resumen al issue/PR existente solo si aporta contexto difícil de recuperar, está autorizado y no duplica comentarios.
+Estos criterios de evidencia y veracidad son comunes a todos los workflows y adapters: distingue preparado, ejecutado y confirmado; indica lo no probado y nunca inventes resultados. Para continuidad, [handoff](templates/handoff.md) recoge objetivo, estado, refs vivas, validaciones, blockers materiales y siguiente acción segura. GitHub es la fuente persistente cuando está disponible: conserva el historial de cada ejecución material con comentarios nuevos autorizados; no dupliques el mismo resultado.
 
 ## Límites
 

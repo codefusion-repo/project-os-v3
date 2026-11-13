@@ -9,11 +9,12 @@ Review de diff, PR o cambio ya implementado.
 ## Ruta rápida
 1. Identifica base/head, alcance y criterios; inspecciona diff y código circundante.
 2. Examina casos límite, seguridad y tests pertinentes; reproduce hallazgos cuando sea viable.
-3. Ordena findings por impacto con ubicación y escenario; indica validación y límites.
-4. Si corresponde y está autorizado, corrige en el mismo PR, valida, prepara un commit significativo y publica si es posible; verifica SHA remoto y checks disponibles.
+3. Entrega al PM findings por impacto con ubicación, evidencia, corrección, SHA revisado, checks y límites.
+4. En browser chat, aplica el [adapter](../adapters/browser-chat.md): si `review.publish` está autorizado y disponible, publica y verifica un comentario nuevo; si no, entrega borrador e indica review no publicado. Informa cambios del head.
+5. Tras confirmar publicación, prepara un prompt compacto con repo, PR, SHA y URL del comentario para corregir en el mismo PR; valida y publica commits solo con autorización.
 ## Evidencia y validación
-Usa código y checks reales, no solo la descripción del PR. Una review de solo lectura no crea commits. Aplica [github-traceability](../skills/github-traceability/SKILL.md) a las correcciones versionadas. Skills sugeridas: [code-review](../skills/code-review/SKILL.md), [security-review](../skills/security-review/SKILL.md), [testing](../skills/testing/SKILL.md).
+Usa código y checks reales, no solo la descripción del PR. Identifica cada review material de forma única y evita duplicados en reintentos; no sustituyas ni edites historia. Una review de solo lectura no crea commits. Aplica [github-traceability](../skills/github-traceability/SKILL.md) a las correcciones versionadas. Skills sugeridas: [code-review](../skills/code-review/SKILL.md), [security-review](../skills/security-review/SKILL.md), [testing](../skills/testing/SKILL.md).
 ## Salida
-Findings con ruta/línea, impacto y evidencia; indica si no hay hallazgos y qué no se revisó. Si hubo correcciones, aporta SHA/URL verificados o informa trazabilidad pendiente con bloqueo. [review](../templates/review.md) y [review-comment](../templates/review-comment.md) ayudan a preparar findings o respuestas en el hilo existente.
+Findings con ruta/línea, impacto y evidencia; indica si no hay hallazgos y qué no se revisó. Si se publicó la review, aporta URL permanente verificada y prompt de corrección con referencias; si no, entrega review y borrador, sin inventar URL. Si hubo correcciones, aporta SHA/URL verificados o informa trazabilidad pendiente con bloqueo. [review](../templates/review.md) y [review-comment](../templates/review-comment.md) ayudan a preparar findings o respuestas en el hilo existente.
 ## Escalación localizada
-No inventes aprobaciones ni realices merge; eleva solo la acción sin autorización.
+No infieras permisos del conector: comentar no autoriza review formal, cambios de código, merge ni despliegue. Detén solo la acción no autorizada.
