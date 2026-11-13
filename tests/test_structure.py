@@ -8,7 +8,7 @@ WORKFLOWS = {'continue', 'create', 'implement', 'review', 'close', 'release'}
 SKILLS = {'repo-context', 'rapid-prototype', 'implement-change', 'debug', 'testing',
           'security-review', 'code-review', 'github-traceability', 'documentation'}
 TEMPLATES = {'task', 'issue', 'pull-request', 'review', 'execution', 'decision',
-             'prototype', 'handoff', 'release', 'dogfood'}
+             'prototype', 'handoff', 'release', 'dogfood', 'merge', 'close', 'comment', 'review-comment'}
 
 
 class Structure(unittest.TestCase):

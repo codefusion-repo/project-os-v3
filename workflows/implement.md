@@ -14,6 +14,6 @@ Feature, corrección, refactor acotado o idea que necesita un slice vertical.
 ## Evidencia y validación
 Muestra demo o pruebas reales y exit codes; no exijas issue/PR para un prototipo local. Skills sugeridas: [implement-change](../skills/implement-change/SKILL.md), [rapid-prototype](../skills/rapid-prototype/SKILL.md), [debug](../skills/debug/SKILL.md), [testing](../skills/testing/SKILL.md).
 ## Salida
-Rutas, resultado observable, validación, riesgos y próximo paso; [prototype](../templates/prototype.md) es opcional.
+Rutas, resultado observable, validación, riesgos y próximo paso; [prototype](../templates/prototype.md) y [comment](../templates/comment.md) ayudan si se necesita una demo o actualización en el issue/PR existente.
 ## Escalación localizada
 Detén solo acciones sensibles no autorizadas; no confundas datos simulados con producción.

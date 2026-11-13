@@ -13,6 +13,6 @@ Después de implementación y revisión, cuando se evalúa cierre.
 ## Evidencia y validación
 Referencias y resultados vivos, sin inferir aprobación o checks. Skills sugeridas: [github-traceability](../skills/github-traceability/SKILL.md), [testing](../skills/testing/SKILL.md).
 ## Salida
-Readiness, evidencia, pendientes y acción concreta siguiente.
+Readiness, evidencia, pendientes y acción concreta siguiente. Usa [merge](../templates/merge.md), [close](../templates/close.md) o [comment](../templates/comment.md) cuando aporten valor; preparar, ejecutar y verificar son pasos distintos.
 ## Escalación localizada
 Merge y cierre final requieren autorización; prepara lo demás sin ejecutarlos.

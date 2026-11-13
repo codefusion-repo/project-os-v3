@@ -1,5 +1,7 @@
 # {{cambio_y_resultado}}
 
+Describir un cambio, sus pruebas y riesgos para revisión.
+
 **Issue relacionado (si existe):** {{url}}
 
 ## Cambios

@@ -1,5 +1,7 @@
 # Handoff — {{outcome}}
 
+Continuar el trabajo desde referencias y evidencia vivas.
+
 **Repo/ref actual:** {{repo_branch_commit_verificados}}
 **Issue/PR:** {{links_reales}}
 **Hechos actuales:** {{estado_verificado}}

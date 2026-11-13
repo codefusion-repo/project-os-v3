@@ -1,5 +1,7 @@
 # Dogfood v3 — {{proyecto_piloto_y_tarea}}
 
+Registrar observaciones comparables del piloto y sus límites.
+
 **Contexto:** {{proyecto_stack_tarea_comparable_y_modelo_agente}}
 **Evidencias:** {{issues_prs_commits_logs_validaciones}}
 

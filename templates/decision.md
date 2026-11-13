@@ -1,5 +1,7 @@
 # Decisión pendiente — {{decision_material}}
 
+Preparar una decisión material con evidencia y opciones.
+
 **Acción específica bloqueada:** {{accion}}
 **Motivo y riesgo:** {{impacto_concreto}}
 **Hechos verificados:** {{evidencia}}

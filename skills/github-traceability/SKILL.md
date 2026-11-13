@@ -12,9 +12,9 @@ Repo, scope autorizado y locator de issue/PR si existe.
 ## Procedimiento concreto
 1. Verificar estado actual del repo/issue/PR/checks con GitHub, sin asumirlo desde una nota.
 2. Reusar issue/PR del outcome existente; crear uno nuevo solo si agrega trazabilidad y está autorizado.
-3. Adjuntar decisiones y validaciones breves con referencias vivas, evitando comentarios duplicados por transición.
+3. Preparar actualizaciones con [comment](../../templates/comment.md) o findings/respuestas con [review-comment](../../templates/review-comment.md); comprobar el hilo antes de publicar para evitar duplicados.
 4. Ante findings, corregir en el mismo PR y revalidar; no cerrar/mergear sin autorización específica.
-5. Preparar handoff con links reales y próximo paso seguro.
+5. Usar [merge](../../templates/merge.md) o [close](../../templates/close.md) para preparar readiness y mensajes cuando corresponda. Con autorización específica, ejecutar y verificar el estado real por separado; preparar handoff con links y próximo paso seguro.
 
 ## Validación y salida
 Links GitHub, estado verificado, evidencia y acciones pendientes.

@@ -1,5 +1,7 @@
 # Ejecución — {{outcome}}
 
+Resumir cambios, comandos ejecutados y resultados observados.
+
 **Unidad viva:** {{issue_pr_commit_si_existen}}
 
 ## Entregado

@@ -1,5 +1,7 @@
 # Tarea — {{resultado_buscado}}
 
+Definir un brief ligero para un resultado observable.
+
 **Contexto/locator:** {{repo_o_ruta_si_existe}}
 **Resultado esperado:** {{resultado_observable}}
 **Alcance:** {{incluir_y_excluir}}

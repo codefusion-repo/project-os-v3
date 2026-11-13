@@ -1,5 +1,7 @@
 # Release readiness — {{version_o_alcance}}
 
+Evaluar readiness y acciones sensibles de una release.
+
 **Commit/ref objetivo:** {{ref_verificado}}
 **Estado de pruebas/checks:** {{evidencia_real}}
 **Compatibilidad/migraciones/rollback:** {{plan_si_aplica}}

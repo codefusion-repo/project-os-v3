@@ -15,13 +15,15 @@ Copia el prompt, añade tu objetivo y entrégalo a un agente con acceso al kit y
 ## Elegir una operación
 
 ```bash
-python3 tools/select.py                  # menú; Enter elige continue, luego skills opcionales
-python3 tools/select.py --list           # descubre workflows y skills
+python3 tools/select.py                  # menú; Enter elige continue, luego skills y templates opcionales
+python3 tools/select.py --list           # descubre workflows, skills y templates
 python3 tools/select.py --workflow review --skill code-review --skill testing --locator 123
+python3 tools/select.py --workflow review --skill github-traceability --template review-comment --locator 123
+python3 tools/select.py --workflow close --template merge --template close
 python3 tools/select.py --help
 ```
 
-Repite `--skill` para componer capacidades; el locator es contexto, no una orden. En el menú se aceptan nombres o números, separados por comas para skills; `/texto` filtra por nombre o descripción y `/` restablece la lista. Se muestran skills sugeridas desde el workflow, sin seleccionarlas automáticamente. La salida es texto copiable; el selector no llama al agente, GitHub ni ejecuta workflows. Sin Python, indica directamente: «Lee `PROJECT_OS.md` y `workflows/review.md`; revisa el diff del PR 123 y entrega findings con evidencia». Lee solo las skills útiles.
+Repite `--skill` y `--template` para componer capacidades y artefactos; el locator es contexto, no una orden. En el menú se aceptan nombres o números, separados por comas para skills y templates; `/texto` filtra por nombre o descripción y `/` restablece la lista. Se muestran skills sugeridas desde el workflow, sin seleccionarlas automáticamente. La salida es texto copiable; el selector no llama al agente, GitHub ni ejecuta workflows. Sin Python, indica directamente: «Lee `PROJECT_OS.md` y `workflows/review.md`; revisa el diff del PR 123 y entrega findings con evidencia». Lee solo las skills útiles.
 
 ## Prototipo rápido
 
@@ -33,4 +35,4 @@ Añade, por ejemplo: «Quiero comprobar si un PM encuentra una tarea: crea una p
 
 ## Contenido y adopción
 
-Los seis [workflows](workflows/), nueve [skills](skills/), diez [templates](templates/) y [adapters](adapters/) son independientes del selector. Los templates se rellenan solo cuando aportan valor. Consulta [adopción](docs/ADOPTION.md), [reglas compartidas](PROJECT_OS.md) y el [contrato MVP](docs/V3_SPEC.md) y su [addendum](docs/V3_ADDENDUM.md). Valida el paquete con `python3 -m unittest discover -s tests -v`.
+Los seis [workflows](workflows/), nueve [skills](skills/), catorce [templates](templates/) y [adapters](adapters/) son independientes del selector. Los templates se rellenan solo cuando aportan valor. Consulta [adopción](docs/ADOPTION.md), [reglas compartidas](PROJECT_OS.md) y el [contrato MVP](docs/V3_SPEC.md) y su [addendum](docs/V3_ADDENDUM.md). Valida el paquete con `python3 -m unittest discover -s tests -v`.

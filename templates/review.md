@@ -1,5 +1,7 @@
 # Review — {{pr_o_alcance}}
 
+Resumir findings, evidencia, decisión y límites de una review.
+
 **Base/head y diff inspeccionados:** {{refs_reales}}
 **Tests/checks consultados:** {{evidencia_real}}
 

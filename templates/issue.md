@@ -1,5 +1,7 @@
 # {{outcome_cohesivo}}
 
+Definir una unidad de trabajo con criterios verificables.
+
 ## Problema y resultado esperado
 {{problema_real_y_valor}}
 
