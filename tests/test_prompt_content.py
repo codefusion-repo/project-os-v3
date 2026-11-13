@@ -38,7 +38,7 @@ class PromptContent(unittest.TestCase):
             self.assertNotIn('# Comentario de ejecución', text)
             self.assertIn('skills/repo-context/SKILL.md', text)
             self.assertIn('workflows/review.md', text)
-            self.assertIn('Lee el AGENTS.md', text)
+            self.assertIn('lee su AGENTS.md', text)
             self.assertIn('verifica la referencia', text)
             self.assertIn('informa el límite sin inventar', text)
             self.assertIn('Documentos locales distintos de la referencia:** PROJECT_OS.md', text)

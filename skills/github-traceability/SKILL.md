@@ -33,3 +33,7 @@ La skill no concede permisos. Merge, cierre, release y deploy requieren autoriza
 
 ## Publicación y continuidad seguras
 Antes de enviar un commit, review o comentario, inspeccionar proporcionalmente su contenido real por secretos, datos privados y relaciones entre repositorios que no puedan divulgarse. Verificar si los archivos privados ya están bajo seguimiento; `.gitignore` no los retira. Sin autorización o ante posible exposición detener esa publicación y conservar un borrador seguro. Las relaciones técnicas necesarias para continuidad remota deben estar documentadas en Git solo cuando su divulgación esté autorizada; los checkouts y configuraciones locales nunca se publican automáticamente.
+
+
+## Trazabilidad por repositorio
+Cuando una tarea involucre varios repositorios equivalentes, recuperar y reutilizar las unidades existentes de cada uno. Verificar por separado permisos, visibilidad, ramas, modificaciones, commits, PRs, checks y comentarios autorizados. Una autorización o publicación en un repositorio no concede permisos ni acredita resultados en otro. No divulgar rutas locales ni asociaciones privadas.

@@ -75,19 +75,22 @@ class CommandLine(unittest.TestCase):
             self.assertIn('## Comentario del PM — PM_FEEDBACK_HUMANO\n\nPrimera\nSegunda\n\n##', text)
             self.assertIn('## Pregunta del PM — PM_QUESTION_HUMANO\n\nQué falta\n\n##', text)
             self.assertNotIn('**Advertencia:**', text)
+            documents = next(line for line in text.splitlines() if line.startswith('**Documentos:**'))
             for name in ('repo-context', 'github-traceability', 'rapid-prototype', 'testing', 'security-review'):
-                self.assertEqual(text.count('skills/' + name + '/SKILL.md'), 1)
+                self.assertEqual(documents.count('skills/' + name + '/SKILL.md'), 1)
 
     def test_all_operations_include_base_skills_and_contextual_heading(self):
         with tempfile.TemporaryDirectory() as temp:
             for operation in selector.ORDER:
                 with self.subTest(operation=operation):
-                    result = run(temp, '--workflow', operation, '--skill', 'github-traceability')
+                    folder = Path(temp) / operation
+                    result = run(folder, '--workflow', operation, '--skill', 'github-traceability')
                     self.assertEqual(result.returncode, 0, result.stderr)
-                    text = outputs(temp)[0].read_text()
+                    text = outputs(folder)[0].read_text()
                     self.assertIn('## Entrada principal — ' + selector.LABELS[operation], text)
+                    documents = next(line for line in text.splitlines() if line.startswith('**Documentos:**'))
                     for name in selector.BASE:
-                        self.assertEqual(text.count('skills/' + name + '/SKILL.md'), 1)
+                        self.assertEqual(documents.count('skills/' + name + '/SKILL.md'), 1)
 
     def test_inconsistent_reference_is_warned_without_changing_pm_fields(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -138,6 +141,7 @@ class Persistence(unittest.TestCase):
     def test_replaces_only_own_files_after_success(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
+            kit = install(root / 'kit')
             dest, other = root / 'out', root / 'other'
             dest.mkdir()
             other.mkdir()
@@ -149,10 +153,10 @@ class Persistence(unittest.TestCase):
             external.write_text(selector.MARKER + '\nexterno')
             link = dest / ('project-os-prompt-' + 'c' * 32 + '.md')
             link.symlink_to(external)
-            first = run(dest, '--prototype')
+            first = run(dest, '--prototype', kit=kit)
             self.assertEqual(first.returncode, 0, first.stderr)
             previous = next(p for p in outputs(dest) if p not in (mimic, link))
-            result = run(dest, '--workflow', 'continue')
+            result = run(dest, '--workflow', 'continue', kit=kit)
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertFalse(previous.exists())
             self.assertEqual(manual.read_text(), 'manual')
@@ -175,14 +179,14 @@ class Persistence(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             with patch.object(selector, 'ROOT', root):
-                selector.project_local.save_config(root, {'version': 1, 'primary_repo': 'org/repo', 'prompt_dir': 'out'})
+                selector.project_local.save_config(root, {'version': 2, 'repositories': ['org/repo'], 'prompt_dir': 'out'})
                 path = root / '.project-os/config.json'
                 before = path.read_bytes()
-                self.assertEqual(json.loads(before), {'version': 1, 'primary_repo': 'org/repo', 'prompt_dir': 'out'})
+                self.assertEqual(json.loads(before), {'version': 2, 'repositories': ['org/repo'], 'prompt_dir': 'out'})
                 self.assertEqual(path.stat().st_mode & 0o777, 0o600)
                 with patch.object(selector.project_local.os, 'fsync', side_effect=OSError('fallo')):
                     with self.assertRaises(OSError):
-                        selector.project_local.save_config(root, {'version': 1, 'primary_repo': 'other/repo'})
+                        selector.project_local.save_config(root, {'version': 2, 'repositories': ['other/repo']})
                 self.assertEqual(path.read_bytes(), before)
 
     def test_source_symlinks_outside_kit_are_not_discovered(self):
@@ -229,7 +233,7 @@ class Wizard(unittest.TestCase):
             dest = root / 'out'
             result = run(dest, input_text='review\norg/repo\ncode-review,testing\nReporte PR #1\n#1\nNota\nPregunta\ng\ns\n', kit=kit)
             self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertLess(result.stdout.index('1/3'), result.stdout.index('Repositorio owner/repo'))
+            self.assertLess(result.stdout.index('1/3'), result.stdout.index('Repositorios owner/repo'))
             menu = result.stdout.split('Skills sugeridas:', 1)[1].split('Skills [Enter', 1)[0]
             self.assertIn('code-review', menu)
             self.assertNotIn('implement-change', menu)
@@ -248,7 +252,7 @@ class Wizard(unittest.TestCase):
                     'e\nimplement\ndebug,testing\n\n\n\n\ng\ns\n')
             result = run(dest, input_text=data, kit=kit)
             self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertEqual(result.stdout.count('Repositorio owner/repo'), 1)
+            self.assertEqual(result.stdout.count('Repositorios owner/repo'), 1)
             self.assertEqual(result.stdout.count('1/3 — Buscar'), 2)
             text = outputs(dest)[0].read_text()
             self.assertIn('**Workflow:** implement', text)
@@ -267,7 +271,7 @@ class Wizard(unittest.TestCase):
                     'm\n\nSegundo\n#2\n\n\ng\ns\n')
             result = run(dest, input_text=data, kit=kit)
             self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertEqual(result.stdout.count('Repositorio owner/repo'), 1)
+            self.assertEqual(result.stdout.count('Repositorios owner/repo'), 1)
             text = outputs(dest)[0].read_text()
             self.assertIn('Segundo', text)
             self.assertIn('**Referencia:** #2', text)
@@ -290,12 +294,12 @@ class Wizard(unittest.TestCase):
             root = Path(temp)
             kit = install(root / 'kit')
             dest = root / 'other'
-            data = '/repo\norg/other\n/carpeta\n' + str(dest) + '\ncontinue\n\n\n\n\n\ng\ns\n'
+            data = '/alcance\norg/other\n/carpeta\n' + str(dest) + '\ncontinue\norg/base\n\n\n\n\n\ng\ns\n'
             result = run(root / 'unused', input_text=data, kit=kit)
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertIn('org/other', outputs(dest)[0].read_text())
             prefs = json.loads((kit / 'project/.project-os/config.json').read_text())
-            self.assertEqual(prefs['primary_repo'], 'org/other')
+            self.assertEqual(prefs['repositories'], ['org/base'])
             self.assertEqual(prefs['prompt_dir'], str(dest))
 
     def test_saved_preferences_are_reused_without_pm_values(self):
@@ -309,8 +313,8 @@ class Wizard(unittest.TestCase):
                                     input='continue\n\n\n\n\n\ng\ns\n', text=True,
                                     capture_output=True, cwd=kit / 'project')
             self.assertEqual(second.returncode, 0, second.stderr)
-            self.assertIn(f'Repositorio: org/repo | Carpeta: {dest}', second.stdout)
-            self.assertNotIn('Repositorio owner/repo', second.stdout)
+            self.assertIn(f'Repositorios: org/repo | Carpeta: {dest}', second.stdout)
+            self.assertNotIn('Repositorios owner/repo', second.stdout)
             text = outputs(dest)[0].read_text()
             self.assertNotIn('Nota privada', text)
             self.assertNotIn('## Pregunta del PM — PM_QUESTION_HUMANO', text)
@@ -378,7 +382,7 @@ class PasteInTerminal(unittest.TestCase):
             try:
                 until(b'Operaci')
                 send(b'review\n')
-                until(b'Repositorio owner/repo')
+                until(b'Repositorios owner/repo')
                 send(b'org/repo\n')
                 until(b'Skills [Enter')
                 send(b'code-review\n')

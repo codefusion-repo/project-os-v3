@@ -31,8 +31,7 @@ def fixture(base):
     new = git(kit, 'rev-parse', 'HEAD')
     project = kit / 'project'
     (project / 'AGENTS.md').write_text('codefusion-repo/project-os-v3\nProject-OS-Version: ' + old + '\n')
-    selector.project_local.save_config(project, {'version': 1, 'name': 'fixture', 'primary_repo': 'org/main',
-                                                  'related_repos': ['org/api', 'org/mobile'],
+    selector.project_local.save_config(project, {'version': 2, 'name': 'fixture', 'repositories': ['org/main', 'org/api', 'org/mobile'],
                                                   'prompt_dir': '.project-os/prompts'})
     return kit, project, old, new
 
@@ -78,9 +77,9 @@ class CanonicalSource(unittest.TestCase):
             self.assertIn('Versión propuesta local (no verificada en GitHub)', out.getvalue())
             self.assertIn('Borrador no verificado', out.getvalue())
             generated = outputs(folder)
-            self.assertEqual(len(generated), 1)
-            self.assertFalse(previous.exists())
-            content = generated[0].read_text()
+            self.assertEqual(len(generated), 2)
+            self.assertEqual(previous.read_text(), selector.MARKER + '\n' + 'anterior\n')
+            content = next(path for path in generated if path != previous).read_text()
             self.assertNotIn('Project-OS-Version: ' + new, content)
             self.assertIn('Project-OS-Version: <SHA_CANONICO_VERIFICADO>', content)
             opener.open.assert_called_once()
@@ -162,25 +161,24 @@ class WizardReviewFixes(unittest.TestCase):
             self.assertIn('no actualices la referencia', out.getvalue())
             self.assertEqual(previous.read_text(), selector.MARKER + '\nanterior\n')
 
-    def test_related_repo_menu_and_manual_entry(self):
-        for selection, expected in (('1', 'org/api'), ('org/custom', 'org/custom')):
+    def test_temporary_scope_menu_and_manual_entry(self):
+        for selection, expected in (('2', 'org/api'), ('org/custom', 'org/custom')):
             with self.subTest(selection=selection), tempfile.TemporaryDirectory() as temp:
                 root = Path(temp)
                 kit = install(root / 'kit')
                 project = kit / 'project'
-                selector.project_local.save_config(project, {'version': 1, 'name': 'fixture', 'primary_repo': 'org/main',
-                                                              'related_repos': ['org/api', 'org/mobile'],
+                selector.project_local.save_config(project, {'version': 2, 'name': 'fixture', 'repositories': ['org/main', 'org/api', 'org/mobile'],
                                                               'prompt_dir': '.project-os/prompts'})
                 entries = ['/repo', selection, 'review', '', '', '', '', '', 'g', 's']
                 result = run(root / 'out', input_text='\n'.join(entries) + '\n', kit=kit)
                 self.assertEqual(result.returncode, 0, result.stderr)
-                self.assertIn('Repositorios relacionados:', result.stdout)
-                self.assertIn('1. org/api', result.stdout)
-                self.assertIn('2. org/mobile', result.stdout)
+                self.assertIn('Repositorios del proyecto:', result.stdout)
+                self.assertIn('2. org/api', result.stdout)
+                self.assertIn('3. org/mobile', result.stdout)
                 content = outputs(root / 'out')[0].read_text()
-                self.assertIn('**Repositorio indicado (sin verificar):** ' + expected, content)
+                self.assertIn('**Alcance explícito:** ' + expected, content)
                 self.assertNotIn('org/mobile', content)
-                self.assertEqual(json.loads((project / '.project-os/config.json').read_text())['primary_repo'], expected)
+                self.assertEqual(json.loads((project / '.project-os/config.json').read_text())['repositories'], ['org/main', 'org/api', 'org/mobile'])
 
 
 if __name__ == '__main__':

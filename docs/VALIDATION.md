@@ -47,7 +47,7 @@ CI debe verificarse para el SHA realmente publicado. La continuidad desde un age
 
 ## Review del selector y prompt único — ejecución posterior
 
-Se recuperaron las revisiones del PR #1 sobre el SHA `719ecfd0938b33ddb9503a18d1a604a02a7e82ae`. La adopción consulta la API del repositorio canónico para confirmar que el SHA local es recuperable; si la consulta falla, el resultado es un borrador explícitamente no verificado y no indica fijar ese SHA. El wizard permite introducir un SHA objetivo diferente y elegir repositorios relacionados o escribir otro. El prompt operativo es único y acotado, sin copiar documentos completos; conserva pasos esenciales y referencias para que el agente recupere las reglas verificables.
+Se recuperaron las revisiones del PR #1 sobre el SHA `719ecfd0938b33ddb9503a18d1a604a02a7e82ae`. La adopción consulta la API del repositorio canónico para confirmar que el SHA local es recuperable; si la consulta falla, el resultado es un borrador explícitamente no verificado y no indica fijar ese SHA. En esa revisión, el wizard permitía introducir otro SHA y elegir repositorios; la jerarquía de repositorios se sustituyó posteriormente por el esquema v2. El prompt operativo es único y acotado, sin copiar documentos completos; conserva pasos esenciales y referencias para que el agente recupere las reglas verificables.
 
 Para la misma operación `review`, skills `testing` y `code-review`, locator `1`, entrada y comentario, se generó el prompt de `719ecfd` y el actual. Ambos comandos terminaron con exit 0 y se comprobaron solicitud, locator y SHA idénticos: **23.417 bytes antes y 2.047 bytes después**, una reducción del 91,3 % en esa muestra. No se midieron tokens. La primera clonación de comparación falló con exit 128 por enlaces duros entre dispositivos; se repitió con `git clone --no-hardlinks` y terminó correctamente.
 
@@ -81,3 +81,25 @@ El agente consultó el check remoto exitoso del SHA citado y los comentarios exi
 | `git diff --check` | 0 | Sin errores de whitespace en el diff observado. |
 
 El CI de este cambio debe verificarse en el SHA publicado. Las pruebas browser se realizan por separado y no se atribuyen a esta sesión.
+
+## Repositorios equivalentes — revisión posterior
+
+El esquema local v2 conserva una lista no vacía `repositories` sin jerarquía. El prompt identifica los repositorios conocidos y permite al agente decidir cuáles necesita; `/alcance` y `--repo` repetido limitan únicamente la operación, sin persistir el alcance. En un alcance limitado se omiten del prompt los repositorios conocidos que quedan fuera. El prompt exige comprobar permisos, visibilidad, rama, cambios, versión de instrucciones y trazabilidad por repositorio; no incluye rutas de checkout ni autoriza publicar asociaciones privadas.
+
+Las pruebas usan únicamente proyectos temporales. Cubren un repositorio y tres repositorios, tareas transversales y alcances explícitos, ausencia de selección obligatoria, persistencia intacta, aislamiento, privacidad, Git, formato desconocido, conflictos y conversión v1 a v2 con deduplicación, checkouts, destino, archivos ajenos y conservación ante fallo de escritura o cambio concurrente. Como indicó el PM, **no hay proyectos reales de v3 que migrar**; no se migró ni modificó ningún proyecto real. La conversión v1 se comprobó solo con fixtures.
+
+Dos proyectos que comparten carpeta de salida conservan sus prompts de forma independiente: se sustituye únicamente el prompt atribuible al proyecto actual. Los archivos anteriores sin identificación de proyecto se preservan, y las invocaciones sin raíz local no eliminan prompts de otras invocaciones. También se comprueba la advertencia al proporcionar una URL de issue fuera de un alcance explícito.
+
+Las pruebas comprueban el contenido del prompt y la configuración del wizard; no demuestran que un agente independiente haya coordinado realmente varios repositorios. Esa ejecución sigue pendiente. La validación terminal de los 14 templates y las pruebas de browser que realiza el PM por separado conservan los límites descritos en la sección anterior. El smoke local sigue siendo parcial y no es dogfood de rendimiento.
+
+Durante la integración se observaron fallos de regresión: inicialmente los fixtures aún usaban el esquema v1 de escritura; después, siete aserciones contaban dos veces rutas de skills cuando también aparecían en el aviso de archivos modificados. Al reforzar el aislamiento, una prueba adicional asumía que invocaciones sin proyecto borraban prompts anteriores y falló en ambas suites; se cambió para comprobar cada operación en su propia carpeta. Se actualizaron los fixtures y las aserciones para comprobar el comportamiento efectivo.
+
+| Comando | Exit | Resultado |
+|---|---:|---|
+| `python3 -m unittest discover -s tests -q` | 0 | 81 tests; uno omitido por no estar instalado `prompt_toolkit` en ese Python. |
+| `.project-os/venv/bin/python -m unittest discover -s tests -q` | 0 | 81 tests sin omisiones. |
+| `python3 tests/smoke_local.py` | 0 | Instalación y flujo local parcial con configuración v2 y SHA canónico comprobado; adopción simulada en fixture. |
+| `python3 -m py_compile tools/select.py tools/project_local.py` | 0 | Sintaxis válida. |
+| `git diff --check` | 0 | Sin errores de whitespace en el diff observado. |
+
+El SHA y CI de este cambio deben verificarse tras el push.

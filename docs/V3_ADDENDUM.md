@@ -28,7 +28,7 @@ El selector previsualiza y guarda prompts Markdown operativos en `--output-dir` 
 
 ## Wizard-first y configuración local
 
-El wizard comienza por buscar o seleccionar el workflow y luego solicita el repositorio si falta, skills, contexto del PM, preview y guardado. Recuerda preferencias no sensibles en `.project-os/config.json` del proyecto o workspace, protegido de Git; un repositorio indicado no se considera verificado. Comentario y pregunta del PM son opcionales, multilínea y exclusivos de la operación; no se guardan en la configuración ni se reutilizan. El selector no exige referencias issue/PR que puedan recuperarse. Los flags pueden leer la configuración del proyecto sin modificarla; `--configure` solicita cambios explícitos.
+El wizard comienza por buscar o seleccionar el workflow y luego solicita una lista de repositorios solo si falta, skills, contexto del PM, preview y guardado. Recuerda preferencias no sensibles en `.project-os/config.json` del proyecto o workspace, protegido de Git; un repositorio indicado no se considera verificado. Comentario y pregunta del PM son opcionales, multilínea y exclusivos de la operación; no se guardan en la configuración ni se reutilizan. El selector no exige referencias issue/PR que puedan recuperarse. Los flags pueden leer la configuración del proyecto sin modificarla; `--configure` solicita cambios explícitos.
 
 ## Correcciones de review del selector
 
@@ -53,3 +53,7 @@ Instalar una vez, adaptar cada proyecto una vez y utilizar el wizard diariamente
 ## Prompt acotado
 
 El selector produce un único prompt con tarea, contexto, versión, límites y pasos esenciales. No copia el kit completo. El agente verifica y recupera las instrucciones aplicables y reporta cualquier límite de acceso.
+
+## Repositorios equivalentes
+
+El esquema local v2 utiliza `repositories` sin jerarquía. El agente determina los repos necesarios; `/alcance` o `--repo` repetido restringe solo la operación. La migración v1 reconocida conserva datos y es atómica; el CLI de generación no modifica preferencias. Se verifican permisos y trazabilidad por repositorio y no se publican rutas o asociaciones privadas.

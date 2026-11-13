@@ -156,6 +156,72 @@ def open_directory(value, create=False):
         raise
 
 
+def validate_repository(value):
+    if not isinstance(value, str):
+        raise ProjectError('Repositorio inválido; usa owner/repo.')
+    parts = value.split('/')
+    if (len(parts) != 2 or not re.fullmatch(r'[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?', parts[0])
+            or not re.fullmatch(r'[A-Za-z0-9_.-]{1,100}', parts[1]) or parts[1] in ('.', '..')):
+        raise ProjectError('Repositorio inválido; usa owner/repo.')
+    return value
+
+
+def validate_config(data):
+    if not isinstance(data, dict) or type(data.get('version')) is not int or data['version'] not in (1, 2):
+        raise ProjectError('Formato local desconocido; no se sobrescribirá automáticamente.')
+    common = {'version', 'name', 'prompt_dir', 'checkouts'}
+    allowed = common | ({'primary_repo', 'related_repos'} if data['version'] == 1 else {'repositories'})
+    if set(data) - allowed:
+        raise ProjectError('Formato local desconocido; no se sobrescribirá automáticamente.')
+    if not isinstance(data.get('name', ''), str) or not isinstance(data.get('prompt_dir', '.project-os/prompts'), str):
+        raise ProjectError('Configuración local inválida.')
+    checkouts = data.get('checkouts', {})
+    if not isinstance(checkouts, dict) or not all(isinstance(k, str) and isinstance(v, str) for k, v in checkouts.items()):
+        raise ProjectError('Configuración local inválida.')
+    if len({name.casefold() for name in checkouts}) != len(checkouts):
+        raise ProjectError('Hay checkouts ambiguos para el mismo repositorio.')
+    for name, location in checkouts.items():
+        validate_repository(name)
+        if not location:
+            raise ProjectError('Hay un checkout sin ruta; conserva y revisa la configuración.')
+        path(location)
+    if data['version'] == 1:
+        primary = data.get('primary_repo', '')
+        related = data.get('related_repos', [])
+        if not isinstance(primary, str) or not isinstance(related, list):
+            raise ProjectError('Configuración local inválida.')
+        if primary:
+            validate_repository(primary)
+        for value in related:
+            validate_repository(value)
+    else:
+        repos = data.get('repositories')
+        if not isinstance(repos, list) or not repos:
+            raise ProjectError('La configuración requiere al menos un repositorio.')
+        for value in repos:
+            validate_repository(value)
+        if len({value.casefold() for value in repos}) != len(repos):
+            raise ProjectError('La configuración contiene repositorios duplicados.')
+        if any(name.casefold() not in {value.casefold() for value in repos} for name in checkouts):
+            raise ProjectError('Hay checkouts sin repositorio asociado; conserva y revisa la configuración.')
+    return data
+
+
+def migrate_v1(data):
+    validate_config(data)
+    if data['version'] != 1:
+        raise ProjectError('La configuración no corresponde a la versión anterior.')
+    values = ([data['primary_repo']] if data.get('primary_repo') else []) + data.get('related_repos', [])
+    repositories = []
+    for value in values:
+        if value.casefold() not in {entry.casefold() for entry in repositories}:
+            repositories.append(value)
+    result = {key: value for key, value in data.items() if key not in ('primary_repo', 'related_repos', 'version')}
+    result.update(version=2, repositories=repositories)
+    validate_config(result)
+    return result
+
+
 def _read_config_dir(directory):
     try:
         fd = os.open('config.json', os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory)
@@ -174,17 +240,7 @@ def _read_config_dir(directory):
     finally:
         if fd >= 0:
             os.close(fd)
-    if not isinstance(data, dict) or type(data.get('version')) is not int or data['version'] != 1 or set(data) - {'version', 'name', 'primary_repo', 'related_repos', 'prompt_dir', 'checkouts'}:
-        raise ProjectError('Formato local desconocido; no se sobrescribirá automáticamente.')
-    if not isinstance(data.get('name', ''), str) or not isinstance(data.get('primary_repo', ''), str):
-        raise ProjectError('Configuración local inválida.')
-    if not isinstance(data.get('prompt_dir', '.project-os/prompts'), str):
-        raise ProjectError('Configuración local inválida.')
-    if not isinstance(data.get('related_repos', []), list) or not all(isinstance(x, str) for x in data.get('related_repos', [])):
-        raise ProjectError('Configuración local inválida.')
-    if not isinstance(data.get('checkouts', {}), dict) or not all(isinstance(k, str) and isinstance(v, str) for k, v in data.get('checkouts', {}).items()):
-        raise ProjectError('Configuración local inválida.')
-    return data
+    return validate_config(data)
 
 
 def read_config(project):
@@ -198,14 +254,19 @@ def read_config(project):
         os.close(directory)
 
 
-def save_config(project, data):
+def save_config(project, data, expected=None):
     project = path(project)
+    validate_config(data)
+    if data['version'] != 2:
+        raise ProjectError('Solo se pueden guardar configuraciones de versión 2.')
     temporary_name = '.config-' + uuid.uuid4().hex
     message = preflight(project / '.project-os', prepare=True, names=('config.json', temporary_name))
     directory = open_directory(project / '.project-os', create=True)
     try:
         # Never replace a symlink, unknown or incompatible configuration.
-        _read_config_dir(directory)
+        existing = _read_config_dir(directory)
+        if expected is not None and existing != expected:
+            raise ProjectError('La configuración cambió durante la migración; se conserva sin sobrescribir.')
         fd = os.open(temporary_name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=directory)
         try:
             with os.fdopen(fd, 'w', encoding='utf-8') as stream:
@@ -213,6 +274,8 @@ def save_config(project, data):
                 stream.write('\n')
                 stream.flush()
                 os.fsync(stream.fileno())
+            if _read_config_dir(directory) != existing:
+                raise ProjectError('La configuración cambió durante la escritura; se conserva sin sobrescribir.')
             os.replace(temporary_name, 'config.json', src_dir_fd=directory, dst_dir_fd=directory)
         finally:
             try:

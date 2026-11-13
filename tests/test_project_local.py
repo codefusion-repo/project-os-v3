@@ -34,8 +34,7 @@ def execute(*args, cwd=None, input_text=None):
 
 
 def save(root, name, github, folder='.project-os/prompts'):
-    local.save_config(root, {'version': 1, 'name': name, 'primary_repo': github,
-                             'related_repos': [], 'prompt_dir': folder})
+    local.save_config(root, {'version': 2, 'name': name, 'repositories': [github], 'prompt_dir': folder})
 
 
 class Privacy(unittest.TestCase):
@@ -115,7 +114,7 @@ class Privacy(unittest.TestCase):
             root = repo(base / 'repo')
             (root / '.project-os').mkdir()
             config = root / '.project-os/config.json'
-            config.write_text(json.dumps({'version': 1, 'primary_repo': 'org/a'}))
+            config.write_text(json.dumps({'version': 2, 'repositories': ['org/a']}))
             before = config.read_bytes()
             external = base / 'external'
             result = execute('--project', root, '--workflow', 'review', '--output-dir', external)
@@ -210,23 +209,24 @@ class Projects(unittest.TestCase):
                 result = execute('--project', root, '--workflow', 'continue', cwd=sub)
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertIn(name, next((root / '.project-os/prompts').glob('*.md')).read_text())
-            self.assertEqual(local.read_config(workspace)['primary_repo'], 'org/whole')
-            self.assertEqual(local.read_config(child)['primary_repo'], 'org/front')
+            self.assertEqual(local.read_config(workspace)['repositories'], ['org/whole'])
+            self.assertEqual(local.read_config(child)['repositories'], ['org/front'])
 
-    def test_configure_related_checkouts_without_publishing_local_paths(self):
+    def test_configure_multiple_checkouts_without_publishing_local_paths(self):
         with tempfile.TemporaryDirectory() as temp:
             root = repo(Path(temp) / 'workspace')
             result = execute('--project', root, '--configure', '--repo', 'org/front',
-                             '--related-repo', 'org/back', '--checkout', 'org/back=' + str(Path(temp) / 'back'))
+                             '--repo', 'org/back', '--checkout', 'org/back=' + str(Path(temp) / 'back'))
             self.assertEqual(result.returncode, 0, result.stderr)
             data = local.read_config(root)
-            self.assertEqual(data['related_repos'], ['org/back'])
+            self.assertEqual(data['repositories'], ['org/front', 'org/back'])
             self.assertIn('org/back', data['checkouts'])
             generated = execute('--project', root, '--workflow', 'continue')
             self.assertEqual(generated.returncode, 0, generated.stderr)
             text = next((root / '.project-os/prompts').glob('*.md')).read_text()
             self.assertNotIn(str(Path(temp) / 'back'), text)
-            self.assertNotIn('org/back', text)
+            self.assertIn('org/back', text)
+            self.assertIn('no expongas secretos', text.lower())
 
     def test_remote_without_checkout_only_previews(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -264,7 +264,7 @@ class Projects(unittest.TestCase):
             self.assertNotEqual(command('org/other').returncode, 0)
             self.assertFalse((project / '.project-os/config.json').exists())
             self.assertEqual(command('org/old').returncode, 0)
-            self.assertEqual(local.read_config(project)['primary_repo'], 'org/old')
+            self.assertEqual(local.read_config(project)['repositories'], ['org/old'])
             self.assertEqual(local.read_config(project)['prompt_dir'], '.project-os/prompts')
             self.assertTrue(legacy.exists())
             self.assertEqual(old_prompt.read_text(), 'preserve')

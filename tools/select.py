@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Asistente local de prompts Project OS; no ejecuta operaciones ni usa la red."""
 import argparse
+import hashlib
 import importlib.util
 import json
 import os
@@ -50,6 +51,7 @@ LABELS = {
 UNIT_OPERATIONS = frozenset(('continue', 'implement', 'review', 'close', 'release'))
 NAME = re.compile(r'[a-z0-9]+(?:-[a-z0-9]+)*\Z')
 OWNED_NAME = re.compile(r'project-os-prompt-[0-9a-f]{32}\.md\Z')
+PROJECT_OWNED_NAME = re.compile(r'project-os-prompt-([0-9a-f]{64})-([0-9a-f]{32})\.md\Z')
 MARKER = '<!-- project-os-v3-selector: generated-prompt v1 -->'
 COMPLETIONS = ()
 COMPLETION_DESCRIPTIONS = {}
@@ -224,9 +226,11 @@ def project_preferences(project):
     if data is None:
         return None
     check_sensitive(data)
-    if data.get('primary_repo'):
-        repo_value(data['primary_repo'])
-    for repo in data.get('related_repos', []):
+    if data['version'] == 1:
+        previous = data
+        data = project_local.migrate_v1(data)
+        data['_migration_source'] = previous
+    for repo in data['repositories']:
         repo_value(repo)
     for repo, checkout in data.get('checkouts', {}).items():
         repo_value(repo)
@@ -241,22 +245,25 @@ def preference_folder(project, config):
     return project_local.path(value if Path(value).is_absolute() else project / value)
 
 
-def save_project_preferences(project, config, repo, folder):
-    preferences = dict(config or {'version': 1, 'name': project.name, 'related_repos': []})
-    preferences['primary_repo'] = repo
+def save_project_preferences(project, config, repositories, folder):
+    preferences = dict(config or {'version': 2, 'name': project.name, 'repositories': list(repositories)})
+    previous = preferences.pop('_migration_source', None)
+    if not preferences.get('repositories'):
+        raise InputError('La configuración necesita al menos un repositorio.')
     try:
         preferences['prompt_dir'] = folder.relative_to(project).as_posix()
     except ValueError:
         preferences['prompt_dir'] = str(folder)
     check_sensitive(preferences)
-    print(project_local.save_config(project, preferences))
+    print(project_local.save_config(project, preferences, expected=previous))
     return preferences
 
 
-def owned_files(fd):
+def owned_files(fd, owner=None):
     found = []
     for name in os.listdir(fd):
-        if not OWNED_NAME.fullmatch(name):
+        match = PROJECT_OWNED_NAME.fullmatch(name)
+        if (owner is None and not OWNED_NAME.fullmatch(name)) or (owner is not None and (not match or match.group(1) != owner)):
             continue
         try:
             handle = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=fd)
@@ -269,15 +276,17 @@ def owned_files(fd):
     return found
 
 
-def save_prompt(folder, content):
+def save_prompt(folder, content, owner=None):
     folder = safe_path(folder)
     check_sensitive(content)
+    if owner is not None and not re.fullmatch(r'[0-9a-f]{64}', owner):
+        raise InputError('Identificador local de proyecto inválido.')
     temporary = '.prompt-' + uuid.uuid4().hex
-    name = 'project-os-prompt-' + uuid.uuid4().hex + '.md'
+    name = 'project-os-prompt-' + (owner + '-' if owner else '') + uuid.uuid4().hex + '.md'
     project_local.preflight(folder, prepare=False, names=(temporary, name))
     fd = directory_fd(folder, create=True)
     try:
-        previous = owned_files(fd)
+        previous = owned_files(fd, owner)
         handle = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=fd)
         try:
             with os.fdopen(handle, 'w', encoding='utf-8', newline='\n') as stream:
@@ -293,7 +302,7 @@ def save_prompt(folder, content):
                 pass
             raise
         failures = []
-        still_owned = set(owned_files(fd))
+        still_owned = set(owned_files(fd, owner))
         for old_name, device, inode in previous:
             if (old_name, device, inode) not in still_owned:
                 continue
@@ -310,26 +319,41 @@ def save_prompt(folder, content):
         os.close(fd)
 
 
+def prompt_owner(project):
+    # A local root identifies the logical project. Without one, keep different
+    # invocations isolated because their project identity cannot be established.
+    identity = os.fsencode(project_local.path(project)) if project is not None else uuid.uuid4().bytes
+    return hashlib.sha256(identity).hexdigest()
+
+
 def reference_warning(repo, locator, *values):
     if not locator:
         return ''
     parts = urlsplit(locator).path.strip('/').split('/') if locator.startswith('https://') else []
+    repos = [repo] if isinstance(repo, str) and repo else list(repo) if not isinstance(repo, str) else []
+    allowed = {value.casefold() for value in repos}
     if len(parts) == 4 and parts[2] == 'issues':
+        if allowed and '/'.join(parts[:2]).casefold() not in allowed:
+            return 'La referencia apunta a un repositorio fuera del alcance indicado; verifica antes de actuar.'
         return ''
     expected = (parts[3] if len(parts) == 4 else locator.lstrip('#')).lstrip('0') or '0'
     text = '\n'.join(values)
     numbers = re.findall(r'(?i)\b(?:pr|pull\s+request)\s*(?:#|n[úu]m(?:ero)?\.?\s*)?(\d+)\b', text)
     urls = re.findall(r'(?i)https://github\.com/([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)/pull/([1-9][0-9]*)', text)
     if (any((n.lstrip('0') or '0') != expected for n in numbers)
-            or any((n.lstrip('0') or '0') != expected or (repo and f'{o}/{r}'.lower() != repo.lower()) for o, r, n in urls)
-            or (len(parts) == 4 and repo and '/'.join(parts[:2]).lower() != repo.lower())):
+            or any((n.lstrip('0') or '0') != expected or (allowed and f'{o}/{r}'.casefold() not in allowed) for o, r, n in urls)
+            or (len(parts) == 4 and allowed and '/'.join(parts[:2]).casefold() not in allowed)):
         return 'Posible inconsistencia entre el locator y el PR indicado; verifica antes de actuar.'
     return ''
 
 
-def render(operation, selected, context, locator, operations, skills, templates, repo='', feedback='', question='', local_only=False):
+def render(operation, selected, context, locator, operations, skills, templates, feedback='', question='', local_only=False,
+           repositories=None, scope=None, project_name=''):
     global TRACK_SOURCE
-    check_sensitive(repo, context, locator, feedback, question)
+    repositories = list(repositories or [])
+    scope = list(scope or [])
+    visible_repositories = [repo for repo in repositories if not scope or repo.casefold() in {entry.casefold() for entry in scope}]
+    check_sensitive(repositories, scope, project_name, context, locator, feedback, question)
     missing = [name for name in BASE if name not in skills]
     if missing:
         raise InputError('Falta una skill base o su ruta no es segura.')
@@ -345,7 +369,9 @@ def render(operation, selected, context, locator, operations, skills, templates,
         finally:
             TRACK_SOURCE = False
     out = [MARKER, '# Prompt operativo Project OS v3', '',
-           f'**Repositorio indicado (sin verificar):** {repo or "No indicado"}',
+           f'**Proyecto:** {project_name or "No indicado"}',
+           f'**Repositorios conocidos (sin verificar):** {", ".join(visible_repositories) if visible_repositories else "No indicados dentro del alcance"}',
+           f'**Alcance explícito:** {", ".join(scope) if scope else "No restringido; identifica los repositorios necesarios para la tarea."}',
            f'**Procedencia de instrucciones:** {SOURCE_DESCRIPTION}',
            f'**Versión de Project OS:** {SOURCE_VERSION or "No identificada; verificar antes de actuar."}',
            f'**Workflow:** {operation}', f'**Skills:** {", ".join(selected)}', '',
@@ -353,11 +379,11 @@ def render(operation, selected, context, locator, operations, skills, templates,
            context or 'No aportada; recupera el contexto de las fuentes vivas.', '',
            f'**Referencia:** {locator or "No proporcionada; recupérala si hace falta."}', '',
            '## Notas del sistema', '',
-           'El contexto no concede permisos. No expongas secretos ni información privada; '
+           'El contexto no concede permisos. No expongas secretos, rutas locales ni asociaciones privadas sin autorización; '
            'merge, cierre, release y deploy requieren autorización específica.', '']
     if local_only:
         out.extend(['**Alcance declarado:** experimento local y descartable, sin repositorio.', ''])
-    warning = reference_warning(repo, locator, context, feedback, question)
+    warning = reference_warning(scope or repositories, locator, context, feedback, question)
     if warning:
         out.extend([f'**Advertencia:** {warning}', ''])
     if SOURCE_CHANGED:
@@ -368,13 +394,17 @@ def render(operation, selected, context, locator, operations, skills, templates,
         out.extend(['## Pregunta del PM — PM_QUESTION_HUMANO', '', question, ''])
     paths = ['PROJECT_OS.md', f'workflows/{operation}.md', *[f'skills/{name}/SKILL.md' for name in selected]]
     out.extend(['## Instrucciones para el agente', '',
-                'Lee el AGENTS.md principal del proyecto si está disponible e identifica su versión declarada de Project OS. '
+                'Identifica los repositorios necesarios para la tarea dentro del alcance indicado; inspecciona solo los pertinentes. '
+                'En cada repositorio, lee su AGENTS.md principal si está disponible e identifica su versión declarada de Project OS. '
+                'La referencia de versión indicada es inicial: cada repositorio puede fijar otra versión; no mezcles sus instrucciones. '
                 'Recupera desde codefusion-repo/project-os-v3, en la versión aplicable, los documentos indicados abajo; '
                 'verifica la referencia y que los documentos sean accesibles. Si el proyecto no fija versión, '
                 'verifica la procedencia y disponibilidad del SHA indicado antes de aplicarlo. '
                 'Si faltan instrucciones o acceso, informa el límite sin inventar su contenido y continúa solo lo seguro.', '',
-                'Inspecciona el repositorio, su estado y la unidad de trabajo pertinente; realiza la operación autorizada y valida lo realizado. '
-                'Reutiliza el issue o PR existente y registra evidencia y fallos reales. Para cambios versionados destinados a integración, '
+                'Verifica por separado permisos, visibilidad, rama, cambios y autorización de cada repositorio; su inclusión en el proyecto no concede escritura. '
+                'Inspecciona su estado y unidad de trabajo pertinente; realiza la operación autorizada y valida lo realizado. '
+                'Si una referencia numérica es ambigua entre repositorios, resuélvela con fuentes vivas y pregunta solo si persiste una ambigüedad material. '
+                'Reutiliza el issue o PR existente de cada repositorio y registra evidencia y fallos reales. Para cambios versionados destinados a integración, '
                 'prepara y publica un commit significativo solo cuando exista autorización y capacidad; verifica el SHA y los checks. '
                 'Si no puedes publicarlo, informa trazabilidad pendiente. Una consulta de solo lectura no requiere commit.', '',
                 '**Documentos:** ' + ', '.join(f'`{path}`' for path in paths), ''])
@@ -383,7 +413,7 @@ def render(operation, selected, context, locator, operations, skills, templates,
     return text
 
 
-def adoption_prompt(repo, revision, previous=None):
+def adoption_prompt(revision, previous=None, repositories=None, scope=None, project_name=''):
     if not revision:
         raise InputError('No hay un SHA verificable del kit para preparar la adopción.')
     project_local.commit(ROOT, revision)
@@ -396,18 +426,23 @@ def adoption_prompt(repo, revision, previous=None):
     version_to_fix = revision if verified else '<SHA_CANONICO_VERIFICADO>'
     evidence = ('SHA confirmado en el repositorio canónico en esta ejecución.' if verified else
                 'Borrador no verificado: comprueba que el SHA propuesto es recuperable del repositorio canónico antes de fijarlo; si no puedes, informa el límite y no actualices la referencia.')
+    repositories = list(repositories or [])
+    scope = list(scope or [])
+    visible_repositories = [repo for repo in repositories if not scope or repo.casefold() in {entry.casefold() for entry in scope}]
     text = f'''{MARKER}
 # Adaptar proyecto a Project OS v3
 
-**Repositorio indicado (sin verificar):** {repo or "No indicado"}
+**Proyecto:** {project_name or "No indicado"}
+**Repositorios conocidos (sin verificar):** {", ".join(visible_repositories) if visible_repositories else "No indicados dentro del alcance"}
+**Alcance explícito:** {", ".join(scope) if scope else "No restringido; identifica los repositorios necesarios."}
 **{version_label}:** {revision}
 **Versión declarada actualmente:** {previous or 'No identificada; inspecciona antes de cambiar.'}
 **Repositorio canónico a consultar:** https://github.com/codefusion-repo/project-os-v3
 **Verificación:** {evidence}
 
-Inspecciona el repositorio, rama y cambios existentes; recupera la unidad GitHub pertinente y respeta las autorizaciones reales. Consulta las instrucciones del kit en el SHA indicado. No copies el kit al proyecto.
+Identifica los repositorios necesarios y comprueba de manera independiente visibilidad, permisos, rama, cambios y autorizaciones de cada uno. Recupera sus unidades GitHub pertinentes. Consulta las instrucciones del kit en el SHA indicado. No copies el kit al proyecto ni publiques asociaciones privadas o rutas locales sin autorización.
 
-Inspecciona AGENTS.md y las instrucciones secundarias. Compara la referencia declarada, la objetivo y sus contratos antes de una actualización. Conserva reglas técnicas propias y especializadas; reemplaza instrucciones operativas v2 o copias antiguas contradictorias por un único bootstrap principal. Incluye en AGENTS.md la línea `Project-OS-Version: {version_to_fix}`, el repositorio canónico, la ruta PROJECT_OS.md, carga de workflows y skills pertinentes, seguridad, permisos y trazabilidad. No insertes rutas locales. No elimines archivos desconocidos; haz inventario de los componentes obsoletos y solicita autorización si retirarlos es destructivo.
+Inspecciona AGENTS.md y las instrucciones secundarias en cada repositorio pertinente. Compara la referencia declarada, la objetivo y sus contratos antes de una actualización. Conserva reglas técnicas propias y especializadas; reemplaza instrucciones operativas v2 o copias antiguas contradictorias por un único bootstrap principal por repositorio. Incluye en AGENTS.md la línea `Project-OS-Version: {version_to_fix}`, el repositorio canónico, la ruta PROJECT_OS.md, carga de workflows y skills pertinentes, seguridad, permisos y trazabilidad. No insertes rutas locales. No elimines archivos desconocidos; haz inventario de los componentes obsoletos y solicita autorización si retirarlos es destructivo.
 
 Incorpora `.project-os/` a .gitignore; verifica si ya hay archivos privados versionados sin leerlos ni exponerlos y prepara una corrección revisable. No crees configuración privada del dispositivo del PM desde otro entorno. Documenta relaciones multirrepositorio solo si son verificadas, necesarias y su divulgación está autorizada. Preserva instrucciones y archivos ajenos.
 
@@ -493,7 +528,7 @@ def choose_operation(operations, current='continue', session_controls=True):
     print('\n1/3 — Buscar y seleccionar operación')
     print('Escribe nombre, número o texto para buscar. Enter conserva la operación; /cancelar sale.')
     if session_controls:
-        print('Usa /adoptar para adaptar proyecto, /repo para cambiar repositorio o /carpeta para cambiar destino.')
+        print('Usa /adoptar para adaptar proyecto, /alcance para limitar esta operación o /carpeta para cambiar destino.')
     while True:
         for index, name in enumerate(visible, 1):
             print(f'  {index}. {name} — {description(operations[name])}')
@@ -502,7 +537,7 @@ def choose_operation(operations, current='continue', session_controls=True):
             query = ask(f'Operación [{current}]: ', current=current, strip=True)
         finally:
             clear_completion()
-        if session_controls and query in ('/repo', '/carpeta', '/adoptar'):
+        if session_controls and query in ('/repo', '/alcance', '/carpeta', '/adoptar'):
             return query
         if query == '/':
             visible = names
@@ -557,18 +592,48 @@ def choose_skills(operation, operations, skills, current, edit=False):
             return values
 
 
-def ask_repo(current, related=()):
-    choices = list(dict.fromkeys(repo for repo in related if repo != current))
-    if choices:
-        print('Repositorios relacionados:')
-        for index, repo in enumerate(choices, 1):
+def repo_list(values):
+    result = []
+    for value in values:
+        repo = repo_value(value)
+        if not repo:
+            raise InputError('Usa owner/repo; - solo se admite para un experimento local sin repositorio.')
+        if repo.casefold() not in {entry.casefold() for entry in result}:
+            result.append(repo)
+    return result
+
+
+def ask_repositories():
+    while True:
+        raw = ask('Repositorios owner/repo separados por comas (-: local descartable): ', strip=True)
+        try:
+            if raw == '-':
+                return []
+            if not raw:
+                raise InputError('Indica al menos un repositorio o - para un experimento local.')
+            return repo_list(item.strip() for item in raw.split(','))
+        except InputError as exc:
+            print(str(exc))
+
+
+def ask_scope(repositories, current):
+    if repositories:
+        print('Repositorios del proyecto:')
+        for index, repo in enumerate(repositories, 1):
             print(f'  {index}. {repo}')
     while True:
-        raw = ask(f'Repositorio owner/repo [{current or "sin seleccionar"}; -: local descartable]: ', current=current, strip=True)
-        if raw.isdecimal() and 1 <= int(raw) <= len(choices):
-            return choices[int(raw) - 1]
+        raw = ask('Alcance de esta operación (números o owner/repo separados por comas; /limpiar: sin límite): ',
+                  current=','.join(current), strip=True)
         try:
-            return repo_value(raw)
+            if not raw:
+                return []
+            values = []
+            for value in raw.split(','):
+                value = value.strip()
+                if value.isdecimal() and 1 <= int(value) <= len(repositories):
+                    value = repositories[int(value) - 1]
+                values.append(value)
+            return repo_list(values)
         except InputError as exc:
             print(str(exc))
 
@@ -590,7 +655,7 @@ def fill_fields(operation, operations, skills, values, edit=False):
     for key, prompt in (('context', label), ('locator', 'Issue/PR'),
                         ('feedback', 'Comentario del PM'), ('question', 'Pregunta del PM')):
         if key == 'locator':
-            if values['repo'] and operation in UNIT_OPERATIONS:
+            if values['repositories'] and operation in UNIT_OPERATIONS:
                 values[key] = ask_locator(values[key], edit=edit)
             continue
         current = values[key]
@@ -601,7 +666,8 @@ def fill_fields(operation, operations, skills, values, edit=False):
 
 def operation_prompt(operation, operations, skills, templates, values):
     return render(operation, values['skills'], values['context'], values['locator'], operations, skills, templates,
-                  repo=values['repo'], feedback=values['feedback'], question=values['question'], local_only=values['local_only'])
+                  repositories=values['repositories'], scope=values['scope'], project_name=values['project_name'],
+                  feedback=values['feedback'], question=values['question'], local_only=values['local_only'])
 
 
 def ask_adoption_version(project):
@@ -625,7 +691,7 @@ def ask_adoption_version(project):
 def preview(operation, content, folder):
     print('\n3/3 — Vista previa')
     print(f'Operación: {operation} | Carpeta: {folder}')
-    print('Al guardar se reemplazan solo los prompts anteriores del selector de esta carpeta, después de escribir el nuevo.')
+    print('Al guardar se reemplazan solo prompts identificados del mismo proyecto, después de escribir el nuevo.')
     print('\n' + content + '\n--- Fin de vista previa ---')
     while True:
         action = ask('[G]uardar / [E]ditar / [O]tra operación / [C]ancelar: ', strip=True).lower()
@@ -640,32 +706,36 @@ def preview(operation, content, folder):
         print('Elige guardar, editar, otra operación o cancelar.')
 
 
-def interactive(operations, skills, templates, folder, repo, project=None, config=None):
+def interactive(operations, skills, templates, folder, repositories, project=None, config=None):
     if sys.stdin.isatty() and terminal_prompt is None and not prepare_terminal():
         print('Este Python no dispone de edición segura de terminal; usa los flags del CLI para texto multilínea.', file=sys.stderr)
         return 1
     operation, last_path = 'continue', None
+    owner = prompt_owner(project)
     protection_checked = False
-    values = {'repo': repo, 'local_only': False, 'skills': [], 'context': '', 'locator': '', 'feedback': '', 'question': ''}
+    values = {'repositories': list(repositories), 'scope': [], 'project_name': (config or {}).get('name', ''),
+              'local_only': False, 'skills': [], 'context': '', 'locator': '', 'feedback': '', 'question': ''}
     if project is not None and project_local.version(project) is None:
         print('Proyecto sin versión fijada: usa /adoptar para preparar su integración.')
     while True:
-        print(f'\nRepositorio: {values["repo"] or "(sin seleccionar)"} | Carpeta: {folder}')
+        print(f'\nRepositorios: {", ".join(values["repositories"]) or "(sin indicar)"} | Carpeta: {folder}')
         try:
             selection = choose_operation(operations, current=operation)
             if isinstance(selection, tuple):
                 operation, values['question'] = selection
             else:
                 operation = selection
-            if operation == '/repo':
-                values['repo'] = ask_repo(values['repo'], (config or {}).get('related_repos', ()))
-                values['local_only'] = not values['repo']
+            if operation in ('/repo', '/alcance'):
+                values['scope'] = ask_scope(values['repositories'], values['scope'])
                 operation = 'continue'
                 continue
             if operation == '/carpeta':
                 while True:
                     try:
                         folder = safe_path(ask(f'Carpeta [{folder}]: ', current=str(folder), strip=True))
+                        if project is not None and config and not config.get('_blocked'):
+                            config = save_project_preferences(project, config, values['repositories'], folder)
+                            print('Preferencia de carpeta actualizada.')
                         break
                     except (InputError, ValueError):
                         print('Carpeta inválida.')
@@ -673,17 +743,25 @@ def interactive(operations, skills, templates, folder, repo, project=None, confi
                 continue
             adopting = operation == '/adoptar'
             adoption_target, adoption_previous = ask_adoption_version(project) if adopting else (None, None)
-            if not values['repo'] and not values['local_only']:
-                values['repo'] = ask_repo('', (config or {}).get('related_repos', ()))
-                values['local_only'] = not values['repo']
+            if not values['repositories'] and not values['local_only']:
+                values['repositories'] = ask_repositories()
+                values['local_only'] = not values['repositories']
             if project is not None and config is None:
                 try:
-                    config = save_project_preferences(project, config, values['repo'], folder)
+                    if values['repositories']:
+                        config = save_project_preferences(project, config, values['repositories'], folder)
+                        values['project_name'] = config.get('name', '')
+                    else:
+                        print(project_local.preflight(project / '.project-os', prepare=True))
                     protection_checked = True
                 except (project_local.ProjectError, OSError):
                     print('No se pudo proteger la configuración local; solo se permite guardar en un destino externo protegido.', file=sys.stderr)
                     config = {'_blocked': True}
                     protection_checked = True
+            elif project is not None and config and config.get('_migration_source'):
+                config = save_project_preferences(project, config, values['repositories'], preference_folder(project, config))
+                protection_checked = True
+                print('Configuración local migrada a la versión 2.')
             elif project is not None and not protection_checked and not (config or {}).get('_blocked'):
                 try:
                     print(project_local.preflight(project / '.project-os', prepare=True))
@@ -694,10 +772,11 @@ def interactive(operations, skills, templates, folder, repo, project=None, confi
             if not adopting:
                 values = fill_fields(operation, operations, skills, values)
             while True:
-                content = adoption_prompt(values['repo'], adoption_target, adoption_previous) if adopting else operation_prompt(operation, operations, skills, templates, values)
+                content = adoption_prompt(adoption_target, adoption_previous, repositories=values['repositories'],
+                                          scope=values['scope'], project_name=values['project_name']) if adopting else operation_prompt(operation, operations, skills, templates, values)
                 action = preview(operation, content, folder)
                 if action == 'operation':
-                    values.update(skills=[], context='', locator='', feedback='', question='')
+                    values.update(skills=[], context='', locator='', feedback='', question='', scope=[])
                     break
                 if action == 'edit':
                     # Keep repo and all current fields; operation and skills remain editable.
@@ -717,14 +796,8 @@ def interactive(operations, skills, templates, folder, repo, project=None, confi
                     else:
                         raise InputError('Selecciona un destino fuera del proyecto desprotegido.')
                 print(project_local.preflight(folder, prepare=False))
-                last_path, failures = save_prompt(folder, content)
+                last_path, failures = save_prompt(folder, content, owner=owner)
                 print(f'Prompt guardado: {last_path}')
-                try:
-                    if project is not None and not (config or {}).get('_blocked'):
-                        config = save_project_preferences(project, config, values['repo'], folder)
-                except (OSError, ValueError):
-                    print('El prompt se guardó, pero no se pudo guardar la configuración.', file=sys.stderr)
-                    return 1
                 if failures:
                     print('No se pudieron quitar algunos prompts anteriores.', file=sys.stderr)
                     return 1
@@ -740,12 +813,12 @@ def interactive(operations, skills, templates, folder, repo, project=None, confi
                     elif action in ('n', 'nueva', 'new'):
                         adopting = False
                         operation = 'continue'
-                        values.update(skills=[], context='', locator='', feedback='', question='')
+                        values.update(skills=[], context='', locator='', feedback='', question='', scope=[])
                         break
                     elif action in ('m', 'misma', 'same'):
                         if adopting:
                             break
-                        values.update(context='', locator='', feedback='', question='')
+                        values.update(context='', locator='', feedback='', question='', scope=[])
                         values = fill_fields(operation, operations, skills, values)
                         break
                     elif action in ('s', 'salir', 'exit'):
@@ -787,7 +860,10 @@ def select_project(explicit, interactive_mode):
         print('Hay archivos privados bajo seguimiento Git; no se leerá esa configuración.', file=sys.stderr)
     if candidates:
         if len(candidates) > 1:
-            signatures = {(data.get('primary_repo', ''), str(preference_folder(root, data))) for root, data in candidates}
+            signatures = {(frozenset(repo.casefold() for repo in data.get('repositories', [])),
+                           str(preference_folder(root, data)),
+                           tuple(sorted((name.casefold(), location) for name, location in data.get('checkouts', {}).items())))
+                          for root, data in candidates}
             if len(signatures) > 1:
                 if not interactive_mode:
                     raise InputError('Configuraciones anidadas en conflicto; usa --project para elegir.')
@@ -856,7 +932,8 @@ def choose_sources(project, allow_unavailable=False):
 def configure_project(project, config, args):
     if project is None or (config or {}).get('_blocked'):
         raise InputError('Selecciona un proyecto local sin archivos privados bajo seguimiento Git.')
-    data = dict(config or {'version': 1, 'name': project.name, 'related_repos': []})
+    data = dict(config or {'version': 2, 'name': project.name, 'repositories': []})
+    previous = data.pop('_migration_source', None)
     if args.migrate_legacy:
         try:
             directory = project_local.open_directory(ROOT / '.project-os')
@@ -873,7 +950,7 @@ def configure_project(project, config, args):
         if not isinstance(legacy, dict) or set(legacy) - {'repo', 'output_dir'} or not all(isinstance(x, str) for x in legacy.values()):
             raise InputError('La configuración antigua no es reconocida; se conserva.')
         check_sensitive(legacy)
-        if not args.repo or repo_value(args.repo) != legacy.get('repo'):
+        if not args.repo or legacy.get('repo', '').casefold() not in {repo.casefold() for repo in repo_list(args.repo)}:
             raise InputError('Indica --repo con el repositorio antiguo para asociarlo explícitamente al proyecto.')
         if config is not None:
             raise InputError('Ya existe una configuración del proyecto; no se reemplazará mediante migración.')
@@ -885,18 +962,21 @@ def configure_project(project, config, args):
                 print('El destino antiguo no pertenece al proyecto; se conserva sin reutilizar para evitar mezclar proyectos.')
         print('Se conservarán la configuración y prompts anteriores. El destino central no se comparte con el proyecto.')
     if args.repo is not None:
-        data['primary_repo'] = repo_value(args.repo)
+        requested = repo_list(args.repo)
+        data['repositories'] = repo_list([*data.get('repositories', []), *requested])
     if args.name is not None:
         data['name'] = args.name
-    if args.related_repo is not None:
-        data['related_repos'] = list(dict.fromkeys(repo_value(value) for value in args.related_repo))
     if args.checkout is not None:
-        paths = {}
+        paths = dict(data.get('checkouts', {})) if previous else {}
         for entry in args.checkout:
             name, separator, location = entry.partition('=')
             if not separator:
                 raise InputError('Usa --checkout owner/repo=/ruta/local.')
-            paths[repo_value(name)] = str(project_local.path(location))
+            name, location = repo_value(name), str(project_local.path(location))
+            for existing, existing_location in paths.items():
+                if existing.casefold() == name.casefold() and (existing != name or existing_location != location):
+                    raise InputError('Checkout ambiguo durante la migración; conserva y revisa la configuración.')
+            paths[name] = location
         data['checkouts'] = paths
     if args.output_dir:
         folder = project_local.path(args.output_dir)
@@ -907,7 +987,7 @@ def configure_project(project, config, args):
     else:
         data.setdefault('prompt_dir', '.project-os/prompts')
     check_sensitive(data)
-    print(project_local.save_config(project, data))
+    print(project_local.save_config(project, data, expected=previous))
     print('Configuración local guardada en el proyecto; las instrucciones versionadas no se han modificado.')
 
 
@@ -920,9 +1000,8 @@ def main(argv=None):
     parser.add_argument('--configure', action='store_true', help='guardar preferencias locales explícitamente')
     parser.add_argument('--migrate-legacy', action='store_true', help='migrar preferencias centrales antiguas al proyecto elegido')
     parser.add_argument('--name', help='nombre local del proyecto (con --configure)')
-    parser.add_argument('--related-repo', action='append', help='repositorio relacionado local (con --configure)')
     parser.add_argument('--checkout', action='append', help='checkout local owner/repo=/ruta (con --configure)')
-    parser.add_argument('--repo', help='repositorio owner/repo')
+    parser.add_argument('--repo', action='append', help='repositorio owner/repo; repetir para varios (alcance temporal, o agregar con --configure)')
     parser.add_argument('--workflow', help='operación (default: continue)')
     parser.add_argument('--skill', action='append', default=[])
     parser.add_argument('--locator', help='número o URL de issue/PR')
@@ -933,7 +1012,7 @@ def main(argv=None):
     parser.add_argument('--prototype', action='store_true', help='implement + rapid-prototype')
     args = parser.parse_args(argv)
     try:
-        check_sensitive(args.project, args.repo, args.workflow, *args.skill, args.locator, args.objective, args.feedback, args.question, args.output_dir, args.name, args.related_repo, args.checkout, args.target_version)
+        check_sensitive(args.project, args.repo, args.workflow, *args.skill, args.locator, args.objective, args.feedback, args.question, args.output_dir, args.name, args.checkout, args.target_version)
         if args.list:
             operations, skills, templates = discover()
             for name in ORDER:
@@ -948,8 +1027,8 @@ def main(argv=None):
             parser.error('--adopt no se combina con opciones de operación')
         if args.target_version and not args.adopt:
             parser.error('--target-version requiere --adopt')
-        if (args.name or args.related_repo or args.checkout) and not args.configure:
-            parser.error('--name, --related-repo y --checkout requieren --configure')
+        if (args.name or args.checkout) and not args.configure:
+            parser.error('--name y --checkout requieren --configure')
         if args.migrate_legacy and not args.configure:
             parser.error('--migrate-legacy requiere --configure')
         if args.configure and (args.adopt or args.workflow or args.skill or args.locator or args.objective or args.feedback or args.question or args.prototype):
@@ -973,16 +1052,24 @@ def main(argv=None):
             folder = preference_folder(project, config)
         else:
             folder = None
-        repo = repo_value(args.repo) if args.repo else (config or {}).get('primary_repo', remote)
+        configured = (config or {}).get('repositories', [])
+        local_only = args.repo == ['-']
+        if args.repo and not local_only:
+            scope = repo_list(args.repo)
+        else:
+            scope = []
+        repositories = [] if local_only else list(configured or ([remote] if remote else scope))
         if not cli:
             if (ROOT / '.project-os/config.json').exists():
                 print('Hay configuración central antigua; no se utiliza automáticamente. Conserva sus archivos hasta migrar preferencias de forma explícita.')
-            return interactive(operations, skills, templates, folder, repo, project, config)
+            return interactive(operations, skills, templates, folder, repositories, project, config)
         locator = locator_value(args.locator or '')
         target_version = project_local.commit(ROOT, args.target_version) if args.target_version else SOURCE_VERSION
-        content = adoption_prompt(repo, target_version, project_local.version(project) if project else None) if args.adopt else render(
+        content = adoption_prompt(target_version, project_local.version(project) if project else None,
+                                  repositories=repositories, scope=scope, project_name=(config or {}).get('name', '')) if args.adopt else render(
             operation, selected, args.objective or '', locator, operations, skills, templates,
-            repo=repo, feedback=args.feedback or '', question=args.question or '', local_only=args.repo == '-')
+            repositories=repositories, scope=scope, project_name=(config or {}).get('name', ''),
+            feedback=args.feedback or '', question=args.question or '', local_only=local_only)
         print('\n--- Vista previa ---\n' + content)
         if folder is None:
             print('Solo vista previa: selecciona explícitamente --output-dir o un proyecto local para guardar.')
@@ -1004,8 +1091,10 @@ def main(argv=None):
             else:
                 raise InputError('El destino debe estar fuera del proyecto desprotegido.')
         print(project_local.preflight(folder, prepare=False))
-        print('Se reemplazarán solo prompts anteriores del selector después de escribir el nuevo.')
-        output, failures = save_prompt(folder, content)
+        print('Se reemplazarán solo prompts identificados del mismo proyecto después de escribir el nuevo.')
+        if project is None:
+            print('Sin proyecto local identificable se conservan los prompts de otras invocaciones.')
+        output, failures = save_prompt(folder, content, owner=prompt_owner(project))
         print(f'Prompt guardado: {output}')
         if failures:
             print('No se pudieron quitar algunos prompts anteriores.', file=sys.stderr)
