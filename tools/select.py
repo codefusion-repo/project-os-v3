@@ -10,6 +10,11 @@ import uuid
 from pathlib import Path
 from urllib.parse import urlsplit
 
+try:
+    import readline  # Enable standard terminal line editing when available.
+except ImportError:
+    readline = None
+
 ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_OUTPUT = ROOT / '.project-os' / 'prompts'
 WORKFLOW_ORDER = ('continue', 'create', 'implement', 'review', 'close', 'release')
@@ -246,7 +251,7 @@ class Back(Exception):
     pass
 
 
-def choose(prompt, options, items, title, default=None, multiple=False):
+def choose(prompt, options, items, title, default=None, multiple=False, all_options=None):
     visible = options
     while True:
         raw = input(prompt).strip()
@@ -254,6 +259,11 @@ def choose(prompt, options, items, title, default=None, multiple=False):
             raise KeyboardInterrupt
         if raw == '/volver':
             raise Back
+        if raw == '/todas' and all_options is not None:
+            options = all_options
+            visible = options
+            show(title, visible, items)
+            continue
         if raw.startswith('/'):
             query = raw[1:].strip().casefold()
             visible = [n for n in options if query in n.casefold() or query in description(items[n]).casefold()]
@@ -334,15 +344,22 @@ def ask_line(prompt):
 
 
 def ask_multiline(label):
-    print(f'{label} (opcional; escribe varias líneas y termina con un punto solo; Enter vacío omite):')
+    line = input(f'{label} [Enter: omitir; /m: varias líneas]: ')
+    if line == '/cancelar':
+        raise KeyboardInterrupt
+    if line == '/volver':
+        raise Back
+    if line != '/m':
+        return line
+    print('Modo multilínea: escribe cada línea y termina con una línea vacía o un punto solo.')
     lines = []
     while True:
-        line = input()
+        line = input('> ')
         if line == '/cancelar':
             raise KeyboardInterrupt
         if line == '/volver':
             raise Back
-        if line == '.' or (not lines and not line):
+        if line == '.' or not line:
             return '\n'.join(lines)
         lines.append(line)
 
@@ -354,6 +371,8 @@ def wizard(workflows, skills, templates, destination, saved_repo):
     repo, workflow, selected, context, feedback, question = saved_repo, 'continue', [], '', '', ''
     local_only = False
     step = 'repo'
+    if sys.stdin.isatty() and readline is None:
+        print('Aviso: este Python no dispone de readline; la edición con flechas puede no estar disponible.')
     while True:
         try:
             if step == 'repo':
@@ -374,17 +393,21 @@ def wizard(workflows, skills, templates, destination, saved_repo):
                 step = 'workflow'
             elif step == 'workflow':
                 show('Workflows:', names, workflows)
+                previous_workflow = workflow
                 workflow = choose(f'Workflow [{workflow}; /texto filtra; /volver]: ', names, workflows,
                                   'Workflows:', default=workflow)
+                if workflow != previous_workflow and selected:
+                    selected = []
+                    print('Selección adicional reiniciada al cambiar de workflow.')
                 step = 'skills'
             elif step == 'skills':
                 print('Skills base automáticas: repo-context (si hay repositorio) y github-traceability; sin permisos adicionales.')
                 suggested = [name for name in suggested_skills(workflows[workflow], skills) if name not in BASE_SKILLS]
-                if suggested:
-                    print('Skills sugeridas (opcionales): ' + ', '.join(suggested))
-                show('Skills adicionales (números o nombres separados por coma):', optional_skills, skills)
-                selected = choose('Skills [Enter: conservar; -: ninguna; /texto filtra; /volver]: ',
-                                  optional_skills, skills, 'Skills:', default=selected, multiple=True)
+                if not suggested:
+                    print('Este workflow no sugiere skills adicionales; Enter continúa.')
+                show('Skills sugeridas (opcionales):', suggested, skills)
+                selected = choose('Skills [Enter: conservar; -: ninguna; /todas: ver otras; /texto: filtrar; /volver]: ',
+                                  suggested, skills, 'Skills:', default=selected, multiple=True, all_options=optional_skills)
                 step = 'context'
             elif step == 'context':
                 context = ask_line('Objetivo o referencia material (issue/PR solo si aporta) [Enter: inferir]: ')

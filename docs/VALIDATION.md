@@ -4,7 +4,7 @@ Resultados observados durante la implementación del wizard y la configuración 
 
 | Comando | Exit code | Resultado |
 |---|---:|---|
-| `python3 -m unittest discover -s tests -v` | 0 | 28 tests: sesiones con configuración vacía y existente, campos PM multilínea y no reutilización, cambio de repo, navegación, skills base y múltiples, persistencia segura, cancelación, errores, rutas, Markdown directo y ausencia de llamadas Git/GitHub del selector en un experimento local. |
+| `python3 -m unittest discover -s tests -v` | 0 | 30 tests: edición con flechas y Enter en terminal PTY, skills sugeridas por workflow, configuración local, campos PM multilínea y no reutilización, selección múltiple, persistencia segura, cancelación, errores y rutas. |
 | `python3 tools/select.py --workflow review --skill code-review --locator 1 --objective 'Revisar el PR 1 de codefusion-repo/project-os-v3, incluyendo selector y pruebas; no hacer merge.' > /tmp/project-os-v3-selector-preview.txt` | 0 | Vista previa y archivo Markdown real en `.project-os/prompts/`, carpeta ignorada por Git. |
 | `python3 tools/select.py --prototype --skill testing --skill security-review --output-dir /tmp/project-os-v3-validation-20261113 --objective 'Experimento local y descartable sin repositorio: validar un filtro.' > /tmp/project-os-v3-validation-preview.txt` | 0 | Prompt guardado con ambas skills base, rapid-prototype, testing y security-review una vez cada una. |
 | `git check-ignore -v .project-os/config.json .project-os/prompts/example.md` | 0 | Ambos paths están cubiertos por `.project-os/`. |

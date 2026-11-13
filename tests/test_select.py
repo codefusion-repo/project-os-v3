@@ -1,10 +1,13 @@
 import importlib.util
 import json
 import os
+import pty
+import select
 import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -102,6 +105,18 @@ class SelectorCLI(unittest.TestCase):
             self.assertIn('**Skills:** repo-context, github-traceability, rapid-prototype, testing, security-review', text)
             for name in ('repo-context', 'github-traceability', 'rapid-prototype', 'testing', 'security-review'):
                 self.assertEqual(text.count('# Skill: ' + name + '\n'), 1)
+
+    def test_review_displays_only_relevant_skills_with_optional_expansion(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            result = run(tmp, input_text='org/repo\nreview\n\n\n\n\nc\n')
+            self.assertEqual(result.returncode, 0, result.stderr)
+            menu = result.stdout.split('Skills sugeridas (opcionales):', 1)[1].split('Skills [Enter:', 1)[0]
+            for skill in ('code-review', 'security-review', 'testing'):
+                self.assertIn(skill, menu)
+            self.assertNotIn('implement-change', menu)
+            result = run(tmp, input_text='org/repo\nreview\n/todas\nimplement-change\n\n\n\nc\n')
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn('**Skills:** repo-context, github-traceability, implement-change', result.stdout)
 
     def test_interactive_multiple_specialized_skills(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -235,6 +250,64 @@ class SelectorCLI(unittest.TestCase):
                 self.assertEqual(list(Path(outside).iterdir()), [])
 
 
+class TerminalInteraction(unittest.TestCase):
+    @unittest.skipIf(selector.readline is None, 'readline no está disponible en este Python')
+    def test_arrow_editing_and_enter_advance_both_pm_fields(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            install = copy_install(Path(tmp) / 'kit')
+            master, slave = pty.openpty()
+            env = dict(os.environ, TERM='xterm')
+            process = subprocess.Popen([sys.executable, str(install / 'tools' / 'select.py')],
+                                       stdin=slave, stdout=slave, stderr=slave, cwd=install, env=env)
+            os.close(slave)
+            buffered = bytearray()
+
+            def wait_for(marker):
+                deadline = time.monotonic() + 8
+                while marker not in buffered:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        self.fail(f'No apareció {marker!r} en terminal')
+                    ready, _, _ = select.select([master], [], [], remaining)
+                    if not ready:
+                        self.fail(f'Tiempo agotado esperando {marker!r}')
+                    try:
+                        chunk = os.read(master, 65536)
+                    except OSError:
+                        self.fail(f'La terminal se cerró antes de {marker!r}')
+                    if not chunk:
+                        self.fail(f'Fin de terminal antes de {marker!r}')
+                    buffered.extend(chunk)
+                end = buffered.index(marker) + len(marker)
+                result = bytes(buffered[:end])
+                del buffered[:end]
+                return result
+
+            try:
+                wait_for(b'Repositorio owner/repo')
+                os.write(master, b'org/repo\n')
+                wait_for(b'Workflow [')
+                os.write(master, b'review\n')
+                wait_for(b'Skills [Enter:')
+                os.write(master, b'\n')
+                wait_for(b'Objetivo o referencia')
+                os.write(master, b'\n')
+                wait_for(b'PM_FEEDBACK_HUMANO')
+                os.write(master, b'holaXY\x1b[D\x1b[D\x1b[C!\n')
+                wait_for(b'PM_QUESTION_HUMANO')
+                os.write(master, b'mundoX\x1b[D?\n')
+                preview = wait_for(b'[G]uardar')
+                self.assertIn(b'holaX!Y', preview)
+                self.assertIn(b'mundo?X', preview)
+                os.write(master, b'c\n')
+                self.assertEqual(process.wait(timeout=8), 0)
+            finally:
+                if process.poll() is None:
+                    process.terminate()
+                    process.wait(timeout=8)
+                os.close(master)
+
+
 class WizardConfiguration(unittest.TestCase):
     @staticmethod
     def invoke(install, input_text):
@@ -246,9 +319,9 @@ class WizardConfiguration(unittest.TestCase):
             root = Path(tmp)
             install = copy_install(root / 'kit')
             destination = root / 'selected'
-            first_input = ('repo-invalido\norg/uno\n\ndebug,testing\n\n'
-                           'feedback privado línea uno\nfeedback línea dos\n.\n'
-                           'pregunta privada uno\npregunta dos\n.\n'
+            first_input = ('repo-invalido\norg/uno\n\n/todas\ndebug,testing\n\n'
+                           '/m\nfeedback privado línea uno\nfeedback línea dos\n.\n'
+                           '/m\npregunta privada uno\npregunta dos\n.\n'
                            'g\n' + str(destination) + '\ns\n')
             first = self.invoke(install, first_input)
             self.assertEqual(first.returncode, 0, first.stderr)
@@ -282,8 +355,8 @@ class WizardConfiguration(unittest.TestCase):
             root = Path(tmp)
             install = copy_install(root / 'kit')
             destination = root / 'out'
-            inputs = ('org/repo\nimplement\n/volver\nreview\ndebug,testing\n'
-                      'Contexto primero\ncomentario privado\n.\npregunta privada\n.\n'
+            inputs = ('org/repo\nimplement\n/volver\nreview\ncode-review,testing\n'
+                      'Contexto primero\ncomentario privado\npregunta privada\n'
                       'g\n' + str(destination) + '\nm\nContexto segundo\n\n\ng\n\ns\n')
             result = self.invoke(install, inputs)
             self.assertEqual(result.returncode, 0, result.stderr)
