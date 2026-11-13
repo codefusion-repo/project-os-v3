@@ -44,3 +44,23 @@ Comandos finales observados para esta ampliación:
 | `git diff --check` | 0 | Sin errores de whitespace en el diff observado. |
 
 CI debe verificarse para el SHA realmente publicado. La continuidad desde un agente nuevo y los escenarios browser se reportan por separado, solo si se ejecutan y observan.
+
+## Review del selector y prompt único — ejecución posterior
+
+Se recuperaron las revisiones del PR #1 sobre el SHA `719ecfd0938b33ddb9503a18d1a604a02a7e82ae`. La adopción consulta la API del repositorio canónico para confirmar que el SHA local es recuperable; si la consulta falla, el resultado es un borrador explícitamente no verificado y no indica fijar ese SHA. El wizard permite introducir un SHA objetivo diferente y elegir repositorios relacionados o escribir otro. El prompt operativo es único, autocontenido y breve, sin copiar documentos completos; conserva pasos esenciales y referencias para que el agente recupere las reglas verificables.
+
+Para la misma operación `review`, skills `testing` y `code-review`, locator `1`, entrada y comentario, se generó el prompt de `719ecfd` y el actual. Ambos comandos terminaron con exit 0 y se comprobaron solicitud, locator y SHA idénticos: **23.417 bytes antes y 2.047 bytes después**, una reducción del 91,3 % en esa muestra. No se midieron tokens. La primera clonación de comparación falló con exit 128 por enlaces duros entre dispositivos; se repitió con `git clone --no-hardlinks` y terminó correctamente.
+
+Se comprobó el commit `719ecfd0938b33ddb9503a18d1a604a02a7e82ae` en la API de GitHub con `gh api repos/codefusion-repo/project-os-v3/commits/719ecfd0938b33ddb9503a18d1a604a02a7e82ae --jq .sha`, exit 0. En un repositorio temporal se creó un commit exclusivamente local y la API del repositorio canónico respondió HTTP 422 y el verificador no confirmó ese SHA. Las pruebas también simulan falta de red, respuesta incompatible y borrador no verificado sin atribuir el SHA al repositorio canónico.
+
+Durante el cambio del formato, una ejecución intermedia de la suite terminó con exit 1 porque varias aserciones aún esperaban documentos completos en el prompt; se actualizaron para comprobar referencias, contexto intacto e integridad sin duplicación. El smoke local mantiene la adopción simulada: una adopción piloto real por otro agente y su recorrido GitHub completo siguen pendientes, al igual que las pruebas reales de browser y el dogfood de rendimiento.
+
+| Comando | Exit | Resultado |
+|---|---:|---|
+| `python3 -m unittest discover -s tests -q` | 0 | 69 tests; uno omitido por no estar instalado `prompt_toolkit` en ese Python. |
+| `.project-os/venv/bin/python -m unittest discover -s tests -q` | 0 | 69 tests, sin omisiones. |
+| `python3 tests/smoke_local.py` | 0 | Instalación y flujo local parcial; SHA `719ecfd` confirmado en GitHub y adopción del fixture simulada manualmente. |
+| `python3 -m py_compile tools/select.py tools/project_local.py` | 0 | Sintaxis válida. |
+| `git diff --check` | 0 | Sin errores de whitespace en el diff observado. |
+
+CI y SHA final deben verificarse tras el push de esta corrección.

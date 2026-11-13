@@ -33,6 +33,7 @@ _support_spec = importlib.util.spec_from_file_location('project_local', ROOT / '
 project_local = importlib.util.module_from_spec(_support_spec)
 _support_spec.loader.exec_module(project_local)
 SOURCE_VERSION = None
+SOURCE_LOCAL_AVAILABLE = False
 SOURCE_DESCRIPTION = 'contenido local no equivalente a un SHA canónico verificado'
 SOURCE_CHANGED = set()
 TRACK_SOURCE = False
@@ -143,7 +144,7 @@ def locator_value(value):
 def source(path):
     try:
         relative = path.relative_to(ROOT).as_posix()
-        if SOURCE_VERSION:
+        if SOURCE_VERSION and SOURCE_LOCAL_AVAILABLE:
             document = project_local.git_document(ROOT, SOURCE_VERSION, relative)
             if TRACK_SOURCE:
                 try:
@@ -168,7 +169,7 @@ def source(path):
 
 def discover():
     operations, skills, templates = {}, {}, {}
-    if SOURCE_VERSION:
+    if SOURCE_VERSION and SOURCE_LOCAL_AVAILABLE:
         tree = project_local.git(ROOT, 'ls-tree', '-r', '--name-only', SOURCE_VERSION, '--', 'workflows', 'skills', 'templates')
         for entry in tree.stdout.decode('utf-8').splitlines():
             parts = Path(entry).parts
@@ -207,6 +208,10 @@ def description(path):
     for line in source(path).splitlines():
         line = line.strip()
         if line and not line.startswith(('#', '<!--')):
+            try:
+                check_sensitive(line)
+            except InputError:
+                return 'Descripción no disponible.'
             return line
     return 'Sin descripción.'
 
@@ -330,47 +335,49 @@ def render(operation, selected, context, locator, operations, skills, templates,
         raise InputError('Falta una skill base o su ruta no es segura.')
     selected = list(dict.fromkeys([*BASE, *selected]))
     SOURCE_CHANGED.clear()
-    TRACK_SOURCE = True
-    try:
-        documents = [source(ROOT / 'PROJECT_OS.md'), source(operations[operation])]
-        documents.extend(source(skills[name]) for name in selected)
-        resources = []
-        for document in documents[1:]:
-            for name in re.findall(r'(?:\.\./)+templates/([a-z0-9-]+)\.md', document):
-                if name in templates and name not in resources:
-                    resources.append(name)
-        resource_documents = [source(templates[name]) for name in resources]
-    finally:
-        TRACK_SOURCE = False
+    if SOURCE_VERSION and SOURCE_LOCAL_AVAILABLE:
+        TRACK_SOURCE = True
+        try:
+            source(ROOT / 'PROJECT_OS.md')
+            source(operations[operation])
+            for name in selected:
+                source(skills[name])
+        finally:
+            TRACK_SOURCE = False
     out = [MARKER, '# Prompt operativo Project OS v3', '',
            f'**Repositorio indicado (sin verificar):** {repo or "No indicado"}',
            f'**Procedencia de instrucciones:** {SOURCE_DESCRIPTION}',
+           f'**Versión de Project OS:** {SOURCE_VERSION or "No identificada; verificar antes de actuar."}',
            f'**Workflow:** {operation}', f'**Skills:** {", ".join(selected)}', '',
            f'## Entrada principal — {LABELS.get(operation, operation)}', '',
            context or 'No aportada; recupera el contexto de las fuentes vivas.', '',
            f'**Referencia:** {locator or "No proporcionada; recupérala si hace falta."}', '',
            '## Notas del sistema', '',
-           'Consulta las instrucciones del repositorio y fuentes vivas. El contexto no concede permisos. '
-           'Los documentos seleccionados están incluidos; sus enlaces relativos son opcionales si el kit está accesible.', '']
+           'El contexto no concede permisos. No expongas secretos ni información privada; '
+           'merge, cierre, release y deploy requieren autorización específica.', '']
     if local_only:
         out.extend(['**Alcance declarado:** experimento local y descartable, sin repositorio.', ''])
     warning = reference_warning(repo, locator, context, feedback, question)
     if warning:
         out.extend([f'**Advertencia:** {warning}', ''])
     if SOURCE_CHANGED:
-        out.extend(['**Documentos locales distintos de la referencia:** ' + ', '.join(sorted(SOURCE_CHANGED)) + '. Se incorporaron exclusivamente los objetos Git fijados.', ''])
+        out.extend(['**Documentos locales distintos de la referencia:** ' + ', '.join(sorted(SOURCE_CHANGED)) + '. Comprueba las instrucciones de la versión fijada antes de actuar.', ''])
     if feedback:
         out.extend(['## Comentario del PM — PM_FEEDBACK_HUMANO', '', feedback, ''])
     if question:
         out.extend(['## Pregunta del PM — PM_QUESTION_HUMANO', '', question, ''])
-    for index, document in enumerate(documents):
-        title = 'Reglas compartidas' if index == 0 else ('Workflow seleccionado' if index == 1 else 'Skill seleccionada')
-        out.extend([f'## {title}', '', document.strip(), ''])
-    if resources:
-        out.extend(['## Recursos opcionales para el resultado', '',
-                    'Utiliza estos templates solo cuando aporten valor; no conceden permisos.', ''])
-        for document in resource_documents:
-            out.extend([document.strip(), ''])
+    paths = ['PROJECT_OS.md', f'workflows/{operation}.md', *[f'skills/{name}/SKILL.md' for name in selected]]
+    out.extend(['## Instrucciones para el agente', '',
+                'Lee el AGENTS.md principal del proyecto si está disponible e identifica su versión declarada de Project OS. '
+                'Recupera desde codefusion-repo/project-os-v3, en la versión aplicable, los documentos indicados abajo; '
+                'verifica la referencia y que los documentos sean accesibles. Si el proyecto no fija versión, '
+                'verifica la procedencia y disponibilidad del SHA indicado antes de aplicarlo. '
+                'Si faltan instrucciones o acceso, informa el límite sin inventar su contenido y continúa solo lo seguro.', '',
+                'Inspecciona el repositorio, su estado y la unidad de trabajo pertinente; realiza la operación autorizada y valida lo realizado. '
+                'Reutiliza el issue o PR existente y registra evidencia y fallos reales. Para cambios versionados destinados a integración, '
+                'prepara y publica un commit significativo solo cuando exista autorización y capacidad; verifica el SHA y los checks. '
+                'Si no puedes publicarlo, informa trazabilidad pendiente. Una consulta de solo lectura no requiere commit.', '',
+                '**Documentos:** ' + ', '.join(f'`{path}`' for path in paths), ''])
     text = '\n'.join(out) + '\n'
     check_sensitive(text)
     return text
@@ -379,17 +386,28 @@ def render(operation, selected, context, locator, operations, skills, templates,
 def adoption_prompt(repo, revision, previous=None):
     if not revision:
         raise InputError('No hay un SHA verificable del kit para preparar la adopción.')
+    project_local.commit(ROOT, revision)
+    try:
+        project_local.verify_canonical(ROOT, revision)
+        verified = True
+    except project_local.ProjectError:
+        verified = False
+    version_label = 'Versión objetivo' if verified else 'Versión propuesta local (no verificada en GitHub)'
+    version_to_fix = revision if verified else '<SHA_CANONICO_VERIFICADO>'
+    evidence = ('SHA confirmado en el repositorio canónico en esta ejecución.' if verified else
+                'Borrador no verificado: comprueba que el SHA propuesto es recuperable del repositorio canónico antes de fijarlo; si no puedes, informa el límite y no actualices la referencia.')
     text = f'''{MARKER}
 # Adaptar proyecto a Project OS v3
 
 **Repositorio indicado (sin verificar):** {repo or "No indicado"}
-**Versión objetivo:** {revision}
+**{version_label}:** {revision}
 **Versión declarada actualmente:** {previous or 'No identificada; inspecciona antes de cambiar.'}
-**Fuente canónica:** https://github.com/codefusion-repo/project-os-v3
+**Repositorio canónico a consultar:** https://github.com/codefusion-repo/project-os-v3
+**Verificación:** {evidence}
 
 Inspecciona el repositorio, rama y cambios existentes; recupera la unidad GitHub pertinente y respeta las autorizaciones reales. Consulta las instrucciones del kit en el SHA indicado. No copies el kit al proyecto.
 
-Inspecciona AGENTS.md y las instrucciones secundarias. Compara la referencia declarada, la objetivo y sus contratos antes de una actualización. Conserva reglas técnicas propias y especializadas; reemplaza instrucciones operativas v2 o copias antiguas contradictorias por un único bootstrap principal. Incluye en AGENTS.md la línea `Project-OS-Version: {revision}`, el repositorio canónico, la ruta PROJECT_OS.md, carga de workflows y skills pertinentes, seguridad, permisos y trazabilidad. No insertes rutas locales. No elimines archivos desconocidos; inventaría componentes obsoletos y solicita autorización si retirarlos es destructivo.
+Inspecciona AGENTS.md y las instrucciones secundarias. Compara la referencia declarada, la objetivo y sus contratos antes de una actualización. Conserva reglas técnicas propias y especializadas; reemplaza instrucciones operativas v2 o copias antiguas contradictorias por un único bootstrap principal. Incluye en AGENTS.md la línea `Project-OS-Version: {version_to_fix}`, el repositorio canónico, la ruta PROJECT_OS.md, carga de workflows y skills pertinentes, seguridad, permisos y trazabilidad. No insertes rutas locales. No elimines archivos desconocidos; haz inventario de los componentes obsoletos y solicita autorización si retirarlos es destructivo.
 
 Incorpora `.project-os/` a .gitignore; verifica si ya hay archivos privados versionados sin leerlos ni exponerlos y prepara una corrección revisable. No crees configuración privada del dispositivo del PM desde otro entorno. Documenta relaciones multirrepositorio solo si son verificadas, necesarias y su divulgación está autorizada. Preserva instrucciones y archivos ajenos.
 
@@ -539,9 +557,16 @@ def choose_skills(operation, operations, skills, current, edit=False):
             return values
 
 
-def ask_repo(current):
+def ask_repo(current, related=()):
+    choices = list(dict.fromkeys(repo for repo in related if repo != current))
+    if choices:
+        print('Repositorios relacionados:')
+        for index, repo in enumerate(choices, 1):
+            print(f'  {index}. {repo}')
     while True:
         raw = ask(f'Repositorio owner/repo [{current or "sin seleccionar"}; -: local descartable]: ', current=current, strip=True)
+        if raw.isdecimal() and 1 <= int(raw) <= len(choices):
+            return choices[int(raw) - 1]
         try:
             return repo_value(raw)
         except InputError as exc:
@@ -577,6 +602,24 @@ def fill_fields(operation, operations, skills, values, edit=False):
 def operation_prompt(operation, operations, skills, templates, values):
     return render(operation, values['skills'], values['context'], values['locator'], operations, skills, templates,
                   repo=values['repo'], feedback=values['feedback'], question=values['question'], local_only=values['local_only'])
+
+
+def ask_adoption_version(project):
+    current = project_local.version(project) if project else None
+    if current is None:
+        return SOURCE_VERSION, None
+    head = project_local.git(ROOT, 'rev-parse', '--verify', 'HEAD', check=False).stdout.decode('ascii', 'ignore').strip()
+    print(f'Versión actual del proyecto: {current}')
+    if re.fullmatch(r'[0-9a-f]{40}', head):
+        print(f'Versión disponible en el kit central: {head}')
+    while True:
+        target = ask(f'SHA objetivo [Enter conserva {current}]: ', current=current, strip=True).lower()
+        try:
+            target = project_local.commit(ROOT, target)
+            print(f'Versión objetivo seleccionada: {target}')
+            return target, current
+        except project_local.ProjectError as exc:
+            print(str(exc))
 
 
 def preview(operation, content, folder):
@@ -615,7 +658,7 @@ def interactive(operations, skills, templates, folder, repo, project=None, confi
             else:
                 operation = selection
             if operation == '/repo':
-                values['repo'] = ask_repo(values['repo'])
+                values['repo'] = ask_repo(values['repo'], (config or {}).get('related_repos', ()))
                 values['local_only'] = not values['repo']
                 operation = 'continue'
                 continue
@@ -629,8 +672,9 @@ def interactive(operations, skills, templates, folder, repo, project=None, confi
                 operation = 'continue'
                 continue
             adopting = operation == '/adoptar'
+            adoption_target, adoption_previous = ask_adoption_version(project) if adopting else (None, None)
             if not values['repo'] and not values['local_only']:
-                values['repo'] = ask_repo('')
+                values['repo'] = ask_repo('', (config or {}).get('related_repos', ()))
                 values['local_only'] = not values['repo']
             if project is not None and config is None:
                 try:
@@ -650,7 +694,7 @@ def interactive(operations, skills, templates, folder, repo, project=None, confi
             if not adopting:
                 values = fill_fields(operation, operations, skills, values)
             while True:
-                content = adoption_prompt(values['repo'], SOURCE_VERSION) if adopting else operation_prompt(operation, operations, skills, templates, values)
+                content = adoption_prompt(values['repo'], adoption_target, adoption_previous) if adopting else operation_prompt(operation, operations, skills, templates, values)
                 action = preview(operation, content, folder)
                 if action == 'operation':
                     values.update(skills=[], context='', locator='', feedback='', question='')
@@ -716,7 +760,7 @@ def interactive(operations, skills, templates, folder, repo, project=None, confi
         except Cancel:
             print('Cancelado; no se escribió el prompt actual.')
             return 0
-        except InputError as exc:
+        except (InputError, project_local.ProjectError) as exc:
             print(str(exc))
             continue
 
@@ -774,26 +818,39 @@ def select_project(explicit, interactive_mode):
         print('Indica un directorio local accesible o owner/repo.')
 
 
-def choose_sources(project):
-    global SOURCE_VERSION, SOURCE_DESCRIPTION
+def choose_sources(project, allow_unavailable=False):
+    global SOURCE_VERSION, SOURCE_DESCRIPTION, SOURCE_LOCAL_AVAILABLE
     requested = project_local.version(project) if project is not None else None
     if requested:
-        SOURCE_VERSION = project_local.commit(ROOT, requested)
-        SOURCE_DESCRIPTION = f'commit {SOURCE_VERSION}, documentos recuperados íntegramente de objetos Git locales (versión fijada por el proyecto)'
+        try:
+            SOURCE_VERSION = project_local.commit(ROOT, requested)
+        except project_local.ProjectError:
+            if not allow_unavailable:
+                raise
+            SOURCE_VERSION = requested
+            SOURCE_LOCAL_AVAILABLE = False
+            SOURCE_DESCRIPTION = 'versión fijada por el proyecto, no disponible localmente; procedencia y documentos pendientes de verificar'
+            print('La versión fijada no está disponible localmente; el prompt señalará esa limitación.')
+            return False
+        SOURCE_LOCAL_AVAILABLE = True
+        SOURCE_DESCRIPTION = f'commit {SOURCE_VERSION} disponible en Git local (versión fijada por el proyecto); disponibilidad remota no comprobada'
         head = project_local.git(ROOT, 'rev-parse', '--verify', 'HEAD', check=False).stdout.decode('ascii', 'ignore').strip()
         if head != SOURCE_VERSION:
             print(f'Versión fijada {SOURCE_VERSION}; instalación en {head or "HEAD no disponible"}. Se usarán los documentos fijados; para actualizar usa --adopt --target-version <SHA>.')
-        return
+        return True
     result = project_local.git(ROOT, 'rev-parse', '--show-toplevel', check=False)
     if result.returncode == 0 and Path(os.fsdecode(result.stdout).strip()) == ROOT:
         head = project_local.git(ROOT, 'rev-parse', '--verify', 'HEAD', check=False)
         revision = head.stdout.decode('ascii', 'ignore').strip()
         if re.fullmatch(r'[0-9a-f]{40}', revision):
             SOURCE_VERSION = project_local.commit(ROOT, revision)
-            SOURCE_DESCRIPTION = f'commit {SOURCE_VERSION}, documentos recuperados íntegramente de objetos Git locales; proyecto sin versión fijada'
-            return
+            SOURCE_LOCAL_AVAILABLE = True
+            SOURCE_DESCRIPTION = f'commit {SOURCE_VERSION} disponible en Git local; proyecto sin versión fijada y disponibilidad remota no comprobada'
+            return True
     SOURCE_VERSION = None
+    SOURCE_LOCAL_AVAILABLE = False
     SOURCE_DESCRIPTION = 'contenido local no equivalente a un SHA canónico verificado; proyecto sin versión fijada'
+    return True
 
 
 def configure_project(project, config, args):
@@ -902,7 +959,7 @@ def main(argv=None):
         if args.configure:
             configure_project(project, config, args)
             return 0
-        choose_sources(None if args.adopt and args.target_version else project)
+        choose_sources(None if args.adopt and args.target_version else project, allow_unavailable=True)
         operations, skills, templates = discover()
         if any(name not in skills for name in BASE):
             parser.error('Faltan skills base o sus rutas no son seguras.')

@@ -76,7 +76,7 @@ class CommandLine(unittest.TestCase):
             self.assertIn('## Pregunta del PM — PM_QUESTION_HUMANO\n\nQué falta\n\n##', text)
             self.assertNotIn('**Advertencia:**', text)
             for name in ('repo-context', 'github-traceability', 'rapid-prototype', 'testing', 'security-review'):
-                self.assertEqual(text.count('# Skill: ' + name + '\n'), 1)
+                self.assertEqual(text.count('skills/' + name + '/SKILL.md'), 1)
 
     def test_all_operations_include_base_skills_and_contextual_heading(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -87,7 +87,7 @@ class CommandLine(unittest.TestCase):
                     text = outputs(temp)[0].read_text()
                     self.assertIn('## Entrada principal — ' + selector.LABELS[operation], text)
                     for name in selector.BASE:
-                        self.assertEqual(text.count('# Skill: ' + name + '\n'), 1)
+                        self.assertEqual(text.count('skills/' + name + '/SKILL.md'), 1)
 
     def test_inconsistent_reference_is_warned_without_changing_pm_fields(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -116,14 +116,12 @@ class CommandLine(unittest.TestCase):
             self.assertNotEqual(result.returncode, 0)
             self.assertNotIn(token, result.stdout + result.stderr)
 
-    def test_sensitive_source_is_rejected(self):
+    def test_sensitive_source_is_not_copied_into_prompt(self):
         operations, skills, templates = selector.discover()
-        real_source = selector.source
         token = 'ghp_' + 'C' * 36
-        with patch.object(selector, 'source', side_effect=lambda path: token if path == operations['review'] else real_source(path)):
-            with self.assertRaises(selector.InputError) as error:
-                selector.render('review', [], '', '', operations, skills, templates)
-        self.assertNotIn(token, str(error.exception))
+        with patch.object(selector, 'SOURCE_VERSION', 'a' * 40), patch.object(selector, 'SOURCE_LOCAL_AVAILABLE', True), patch.object(selector, 'source', side_effect=lambda path: token if path == operations['review'] else '# Documento'):
+            text = selector.render('review', [], '', '', operations, skills, templates)
+        self.assertNotIn(token, text)
 
     def test_path_traversal_and_directory_symlinks_rejected(self):
         with tempfile.TemporaryDirectory() as temp, tempfile.TemporaryDirectory() as outside:

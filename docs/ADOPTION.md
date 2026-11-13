@@ -2,7 +2,7 @@
 
 ## Una instalación y un proyecto
 
-Instala el checkout central con `./install.sh` y ejecuta `project-os-v3 --project /ruta/al/proyecto`. El wizard selecciona `/adoptar`, prepara configuración local si puede protegerla y genera un único encargo. Entrega el prompt a un agente terminal con acceso al checkout y autorización. No copies workflows, skills, templates ni el wizard al proyecto. En un repo sin checkout local, indica `owner/repo`: el selector no inventa una ruta ni configuración local y solo guarda en una carpeta externa elegida expresamente.
+Instala el checkout central con `./install.sh` y ejecuta `project-os-v3 --project /ruta/al/proyecto`. Selecciona `/adoptar`; el wizard prepara configuración local si puede protegerla y genera un único encargo. Si el proyecto ya tiene una versión fijada, muestra esa versión y el HEAD local del kit y permite indicar otro SHA objetivo. Entrega el prompt a un agente terminal con acceso al checkout y autorización. No copies workflows, skills, templates ni el wizard al proyecto. En un repo sin checkout local, indica `owner/repo`: el selector no inventa una ruta ni configuración local y solo guarda en una carpeta externa elegida expresamente.
 
 El agente inspecciona rama, diff e instrucciones existentes; adapta el `AGENTS.md` principal y `.gitignore` dentro del alcance autorizado. La configuración local es responsabilidad del wizard en el dispositivo donde se ejecuta; el agente no debe crearla suponiendo que comparte ese filesystem. No debe abrir secretos ni eliminar archivos desconocidos. Registra en GitHub commit, PR, checks y un comentario histórico nuevo cuando esté autorizado.
 
@@ -16,7 +16,7 @@ Project-OS-Version: <SHA completo de un commit verificable>
 Lee PROJECT_OS.md, el workflow aplicable y las skills repo-context y github-traceability desde ese commit del repositorio canónico. Respeta las reglas técnicas y autorizaciones propias de este proyecto.
 ```
 
-Añade reglas técnicas válidas, restricciones y referencias versionadas pertinentes. Para un agente sin instalación central, los documentos se recuperan desde GitHub en el SHA fijado. Sin acceso, utiliza un prompt autocontenido verificado o informa el límite.
+Añade reglas técnicas válidas, restricciones y referencias versionadas pertinentes. Para un agente sin instalación central, los documentos se recuperan desde GitHub en el SHA fijado. Sin acceso a los documentos aplicables, informa el límite y continúa solo lo que sea seguro.
 
 ## Archivos locales y protección
 
@@ -32,7 +32,7 @@ Si una carpeta contiene configuración desconocida, el wizard la conserva y no l
 
 ## Workspace y precedencia
 
-Un workspace puede agrupar varios repositorios y conservar una sola configuración local. Cada repo conserva su propio `AGENTS.md`. `--project` tiene prioridad; sin él, el wizard busca configuraciones en el directorio actual y ancestros, sin recorrer el dispositivo. Si dos configuraciones anidadas difieren materialmente en repo o destino de prompts, solicita selección interactiva o exige `--project` en CLI; nunca las fusiona. Los repos relacionados y rutas de checkout no se copian automáticamente al prompt ni a Git.
+Un workspace puede agrupar varios repositorios y conservar una sola configuración local. Cada repo conserva su propio `AGENTS.md`. `--project` tiene prioridad; sin él, el wizard busca configuraciones en el directorio actual y ancestros, sin recorrer el dispositivo. Si dos configuraciones anidadas difieren materialmente en repo o destino de prompts, solicita selección interactiva o exige `--project` en CLI; nunca las fusiona. Al usar `/repo`, el wizard muestra los repositorios relacionados como opciones y sigue permitiendo escribir otro; los repos relacionados y rutas de checkout no se copian automáticamente al prompt ni a Git.
 
 Para continuidad remota, documenta en `AGENTS.md` o arquitectura solo las relaciones entre repositorios que sean verificadas, necesarias y adecuadas a la visibilidad y autorización. Si una relación no puede divulgarse, informa la limitación y usa un canal autorizado. Cada repo requiere permisos propios.
 
@@ -46,11 +46,11 @@ project-os-v3 --project /ruta/al/proyecto --configure --migrate-legacy --repo or
 
 Se conserva la configuración central y los prompts antiguos; el nuevo destino por defecto pertenece al proyecto. Si el repo no coincide, el formato es desconocido o ya existe configuración local, la migración se detiene sin sobrescribir. No se borran archivos desconocidos ni prompts. Ante un fallo conserva los archivos y corrige la causa antes de reintentar.
 
-Para v2 o una copia previa de v3, el agente inventaría instrucciones y componentes, sustituye referencias operativas contradictorias preservando reglas técnicas y prepara un diff. No borra directorios por nombre ni elimina datos personalizados; solicita autorización para retiros destructivos. El wizard solo prepara el encargo; esta guía no afirma que una migración real ya se haya ejecutado.
+Para v2 o una copia previa de v3, el agente hace inventario de instrucciones y componentes, sustituye referencias operativas contradictorias preservando reglas técnicas y prepara un diff. No borra directorios por nombre ni elimina datos personalizados; solicita autorización para retiros destructivos. El wizard solo prepara el encargo; esta guía no afirma que una migración real ya se haya ejecutado.
 
 ## Actualización de versión
 
-El proyecto conserva su SHA hasta una actualización explícita. El selector lee los documentos desde los objetos Git de ese SHA, aun si el checkout central tiene otro HEAD o documentos modificados, y muestra diferencias de los documentos utilizados. Si el SHA no está disponible localmente, informa el límite y no mezcla contenido. Para preparar una actualización, proporciona un SHA objetivo real disponible:
+El proyecto conserva su SHA hasta una actualización explícita. El prompt autocontenido y breve incluye la tarea y pasos esenciales, referencia esa versión y pide al agente verificar y recuperar los documentos; no copia el kit completo. El selector comprueba los documentos utilizados contra los objetos Git locales cuando están disponibles y señala diferencias sin incluirlas. Al generar un encargo de adopción o actualización consulta si el SHA exacto está disponible en la API del repositorio canónico; si falta conexión, acceso o verificación, genera un borrador marcado como no verificado que exige comprobarlo antes de fijarlo. Abrir el wizard y preparar otras operaciones no requiere red. Si el SHA fijado no está disponible localmente, el prompt indica esa limitación y el agente debe verificarlo. Para preparar una actualización, proporciona un SHA objetivo real disponible:
 
 ```bash
 project-os-v3 --project /ruta/al/proyecto --adopt --target-version SHA_COMPLETO
@@ -61,3 +61,5 @@ El encargo pide comparar versiones, preservar personalizaciones, preparar diff y
 ## Aceptación en uso real
 
 Con un proyecto piloto autorizado, valida instalación desde otra carpeta, exclusión Git previa a escritura, adopción por un agente terminal sin copiar el kit, una tarea acotada con el SHA correcto y GitHub autorizado. En una sesión independiente entrega solo el repo o locator y comprueba recuperación de instrucciones, relaciones divulgables, PR, checks, bloqueos y siguiente paso. Comprueba además el wizard y los controles de secretos. Registra comandos, exit codes, SHA, checks y límites. Los tests aislados no demuestran por sí solos esta prueba integral; el dogfood de rendimiento es posterior.
+
+El wizard utiliza un único formato de prompt; conserva el texto del PM sin copiar documentos operativos completos.

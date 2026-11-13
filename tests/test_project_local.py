@@ -1,4 +1,6 @@
 import importlib.util
+import contextlib
+import io
 import json
 import os
 import shutil
@@ -308,15 +310,17 @@ class Versions(unittest.TestCase):
             (kit / 'AGENTS.md').write_text('codefusion-repo/project-os-v3\nProject-OS-Version: ' + sha + '\n')
             self.assertEqual(local.version(kit), sha)
 
-    def test_unavailable_pinned_version_never_generates(self):
+    def test_unavailable_pinned_version_is_reported_without_mixing_content(self):
         with tempfile.TemporaryDirectory() as temp:
             root = repo(Path(temp) / 'repo')
             save(root, 'a', 'org/a')
             (root / 'AGENTS.md').write_text('codefusion-repo/project-os-v3\nProject-OS-Version: ' + 'a' * 40 + '\n')
             result = execute('--project', root, '--workflow', 'continue')
-            self.assertNotEqual(result.returncode, 0)
-            self.assertIn('no está disponible', result.stderr)
-            self.assertFalse((root / '.project-os/prompts').exists())
+            self.assertEqual(result.returncode, 0, result.stderr)
+            previous = next((root / '.project-os/prompts').glob('*.md'))
+            self.assertIn('no disponible localmente', previous.read_text())
+            self.assertIn('**Versión de Project OS:** ' + 'a' * 40, previous.read_text())
+            self.assertNotIn('# Skill: repo-context', previous.read_text())
 
     def test_malformed_declared_version_never_falls_back_to_head(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -338,7 +342,7 @@ class Versions(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
             text = next((root / '.project-os/prompts').glob('*.md')).read_text()
             self.assertIn(sha, text)
-            self.assertIn('documentos recuperados íntegramente de objetos Git', text)
+            self.assertIn('disponible en Git local (versión fijada por el proyecto)', text)
 
     def test_full_prompt_uses_pinned_tree_after_kit_changes(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -380,9 +384,14 @@ class Versions(unittest.TestCase):
             text = next((project / '.project-os/prompts').glob('*.md')).read_text()
             self.assertIn(old, text)
             self.assertNotIn('CAMBIO_LOCAL_NO_OFICIAL', text)
-            adoption = subprocess.run([sys.executable, str(kit / 'tools/select.py'), '--project', str(project),
-                                       '--adopt', '--target-version', newer], capture_output=True, text=True)
-            self.assertEqual(adoption.returncode, 0, adoption.stderr)
+            fixture_spec = importlib.util.spec_from_file_location('selector_version_fixture', kit / 'tools/select.py')
+            fixture = importlib.util.module_from_spec(fixture_spec)
+            fixture_spec.loader.exec_module(fixture)
+            with patch.object(fixture.project_local, 'verify_canonical', side_effect=fixture.project_local.commit) as verify:
+                with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                    status = fixture.main(['--project', str(project), '--adopt', '--target-version', newer])
+                self.assertEqual(status, 0)
+                verify.assert_called_once_with(kit, newer)
             text = next((project / '.project-os/prompts').glob('*.md')).read_text()
             self.assertIn('**Versión objetivo:** ' + newer, text)
             self.assertIn('**Versión declarada actualmente:** ' + old, text)

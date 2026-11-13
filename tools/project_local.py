@@ -5,6 +5,8 @@ import re
 import stat
 import subprocess
 import uuid
+import urllib.error
+import urllib.request
 from pathlib import Path
 
 
@@ -270,6 +272,33 @@ def commit(root, revision):
     result = git(root, 'rev-parse', '--verify', revision + '^{commit}', check=False)
     if result.returncode or result.stdout.decode('ascii', 'ignore').strip() != revision:
         raise ProjectError('La versión fijada no está disponible localmente; no se mezclaron instrucciones.')
+    return revision
+
+
+def verify_canonical(root, revision):
+    """Verify the exact local commit is retrievable from the canonical GitHub repo."""
+    revision = commit(root, revision)
+    url = 'https://api.github.com/repos/codefusion-repo/project-os-v3/commits/' + revision
+    request = urllib.request.Request(url, headers={'Accept': 'application/vnd.github+json',
+                                                   'User-Agent': 'project-os-v3'})
+
+    class NoRedirect(urllib.request.HTTPRedirectHandler):
+        def redirect_request(self, req, fp, code, msg, headers, newurl):
+            return None
+
+    try:
+        with urllib.request.build_opener(NoRedirect()).open(request, timeout=10) as response:
+            if response.status != 200 or response.geturl() != url:
+                raise ProjectError('No se pudo verificar el SHA en el repositorio canónico.')
+            # A bounded response prevents accepting arbitrary remote content as evidence.
+            payload = response.read(1024 * 1024 + 1)
+            if len(payload) > 1024 * 1024:
+                raise ProjectError('La respuesta del repositorio canónico excede el límite permitido.')
+            data = json.loads(payload)
+    except (OSError, ValueError, urllib.error.URLError) as exc:
+        raise ProjectError('No se pudo verificar el SHA en el repositorio canónico; comprueba acceso y disponibilidad.') from exc
+    if not isinstance(data, dict) or data.get('sha') != revision:
+        raise ProjectError('El repositorio canónico no confirmó el SHA solicitado.')
     return revision
 
 

@@ -8,7 +8,7 @@ Complementa [V3_SPEC.md](V3_SPEC.md). La decisión consolidada de instalación c
 
 ## Templates operativos GitHub
 
-La biblioteca se amplía de diez a catorce templates: [merge](../templates/merge.md), [close](../templates/close.md), [comment](../templates/comment.md) y [review-comment](../templates/review-comment.md) preparan mensajes y acciones con referencias y resultados verificados. Se integran con implement, review, close y github-traceability y el selector los incorpora automáticamente cuando corresponda, sin selección manual. Preparación, ejecución y confirmación son distintas; merge y cierre requieren autorización específica. Se reutilizan la unidad y conversación existentes.
+La biblioteca se amplía de diez a catorce templates: [merge](../templates/merge.md), [close](../templates/close.md), [comment](../templates/comment.md) y [review-comment](../templates/review-comment.md) preparan mensajes y acciones con referencias y resultados verificados. Se integran con implement, review, close y github-traceability y los agentes los utilizan cuando aportan valor, sin selección manual en el wizard. Preparación, ejecución y confirmación son distintas; merge y cierre requieren autorización específica. Se reutilizan la unidad y conversación existentes.
 
 ## Garantías esenciales
 
@@ -48,4 +48,8 @@ La decisión posterior del PM sustituye el orden original: seleccionar operació
 
 ## Decisión consolidada: instalación central y adopción ligera
 
-Instalar una vez, adaptar cada proyecto una vez y utilizar el wizard diariamente. No copiar el kit ni mantener perfiles centrales. `--project` selecciona explícitamente el proyecto o workspace; configuraciones anidadas incompatibles no se fusionan. El wizard protege y administra configuración y prompts locales; el agente adapta los archivos versionados y registra la trazabilidad autorizada. Cada repositorio fija un SHA verificable en su `AGENTS.md`. El selector utiliza documentos de ese commit mediante Git y no presenta archivos locales alterados como equivalentes. La seguridad y la protección antes de publicar son transversales. Véanse [especificación](V3_SPEC.md) y [adopción](ADOPTION.md).
+Instalar una vez, adaptar cada proyecto una vez y utilizar el wizard diariamente. No copiar el kit ni mantener perfiles centrales. `--project` selecciona explícitamente el proyecto o workspace; configuraciones anidadas incompatibles no se fusionan. El wizard protege y administra configuración y prompts locales; el agente adapta los archivos versionados y registra la trazabilidad autorizada. Cada repositorio fija un SHA verificable en su `AGENTS.md`. El selector utiliza documentos de ese commit mediante Git y no presenta archivos locales alterados como equivalentes. El SHA objetivo de un encargo de adopción se confirma también contra el repositorio canónico; si no puede verificarse, se prepara únicamente un borrador marcado como no verificado, que no permite fijar el SHA sin confirmación. La seguridad y la protección antes de publicar son transversales. Véanse [especificación](V3_SPEC.md) y [adopción](ADOPTION.md).
+
+## Prompt autocontenido y breve
+
+El selector produce un único prompt con tarea, contexto, versión, límites y pasos esenciales. No copia el kit completo. El agente verifica y recupera las instrucciones aplicables y reporta cualquier límite de acceso.
