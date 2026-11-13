@@ -20,3 +20,6 @@ Refs, archivos y comandos observados; siguiente acción y límites de acceso. No
 
 ## Riesgos/limitaciones
 No exponer configuración ni secretos. Leer solo lo necesario para la tarea.
+
+## Adopción y contexto multirrepositorio
+Leer el `AGENTS.md` principal y su `Project-OS-Version: <SHA>`; obtener instrucciones del repositorio canónico en esa referencia y verificar la integridad de los archivos efectivos. No usar HEAD modificado como si fuera el commit. Recuperar relaciones multirrepositorio desde documentación versionada accesible, nunca desde preferencias privadas inexistentes para el agente remoto. Publicar relaciones solo si son reales, necesarias y autorizadas para esa visibilidad; no incluir rutas locales. La instalación del kit es central y no se copia a los proyectos.

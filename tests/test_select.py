@@ -23,6 +23,8 @@ def install(root):
     root = Path(root)
     (root / 'tools').mkdir(parents=True)
     shutil.copy2(SCRIPT, root / 'tools/select.py')
+    shutil.copy2(ROOT / 'tools/project_local.py', root / 'tools/project_local.py')
+    (root / 'project').mkdir()
     shutil.copy2(ROOT / 'PROJECT_OS.md', root / 'PROJECT_OS.md')
     for name in ('workflows', 'skills', 'templates'):
         shutil.copytree(ROOT / name, root / name)
@@ -31,7 +33,8 @@ def install(root):
 
 def run(folder, *args, input_text=None, kit=None):
     script = Path(kit) / 'tools/select.py' if kit else SCRIPT
-    return subprocess.run([sys.executable, str(script), '--output-dir', str(folder), *args],
+    project_args = ['--project', str(Path(kit) / 'project')] if kit else []
+    return subprocess.run([sys.executable, str(script), *project_args, '--output-dir', str(folder), *args],
                           input=input_text, text=True, capture_output=True, cwd=ROOT)
 
 
@@ -174,14 +177,14 @@ class Persistence(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             with patch.object(selector, 'ROOT', root):
-                selector.save_config('org/repo', root / 'out')
+                selector.project_local.save_config(root, {'version': 1, 'primary_repo': 'org/repo', 'prompt_dir': 'out'})
                 path = root / '.project-os/config.json'
                 before = path.read_bytes()
-                self.assertEqual(json.loads(before), {'repo': 'org/repo', 'output_dir': str(root / 'out')})
+                self.assertEqual(json.loads(before), {'version': 1, 'primary_repo': 'org/repo', 'prompt_dir': 'out'})
                 self.assertEqual(path.stat().st_mode & 0o777, 0o600)
-                with patch.object(selector.os, 'fsync', side_effect=OSError('fallo')):
+                with patch.object(selector.project_local.os, 'fsync', side_effect=OSError('fallo')):
                     with self.assertRaises(OSError):
-                        selector.save_config('other/repo', root / 'out2')
+                        selector.project_local.save_config(root, {'version': 1, 'primary_repo': 'other/repo'})
                 self.assertEqual(path.read_bytes(), before)
 
     def test_source_symlinks_outside_kit_are_not_discovered(self):
@@ -293,8 +296,9 @@ class Wizard(unittest.TestCase):
             result = run(root / 'unused', input_text=data, kit=kit)
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertIn('org/other', outputs(dest)[0].read_text())
-            prefs = json.loads((kit / '.project-os/config.json').read_text())
-            self.assertEqual(prefs, {'repo': 'org/other', 'output_dir': str(dest)})
+            prefs = json.loads((kit / 'project/.project-os/config.json').read_text())
+            self.assertEqual(prefs['primary_repo'], 'org/other')
+            self.assertEqual(prefs['prompt_dir'], str(dest))
 
     def test_saved_preferences_are_reused_without_pm_values(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -305,14 +309,14 @@ class Wizard(unittest.TestCase):
             self.assertEqual(first.returncode, 0, first.stderr)
             second = subprocess.run([sys.executable, str(kit / 'tools/select.py')],
                                     input='continue\n\n\n\n\n\ng\ns\n', text=True,
-                                    capture_output=True, cwd=kit)
+                                    capture_output=True, cwd=kit / 'project')
             self.assertEqual(second.returncode, 0, second.stderr)
             self.assertIn(f'Repositorio: org/repo | Carpeta: {dest}', second.stdout)
             self.assertNotIn('Repositorio owner/repo', second.stdout)
             text = outputs(dest)[0].read_text()
             self.assertNotIn('Nota privada', text)
             self.assertNotIn('## Pregunta del PM — PM_QUESTION_HUMANO', text)
-            self.assertNotIn('Nota privada', (kit / '.project-os/config.json').read_text())
+            self.assertNotIn('Nota privada', (kit / 'project/.project-os/config.json').read_text())
 
     def test_edit_can_explicitly_clear_one_field(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -328,19 +332,19 @@ class Wizard(unittest.TestCase):
             self.assertIn('**Referencia:** #1', text)
             self.assertIn('## Pregunta del PM — PM_QUESTION_HUMANO\n\nPregunta\n', text)
 
-    def test_cli_does_not_invoke_git_or_github(self):
+    def test_cli_does_not_invoke_github(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             bindir = root / 'bin'
             bindir.mkdir()
             marker = root / 'invoked'
-            for name in ('git', 'gh'):
+            for name in ('gh',):
                 path = bindir / name
                 path.write_text('#!/bin/sh\n: > "$PROJECT_OS_TEST_SENTINEL"\n')
                 path.chmod(0o755)
             result = subprocess.run([sys.executable, str(SCRIPT), '--workflow', 'review', '--output-dir', str(root / 'out')],
                                     text=True, capture_output=True,
-                                    env=dict(os.environ, PATH=str(bindir), PROJECT_OS_TEST_SENTINEL=str(marker)))
+                                    env=dict(os.environ, PATH=str(bindir) + os.pathsep + os.environ.get('PATH', ''), PROJECT_OS_TEST_SENTINEL=str(marker)))
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertFalse(marker.exists())
 
@@ -353,7 +357,7 @@ class PasteInTerminal(unittest.TestCase):
             kit = install(root / 'kit')
             dest = root / 'out'
             master, slave = pty.openpty()
-            process = subprocess.Popen([sys.executable, str(kit / 'tools/select.py'), '--output-dir', str(dest)],
+            process = subprocess.Popen([sys.executable, str(kit / 'tools/select.py'), '--project', str(kit / 'project'), '--output-dir', str(dest)],
                                        stdin=slave, stdout=slave, stderr=slave, cwd=kit,
                                        env=dict(os.environ, TERM='xterm'))
             os.close(slave)

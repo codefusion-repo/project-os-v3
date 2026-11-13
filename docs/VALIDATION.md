@@ -21,3 +21,26 @@ Durante la reconstrucción hubo fallos intermedios: una suite anterior con 43 te
 El selector base usa Python stdlib; la interfaz enriquecida requiere instalar `prompt_toolkit` en el entorno elegido. El pegado multilinea requiere una terminal que soporte bracketed paste; para terminales incompatibles se pueden usar los flags. La protección de secretos es heurística y no exhaustiva. Se requiere soporte POSIX para apertura sin seguir symlinks y enlaces duros en destino.
 
 El workflow de GitHub Actions ejecuta la suite con stdlib y luego con el paquete opcional; el resultado del nuevo commit debe verificarse en GitHub después del push. Las pruebas de publicación de reviews de browser, fallos remotos y recuperación en otra sesión real continúan pendientes. No se ha ejecutado dogfood de rendimiento ni comparación de rendimiento con v2.
+
+## Instalación central y proyectos — ejecución posterior
+
+La línea base antes de esta ampliación fue `python3 -m unittest discover -s tests` con exit 0: 30 tests, uno omitido por faltar el paquete opcional. Durante la integración, una ejecución intermedia terminó con exit 1: el descubrimiento intentó interpretar una configuración central antigua y los marcadores `.git` vacíos del entorno de pruebas se trataron como repositorios inválidos. Se corrigieron el aislamiento de la configuración central y la detección; las pruebas posteriores verifican repositorios reales, worktrees y bare repositorios.
+
+La suite ampliada prueba instalación y reinstalación en carpetas temporales, preservación de launchers y venv ajenos, fallback sin dependencia, launcher desde otro directorio, exclusión Git previa a escritura, negaciones de ignore, archivos privados rastreados, dos proyectos, configuración anidada, selección explícita, worktrees, preferencias relacionadas locales, migración de configuración antigua sin sobrescribir, SHA fijado y documentos locales modificados o no rastreados. Los tests de `.env` comprueban que un valor sintético no aparece en el prompt ni la salida; no constituyen una auditoría completa de lecturas del sistema. La detección de secretos continúa siendo heurística.
+
+`python3 tests/smoke_local.py` terminó con exit 0 en un entorno temporal: creó un kit y un repo Git sintéticos, instaló el entorno real y launcher, ejecutó el launcher desde `/`, configuró el proyecto y verificó `git check-ignore`, generó un encargo de adopción, aplicó **manualmente en el fixture** cambios simulados en `AGENTS.md` y `.gitignore`, creó un commit local y generó un prompt con el SHA del kit sintético. El fixture no contiene un PR, checks ni comentario de GitHub y no demuestra que un agente distinto haya hecho la adopción. Los SHAs del fixture no son versiones canónicas. El test no declara un recorrido end-to-end completo.
+
+La suite usa una rueda sintética sin red para probar la instalación y un fallo de dependencia controlado; el smoke instala la dependencia real en un entorno temporal. No se han probado una migración real de v2, publicación de relaciones multirrepositorio, una adopción real por un agente distinto ni el recorrido completo de GitHub y cold start de un proyecto piloto. El dogfood de rendimiento no se ha ejecutado.
+
+Comandos finales observados para esta ampliación:
+
+| Comando | Exit | Resultado |
+|---|---:|---|
+| `python3 -m unittest discover -s tests -q` | 0 | 58 tests; uno omitido porque ese Python no tiene `prompt_toolkit`. |
+| `.project-os/venv/bin/python -m unittest discover -s tests -q` | 0 | 58 tests con `prompt_toolkit`, sin omisiones. El venv es una instalación local anterior y no se copia a proyectos. |
+| `python3 tests/smoke_local.py` | 0 | Recorrido local parcial en repositorios sintéticos; instalación real, launcher, exclusión, encargo y prompt posterior. Adopción simulada manualmente. |
+| `sh -n install.sh` | 0 | Sintaxis shell válida. |
+| `python3 -m py_compile tools/select.py tools/project_local.py tests/smoke_local.py` | 0 | Sintaxis Python válida. |
+| `git diff --check` | 0 | Sin errores de whitespace en el diff observado. |
+
+CI debe verificarse para el SHA realmente publicado. La continuidad desde un agente nuevo y los escenarios browser se reportan por separado, solo si se ejecutan y observan.

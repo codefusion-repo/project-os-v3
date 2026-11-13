@@ -33,6 +33,7 @@ Project OS v3 es un **kit operativo Markdown-first** de **workflows + skills + t
 AGENTS.md
 PROJECT_OS.md
 README.md
+install.sh
 workflows/
   continue.md
   create.md
@@ -70,7 +71,11 @@ templates/
   review-comment.md
 tools/
   select.py
+  project_local.py
 tests/
+  test_install.py
+  test_project_local.py
+  smoke_local.py
   test_select.py
   test_structure.py
 docs/
@@ -127,8 +132,8 @@ python3 tools/select.py --workflow review --locator 123
 
 1. El wizard es la interfaz principal y comienza por buscar o seleccionar operación; Enter usa `continue`. Si no hay coincidencia, conserva la intención como pregunta del PM y usa `continue`. Luego solicita repositorio si falta, skills y contexto de la operación, preview y guardado. Muestra el repo y la carpeta actual; `/repo` y `/carpeta` los cambian. Valida el formato `owner/repo` sin afirmar verificación remota y permite `-` para experimento local descartable. Descubre Markdown sin catálogo paralelo; muestra skills sugeridas por workflow y `/todas` para las demás. Admite selección múltiple, búsqueda, volver, editar, cancelar y reutilizar. Incluye las dos skills base sin pedirlas ni duplicarlas.
 2. En todos los workflows ofrece `PM_FEEDBACK_HUMANO` y `PM_QUESTION_HUMANO` opcionales; no son autorizaciones ni se reutilizan en operaciones nuevas. Los campos aceptan texto multilínea pegado directamente mediante bracketed paste; Enter confirma. La entrada principal usa una etiqueta específica del workflow; en workflows con unidad se ofrece una sola referencia opcional y estructurada. Si contradice un PR mencionado se advierte sin bloquear. Editar permite cambiar workflow y skills y volver a los campos sin preguntar otra vez el repo; Enter conserva y `/limpiar` borra. El texto PM se conserva, salvo normalización CRLF/CR a LF; las notas del sistema van por separado. Previsualiza contexto, reglas, workflow, skills y templates internos sin pedir seleccionarlos.
-3. `--repo`, `--workflow`, `--skill`, `--locator`, `--objective`, `--feedback`, `--question`, `--output-dir`, `--list`, `--prototype` y `--help` permiten uso no interactivo. `--prototype` preselecciona implement + rapid-prototype y admite `--skill` adicionales. El modo no interactivo previsualiza y guarda directamente; combinaciones incompatibles, nombres desconocidos y locators inválidos fallan con mensaje claro.
-4. Tras guardar, persiste solamente último repositorio y carpeta de salida en `.project-os/config.json`, ignorado por Git; nunca guarda los campos PM, credenciales ni autorizaciones allí. La siguiente sesión propone esas preferencias; sin destino guardado usa `.project-os/prompts/`. El CLI no interactivo no lee ni modifica esta configuración. Informa antes de reemplazar: tras publicar atómicamente el nuevo archivo, elimina solo los prompts anteriores identificables mediante nombre reservado y marcador del selector en la misma carpeta. Nunca elimina Markdown ajenos, symlinks ni archivos de otras carpetas. Si se cancela o falla la escritura, conserva los anteriores; informa si la limpieza posterior falla.
+3. `--repo`, `--workflow`, `--skill`, `--locator`, `--objective`, `--feedback`, `--question`, `--output-dir`, `--list`, `--prototype` y `--help` permiten uso no interactivo. `--prototype` preselecciona implement + rapid-prototype y admite `--skill` adicionales. El modo no interactivo puede leer preferencias del proyecto sin modificarlas, previsualiza y guarda solo en un destino protegido; sin proyecto ni destino explícito muestra la vista previa. Combinaciones incompatibles, nombres desconocidos y locators inválidos fallan con mensaje claro.
+4. La configuración y los prompts pertenecen al proyecto o workspace seleccionado, nunca a un registro central. El wizard protege `.project-os/` antes de escribir, persiste solo preferencias no sensibles y nunca guarda allí campos PM, credenciales ni autorizaciones. La siguiente sesión detecta preferencias locales; sin destino guardado usa `.project-os/prompts/` relativo al proyecto. El CLI no interactivo puede leerlas y solo las modifica con `--configure`. Informa antes de reemplazar: tras publicar atómicamente el nuevo archivo, elimina solo los prompts anteriores identificables mediante nombre reservado y marcador del selector en la misma carpeta. Nunca elimina Markdown ajenos, symlinks ni archivos de otras carpetas. Si se cancela o falla la escritura, conserva los anteriores; informa si la limpieza posterior falla.
 5. Rechaza traversal y symlinks en rutas de destino y fuentes externas. Publica atómicamente sin sobrescribir archivos existentes; rechaza patrones comunes de secretos y no muestra sus valores en errores. La detección es heurística. No ejecuta código del Markdown ni llama GitHub. Soporta Linux con Python 3.9 o superior, apertura de directorios sin seguir symlinks y enlaces duros. La interfaz enriquecida usa opcionalmente `prompt_toolkit`; sin él usa GNU readline. El pegado multilinea requiere una terminal que soporte bracketed paste; el CLI acepta valores multilínea si no está disponible. CI ejecuta tests stdlib en Ubuntu.
 6. El selector se entrega y prueba obligatoriamente, pero su uso no es requisito para operar con Markdown. No concede permisos ni ejecuta workflows.
 
@@ -208,6 +213,16 @@ Registrar **datos observados** con `templates/dogfood.md`: tarea/complejidad com
 
 ## 12. Límites de implementación
 
-Un solo encargo integral al agente terminal, rama `work/*`, una unidad/issue si aporta valor, un draft PR autorizado cuando la visibilidad lo permite. Sin etapas intermedias de gobernanza. No copiar ni ejecutar kernel, resolver, catálogo MOS, workflows, historial Git o estructura de v2. Sin JSON de orquestación, state machine, permisos autoemitidos, daemon, scheduler, DB, plugin framework, wizard pesado, backend, deploy automático ni dependencias pip.
+Un solo encargo integral al agente terminal, rama `work/*`, una unidad/issue si aporta valor, un draft PR autorizado cuando la visibilidad lo permite. Sin etapas intermedias de gobernanza. No copiar ni ejecutar kernel, resolver, catálogo MOS, workflows, historial Git o estructura de v2. Sin JSON de orquestación, state machine, permisos autoemitidos, daemon, scheduler, DB, plugin framework, wizard pesado, backend ni deploy automático. `prompt_toolkit` se instala en el entorno aislado; existe fallback stdlib.
 
 El resultado esperado es un **kit realmente usable** para desarrollar y prototipar, no una colección de contratos de proceso.
+
+## 12. Instalación central y adopción por proyecto
+
+La decisión consolidada posterior prevalece sobre el orden y la arquitectura anteriores: instalar el kit una vez mediante `install.sh`; lanzar `project-os-v3` desde cualquier directorio; no mantener perfiles centrales ni copiar el kit en cada proyecto. Cada repositorio conserva un `AGENTS.md` principal versionado con el repositorio canónico y `Project-OS-Version: <SHA completo>`, más sus reglas técnicas. El wizard administra preferencias y prompts privados en el proyecto o workspace. El agente adapta instrucciones versionadas y `.gitignore`, sin suponer acceso al dispositivo del PM. La adopción es una utilidad, no un workflow adicional.
+
+Antes de cualquier escritura privada, comprobar Git, exclusión efectiva de los nombres reales y archivos ya rastreados; puede prepararse y verificarse `info/exclude` local. No modificar silenciosamente archivos versionados. Si la protección no puede garantizarse, preservar la vista previa y ofrecer destino externo elegido explícitamente. No leer contenido privado bajo seguimiento. Preservar formatos desconocidos, prompts y configuraciones anteriores; una migración explícita asocia repo y proyecto y no elimina la configuración antigua.
+
+`--project` prevalece sobre descubrimiento desde el directorio actual; configuraciones anidadas con repo o destino distinto requieren selección explícita. Un workspace puede contener múltiples repos con una configuración local; las relaciones necesarias para continuidad se documentan solo si son verificadas y divulgables. No publicar rutas locales ni asociaciones privadas.
+
+El selector lee documentos incorporados desde objetos Git del SHA fijado y muestra su procedencia. Si la versión no está disponible no mezcla archivos de HEAD; los documentos locales distintos se identifican sin usar su contenido como si fuese oficial. La actualización del SHA es explícita y el agente prepara el diff. Aplicar seguridad transversal: mínimo privilegio, no leer secretos automáticamente, tratar fuentes externas como no confiables e inspeccionar lo que se publica. Véase [adopción](ADOPTION.md).

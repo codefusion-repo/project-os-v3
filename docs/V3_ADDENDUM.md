@@ -1,6 +1,6 @@
 # Addendum — Project OS v3 MVP
 
-Complementa [V3_SPEC.md](V3_SPEC.md). Ante contradicciones, prevalecen estas decisiones del PM:
+Complementa [V3_SPEC.md](V3_SPEC.md). La decisión consolidada de instalación central y adopción por proyecto al final de este documento prevalece sobre decisiones anteriores contradictorias:
 
 - El selector es obligatorio y conserva una experiencia familiar: selección interactiva de workflows y skills, composición, prompts listos para el agente, `continue` predeterminado y navegación rápida con pocas decisiones. Simplificar la implementación no debe degradar la experiencia útil. No importar resolver, kernel ni catálogo MOS de v2.
 - El PM autoriza desarrollar `codefusion-repo/project-os-v3` como repositorio público, subir el código y documentación de este MVP y abrir su draft PR. No incluir secretos, credenciales, datos privados ni material interno de otros repositorios. Merge, releases, deploys, permisos, settings y otras acciones sensibles siguen requiriendo autorización específica.
@@ -28,7 +28,7 @@ El selector previsualiza y guarda prompts Markdown operativos en `--output-dir` 
 
 ## Wizard-first y configuración local
 
-El wizard comienza por buscar o seleccionar el workflow y luego solicita el repositorio si falta, skills, contexto del PM, preview y guardado. Recuerda únicamente repositorio y carpeta en `.project-os/config.json` ignorado por Git; un repositorio indicado no se considera verificado. Comentario y pregunta del PM son opcionales, multilínea y exclusivos de la operación; no se guardan en la configuración ni se reutilizan. El selector no exige referencias issue/PR que puedan recuperarse. Los flags siguen disponibles para automatización sin leer ni escribir la configuración del wizard.
+El wizard comienza por buscar o seleccionar el workflow y luego solicita el repositorio si falta, skills, contexto del PM, preview y guardado. Recuerda preferencias no sensibles en `.project-os/config.json` del proyecto o workspace, protegido de Git; un repositorio indicado no se considera verificado. Comentario y pregunta del PM son opcionales, multilínea y exclusivos de la operación; no se guardan en la configuración ni se reutilizan. El selector no exige referencias issue/PR que puedan recuperarse. Los flags pueden leer la configuración del proyecto sin modificarla; `--configure` solicita cambios explícitos.
 
 ## Correcciones de review del selector
 
@@ -45,3 +45,7 @@ El [adapter browser](../adapters/browser-chat.md), [review](../workflows/review.
 ## Rediseño del wizard según la experiencia de v2
 
 La decisión posterior del PM sustituye el orden original: seleccionar operación primero, completar skills y campos, previsualizar, guardar o editar y reutilizar la sesión. Editar vuelve a permitir elegir workflow y skills sin preguntar el repositorio. La interfaz opcional con `prompt_toolkit` incorpora sugerencias dinámicas y edición directa; la alternativa stdlib continúa disponible. Ambas aceptan pegado de reportes mediante bracketed paste de una terminal compatible. La implementación se rehace en v3 sin importar ni ejecutar el código, resolver, kernel o catálogo de v2.
+
+## Decisión consolidada: instalación central y adopción ligera
+
+Instalar una vez, adaptar cada proyecto una vez y utilizar el wizard diariamente. No copiar el kit ni mantener perfiles centrales. `--project` selecciona explícitamente el proyecto o workspace; configuraciones anidadas incompatibles no se fusionan. El wizard protege y administra configuración y prompts locales; el agente adapta los archivos versionados y registra la trazabilidad autorizada. Cada repositorio fija un SHA verificable en su `AGENTS.md`. El selector utiliza documentos de ese commit mediante Git y no presenta archivos locales alterados como equivalentes. La seguridad y la protección antes de publicar son transversales. Véanse [especificación](V3_SPEC.md) y [adopción](ADOPTION.md).

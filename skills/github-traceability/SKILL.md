@@ -30,3 +30,6 @@ SHA o URL remotos verificados, issue/PR, enlace al comentario nuevo confirmado o
 
 ## Riesgos/limitaciones
 La skill no concede permisos. Merge, cierre, release y deploy requieren autorización separada; no mutar por la sola existencia de APIs de escritura.
+
+## Publicación y continuidad seguras
+Antes de enviar un commit, review o comentario, inspeccionar proporcionalmente su contenido real por secretos, datos privados y relaciones entre repositorios que no puedan divulgarse. Verificar si los archivos privados ya están bajo seguimiento; `.gitignore` no los retira. Sin autorización o ante posible exposición detener esa publicación y conservar un borrador seguro. Las relaciones técnicas necesarias para continuidad remota deben estar documentadas en Git solo cuando su divulgación esté autorizada; los checkouts y configuraciones locales nunca se publican automáticamente.

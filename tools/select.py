@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Asistente local de prompts Project OS; no ejecuta operaciones ni usa la red."""
 import argparse
+import importlib.util
 import json
 import os
 import re
@@ -28,7 +29,13 @@ except ImportError:
     Completer = object
 
 ROOT = Path(__file__).resolve().parent.parent
-DEFAULT_DIR = ROOT / '.project-os' / 'prompts'
+_support_spec = importlib.util.spec_from_file_location('project_local', ROOT / 'tools/project_local.py')
+project_local = importlib.util.module_from_spec(_support_spec)
+_support_spec.loader.exec_module(project_local)
+SOURCE_VERSION = None
+SOURCE_DESCRIPTION = 'contenido local no equivalente a un SHA canónico verificado'
+SOURCE_CHANGED = set()
+TRACK_SOURCE = False
 BASE = ('repo-context', 'github-traceability')
 ORDER = ('continue', 'create', 'implement', 'review', 'close', 'release')
 LABELS = {
@@ -135,16 +142,43 @@ def locator_value(value):
 
 def source(path):
     try:
+        relative = path.relative_to(ROOT).as_posix()
+        if SOURCE_VERSION:
+            document = project_local.git_document(ROOT, SOURCE_VERSION, relative)
+            if TRACK_SOURCE:
+                try:
+                    directory = project_local.open_directory(path.parent)
+                    try:
+                        fd = os.open(path.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory)
+                        with os.fdopen(fd, 'rb') as stream:
+                            if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode) or stream.read() != document.encode('utf-8'):
+                                SOURCE_CHANGED.add(relative)
+                    finally:
+                        os.close(directory)
+                except (OSError, project_local.ProjectError):
+                    SOURCE_CHANGED.add(relative)
+            return document
         path.resolve(strict=True).relative_to(ROOT.resolve(strict=True))
         if path.is_file():
             return path.read_text(encoding='utf-8')
-    except (OSError, ValueError, RuntimeError):
+    except (OSError, ValueError, RuntimeError, project_local.ProjectError):
         pass
     raise InputError('No se pudo leer un documento del kit de forma segura.')
 
 
 def discover():
     operations, skills, templates = {}, {}, {}
+    if SOURCE_VERSION:
+        tree = project_local.git(ROOT, 'ls-tree', '-r', '--name-only', SOURCE_VERSION, '--', 'workflows', 'skills', 'templates')
+        for entry in tree.stdout.decode('utf-8').splitlines():
+            parts = Path(entry).parts
+            if len(parts) == 2 and parts[0] == 'workflows' and entry.endswith('.md') and NAME.fullmatch(Path(entry).stem):
+                operations[Path(entry).stem] = ROOT / entry
+            elif len(parts) == 3 and parts[0] == 'skills' and parts[2] == 'SKILL.md' and NAME.fullmatch(parts[1]):
+                skills[parts[1]] = ROOT / entry
+            elif len(parts) == 2 and parts[0] == 'templates' and entry.endswith('.md') and NAME.fullmatch(Path(entry).stem):
+                templates[Path(entry).stem] = ROOT / entry
+        return operations, skills, templates
     for path in (ROOT / 'workflows').glob('*.md'):
         if NAME.fullmatch(path.stem):
             try:
@@ -177,60 +211,41 @@ def description(path):
     return 'Sin descripción.'
 
 
-def load_config():
-    try:
-        fd = directory_fd(ROOT / '.project-os')
-    except FileNotFoundError:
-        return {}
-    try:
-        try:
-            config_fd = os.open('config.json', os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=fd)
-        except FileNotFoundError:
-            return {}
-        with os.fdopen(config_fd, encoding='utf-8') as stream:
-            if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
-                raise InputError('La configuración local no es un archivo regular.')
-            data = json.load(stream)
-        if not isinstance(data, dict) or set(data) - {'repo', 'output_dir'} or any(not isinstance(v, str) for v in data.values()):
-            raise InputError('La configuración local contiene valores no admitidos.')
-        if data.get('repo'):
-            data['repo'] = repo_value(data['repo'])
-        if data.get('output_dir'):
-            data['output_dir'] = str(safe_path(data['output_dir']))
-        return data
-    finally:
-        os.close(fd)
+def project_preferences(project):
+    if project_local.private_tracked(project / '.project-os'):
+        print('Hay archivos privados bajo seguimiento Git; no se leerá ni escribirá la configuración. Evalúa exposición histórica.', file=sys.stderr)
+        return {'_blocked': True}
+    data = project_local.read_config(project)
+    if data is None:
+        return None
+    check_sensitive(data)
+    if data.get('primary_repo'):
+        repo_value(data['primary_repo'])
+    for repo in data.get('related_repos', []):
+        repo_value(repo)
+    for repo, checkout in data.get('checkouts', {}).items():
+        repo_value(repo)
+        project_local.path(checkout)
+    preference_folder(project, data)
+    return data
 
 
-def save_config(repo, folder):
-    prefs = {'output_dir': str(safe_path(folder))}
-    if repo:
-        prefs['repo'] = repo_value(repo)
-    fd = directory_fd(ROOT / '.project-os', create=True)
-    temporary = '.config-' + uuid.uuid4().hex
+def preference_folder(project, config):
+    value = config.get('prompt_dir', '.project-os/prompts') if config else '.project-os/prompts'
+    check_sensitive(value)
+    return project_local.path(value if Path(value).is_absolute() else project / value)
+
+
+def save_project_preferences(project, config, repo, folder):
+    preferences = dict(config or {'version': 1, 'name': project.name, 'related_repos': []})
+    preferences['primary_repo'] = repo
     try:
-        try:
-            existing = os.stat('config.json', dir_fd=fd, follow_symlinks=False)
-            if not stat.S_ISREG(existing.st_mode):
-                raise InputError('La configuración local no es un archivo regular seguro.')
-        except FileNotFoundError:
-            pass
-        handle = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=fd)
-        try:
-            with os.fdopen(handle, 'w', encoding='utf-8') as stream:
-                json.dump(prefs, stream, ensure_ascii=False, indent=2)
-                stream.write('\n')
-                stream.flush()
-                os.fsync(stream.fileno())
-            os.replace(temporary, 'config.json', src_dir_fd=fd, dst_dir_fd=fd)
-        except BaseException:
-            try:
-                os.unlink(temporary, dir_fd=fd)
-            except FileNotFoundError:
-                pass
-            raise
-    finally:
-        os.close(fd)
+        preferences['prompt_dir'] = folder.relative_to(project).as_posix()
+    except ValueError:
+        preferences['prompt_dir'] = str(folder)
+    check_sensitive(preferences)
+    print(project_local.save_config(project, preferences))
+    return preferences
 
 
 def owned_files(fd):
@@ -252,9 +267,10 @@ def owned_files(fd):
 def save_prompt(folder, content):
     folder = safe_path(folder)
     check_sensitive(content)
-    fd = directory_fd(folder, create=True)
     temporary = '.prompt-' + uuid.uuid4().hex
     name = 'project-os-prompt-' + uuid.uuid4().hex + '.md'
+    project_local.preflight(folder, prepare=False, names=(temporary, name))
+    fd = directory_fd(folder, create=True)
     try:
         previous = owned_files(fd)
         handle = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=fd)
@@ -307,20 +323,28 @@ def reference_warning(repo, locator, *values):
 
 
 def render(operation, selected, context, locator, operations, skills, templates, repo='', feedback='', question='', local_only=False):
+    global TRACK_SOURCE
     check_sensitive(repo, context, locator, feedback, question)
     missing = [name for name in BASE if name not in skills]
     if missing:
         raise InputError('Falta una skill base o su ruta no es segura.')
     selected = list(dict.fromkeys([*BASE, *selected]))
-    documents = [source(ROOT / 'PROJECT_OS.md'), source(operations[operation])]
-    documents.extend(source(skills[name]) for name in selected)
-    resources = []
-    for document in documents[1:]:
-        for name in re.findall(r'(?:\.\./)+templates/([a-z0-9-]+)\.md', document):
-            if name in templates and name not in resources:
-                resources.append(name)
+    SOURCE_CHANGED.clear()
+    TRACK_SOURCE = True
+    try:
+        documents = [source(ROOT / 'PROJECT_OS.md'), source(operations[operation])]
+        documents.extend(source(skills[name]) for name in selected)
+        resources = []
+        for document in documents[1:]:
+            for name in re.findall(r'(?:\.\./)+templates/([a-z0-9-]+)\.md', document):
+                if name in templates and name not in resources:
+                    resources.append(name)
+        resource_documents = [source(templates[name]) for name in resources]
+    finally:
+        TRACK_SOURCE = False
     out = [MARKER, '# Prompt operativo Project OS v3', '',
            f'**Repositorio indicado (sin verificar):** {repo or "No indicado"}',
+           f'**Procedencia de instrucciones:** {SOURCE_DESCRIPTION}',
            f'**Workflow:** {operation}', f'**Skills:** {", ".join(selected)}', '',
            f'## Entrada principal — {LABELS.get(operation, operation)}', '',
            context or 'No aportada; recupera el contexto de las fuentes vivas.', '',
@@ -333,6 +357,8 @@ def render(operation, selected, context, locator, operations, skills, templates,
     warning = reference_warning(repo, locator, context, feedback, question)
     if warning:
         out.extend([f'**Advertencia:** {warning}', ''])
+    if SOURCE_CHANGED:
+        out.extend(['**Documentos locales distintos de la referencia:** ' + ', '.join(sorted(SOURCE_CHANGED)) + '. Se incorporaron exclusivamente los objetos Git fijados.', ''])
     if feedback:
         out.extend(['## Comentario del PM — PM_FEEDBACK_HUMANO', '', feedback, ''])
     if question:
@@ -343,9 +369,32 @@ def render(operation, selected, context, locator, operations, skills, templates,
     if resources:
         out.extend(['## Recursos opcionales para el resultado', '',
                     'Utiliza estos templates solo cuando aporten valor; no conceden permisos.', ''])
-        for name in resources:
-            out.extend([source(templates[name]).strip(), ''])
+        for document in resource_documents:
+            out.extend([document.strip(), ''])
     text = '\n'.join(out) + '\n'
+    check_sensitive(text)
+    return text
+
+
+def adoption_prompt(repo, revision, previous=None):
+    if not revision:
+        raise InputError('No hay un SHA verificable del kit para preparar la adopción.')
+    text = f'''{MARKER}
+# Adaptar proyecto a Project OS v3
+
+**Repositorio indicado (sin verificar):** {repo or "No indicado"}
+**Versión objetivo:** {revision}
+**Versión declarada actualmente:** {previous or 'No identificada; inspecciona antes de cambiar.'}
+**Fuente canónica:** https://github.com/codefusion-repo/project-os-v3
+
+Inspecciona el repositorio, rama y cambios existentes; recupera la unidad GitHub pertinente y respeta las autorizaciones reales. Consulta las instrucciones del kit en el SHA indicado. No copies el kit al proyecto.
+
+Inspecciona AGENTS.md y las instrucciones secundarias. Compara la referencia declarada, la objetivo y sus contratos antes de una actualización. Conserva reglas técnicas propias y especializadas; reemplaza instrucciones operativas v2 o copias antiguas contradictorias por un único bootstrap principal. Incluye en AGENTS.md la línea `Project-OS-Version: {revision}`, el repositorio canónico, la ruta PROJECT_OS.md, carga de workflows y skills pertinentes, seguridad, permisos y trazabilidad. No insertes rutas locales. No elimines archivos desconocidos; inventaría componentes obsoletos y solicita autorización si retirarlos es destructivo.
+
+Incorpora `.project-os/` a .gitignore; verifica si ya hay archivos privados versionados sin leerlos ni exponerlos y prepara una corrección revisable. No crees configuración privada del dispositivo del PM desde otro entorno. Documenta relaciones multirrepositorio solo si son verificadas, necesarias y su divulgación está autorizada. Preserva instrucciones y archivos ajenos.
+
+Presenta el diff, valida y registra evidencia; publica commits y una nueva entrada histórica en el issue/PR existente solo con autorización. Merge, cierre, release y deploy requieren autorización separada. Si no dispones de la versión canónica o acceso, explica el límite y continúa lo seguro.
+'''
     check_sensitive(text)
     return text
 
@@ -426,7 +475,7 @@ def choose_operation(operations, current='continue', session_controls=True):
     print('\n1/3 — Buscar y seleccionar operación')
     print('Escribe nombre, número o texto para buscar. Enter conserva la operación; /cancelar sale.')
     if session_controls:
-        print('Usa /repo para cambiar repositorio o /carpeta para cambiar destino.')
+        print('Usa /adoptar para adaptar proyecto, /repo para cambiar repositorio o /carpeta para cambiar destino.')
     while True:
         for index, name in enumerate(visible, 1):
             print(f'  {index}. {name} — {description(operations[name])}')
@@ -435,7 +484,7 @@ def choose_operation(operations, current='continue', session_controls=True):
             query = ask(f'Operación [{current}]: ', current=current, strip=True)
         finally:
             clear_completion()
-        if session_controls and query in ('/repo', '/carpeta'):
+        if session_controls and query in ('/repo', '/carpeta', '/adoptar'):
             return query
         if query == '/':
             visible = names
@@ -548,12 +597,15 @@ def preview(operation, content, folder):
         print('Elige guardar, editar, otra operación o cancelar.')
 
 
-def interactive(operations, skills, templates, folder, repo):
+def interactive(operations, skills, templates, folder, repo, project=None, config=None):
     if sys.stdin.isatty() and terminal_prompt is None and not prepare_terminal():
         print('Este Python no dispone de edición segura de terminal; usa los flags del CLI para texto multilínea.', file=sys.stderr)
         return 1
     operation, last_path = 'continue', None
+    protection_checked = False
     values = {'repo': repo, 'local_only': False, 'skills': [], 'context': '', 'locator': '', 'feedback': '', 'question': ''}
+    if project is not None and project_local.version(project) is None:
+        print('Proyecto sin versión fijada: usa /adoptar para preparar su integración.')
     while True:
         print(f'\nRepositorio: {values["repo"] or "(sin seleccionar)"} | Carpeta: {folder}')
         try:
@@ -576,12 +628,29 @@ def interactive(operations, skills, templates, folder, repo):
                         print('Carpeta inválida.')
                 operation = 'continue'
                 continue
+            adopting = operation == '/adoptar'
             if not values['repo'] and not values['local_only']:
                 values['repo'] = ask_repo('')
                 values['local_only'] = not values['repo']
-            values = fill_fields(operation, operations, skills, values)
+            if project is not None and config is None:
+                try:
+                    config = save_project_preferences(project, config, values['repo'], folder)
+                    protection_checked = True
+                except (project_local.ProjectError, OSError):
+                    print('No se pudo proteger la configuración local; solo se permite guardar en un destino externo protegido.', file=sys.stderr)
+                    config = {'_blocked': True}
+                    protection_checked = True
+            elif project is not None and not protection_checked and not (config or {}).get('_blocked'):
+                try:
+                    print(project_local.preflight(project / '.project-os', prepare=True))
+                except (project_local.ProjectError, OSError):
+                    print('No se pudo proteger la configuración local; solo se permite guardar en un destino externo protegido.', file=sys.stderr)
+                    config = {'_blocked': True}
+                protection_checked = True
+            if not adopting:
+                values = fill_fields(operation, operations, skills, values)
             while True:
-                content = operation_prompt(operation, operations, skills, templates, values)
+                content = adoption_prompt(values['repo'], SOURCE_VERSION) if adopting else operation_prompt(operation, operations, skills, templates, values)
                 action = preview(operation, content, folder)
                 if action == 'operation':
                     values.update(skills=[], context='', locator='', feedback='', question='')
@@ -589,12 +658,26 @@ def interactive(operations, skills, templates, folder, repo):
                 if action == 'edit':
                     # Keep repo and all current fields; operation and skills remain editable.
                     operation = choose_operation(operations, current=operation, session_controls=False)
+                    adopting = False
                     values = fill_fields(operation, operations, skills, values, edit=True)
                     continue
+                if folder is None or (config or {}).get('_blocked'):
+                    folder = safe_path(ask('Selecciona carpeta externa para guardar: ', strip=True))
+                if project is not None and not (config or {}).get('_blocked'):
+                    project_local.preflight(project / '.project-os', prepare=False)
+                if project is not None and (config or {}).get('_blocked'):
+                    try:
+                        folder.relative_to(project)
+                    except ValueError:
+                        pass
+                    else:
+                        raise InputError('Selecciona un destino fuera del proyecto desprotegido.')
+                print(project_local.preflight(folder, prepare=False))
                 last_path, failures = save_prompt(folder, content)
                 print(f'Prompt guardado: {last_path}')
                 try:
-                    save_config(values['repo'], folder)
+                    if project is not None and not (config or {}).get('_blocked'):
+                        config = save_project_preferences(project, config, values['repo'], folder)
                 except (OSError, ValueError):
                     print('El prompt se guardó, pero no se pudo guardar la configuración.', file=sys.stderr)
                     return 1
@@ -607,12 +690,17 @@ def interactive(operations, skills, templates, folder, repo):
                         print(f'Prompt actual: {last_path}')
                     elif action in ('e', 'editar', 'edit'):
                         operation = choose_operation(operations, current=operation, session_controls=False)
+                        adopting = False
                         values = fill_fields(operation, operations, skills, values, edit=True)
                         break
                     elif action in ('n', 'nueva', 'new'):
+                        adopting = False
+                        operation = 'continue'
                         values.update(skills=[], context='', locator='', feedback='', question='')
                         break
                     elif action in ('m', 'misma', 'same'):
+                        if adopting:
+                            break
                         values.update(context='', locator='', feedback='', question='')
                         values = fill_fields(operation, operations, skills, values)
                         break
@@ -640,9 +728,143 @@ class Parser(argparse.ArgumentParser):
         super().error(message)
 
 
+def select_project(explicit, interactive_mode):
+    if explicit:
+        root = project_local.path(explicit)
+        if not root.is_dir():
+            raise InputError('La ruta del proyecto no es un directorio accesible.')
+        if root == ROOT:
+            raise InputError('Selecciona un proyecto separado de la instalación central.')
+        return root, project_preferences(root), ''
+    candidates = project_local.discover_projects(Path.cwd(), exclude=ROOT)
+    # The installation is not a persistent project profile.
+    candidates = [(root, project_preferences(root)) for root, _ in candidates if root != ROOT]
+    if any(data.get('_blocked') for _, data in candidates):
+        print('Hay archivos privados bajo seguimiento Git; no se leerá esa configuración.', file=sys.stderr)
+    if candidates:
+        if len(candidates) > 1:
+            signatures = {(data.get('primary_repo', ''), str(preference_folder(root, data))) for root, data in candidates}
+            if len(signatures) > 1:
+                if not interactive_mode:
+                    raise InputError('Configuraciones anidadas en conflicto; usa --project para elegir.')
+                print('Hay proyectos anidados con preferencias distintas:')
+                for index, (root, _) in enumerate(candidates, 1):
+                    print(f'  {index}. {root}')
+                while True:
+                    choice = ask('Elige proyecto por número: ', strip=True)
+                    if choice.isdecimal() and 1 <= int(choice) <= len(candidates):
+                        return (*candidates[int(choice) - 1], '')
+                    print('Selecciona un número válido.')
+        return (*candidates[0], '')
+    if not interactive_mode:
+        return None, None, ''
+    while True:
+        value = ask('Ruta del proyecto o repositorio owner/repo: ', strip=True)
+        try:
+            root = project_local.path(value)
+            if value and root.is_dir():
+                if root == ROOT:
+                    print('Selecciona un proyecto separado de la instalación central.')
+                    continue
+                return root, project_preferences(root), ''
+        except (project_local.ProjectError, OSError):
+            pass
+        if value and not value.startswith(('/', '.', '~')) and re.fullmatch(r'[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+', value):
+            return None, None, repo_value(value)
+        print('Indica un directorio local accesible o owner/repo.')
+
+
+def choose_sources(project):
+    global SOURCE_VERSION, SOURCE_DESCRIPTION
+    requested = project_local.version(project) if project is not None else None
+    if requested:
+        SOURCE_VERSION = project_local.commit(ROOT, requested)
+        SOURCE_DESCRIPTION = f'commit {SOURCE_VERSION}, documentos recuperados íntegramente de objetos Git locales (versión fijada por el proyecto)'
+        head = project_local.git(ROOT, 'rev-parse', '--verify', 'HEAD', check=False).stdout.decode('ascii', 'ignore').strip()
+        if head != SOURCE_VERSION:
+            print(f'Versión fijada {SOURCE_VERSION}; instalación en {head or "HEAD no disponible"}. Se usarán los documentos fijados; para actualizar usa --adopt --target-version <SHA>.')
+        return
+    result = project_local.git(ROOT, 'rev-parse', '--show-toplevel', check=False)
+    if result.returncode == 0 and Path(os.fsdecode(result.stdout).strip()) == ROOT:
+        head = project_local.git(ROOT, 'rev-parse', '--verify', 'HEAD', check=False)
+        revision = head.stdout.decode('ascii', 'ignore').strip()
+        if re.fullmatch(r'[0-9a-f]{40}', revision):
+            SOURCE_VERSION = project_local.commit(ROOT, revision)
+            SOURCE_DESCRIPTION = f'commit {SOURCE_VERSION}, documentos recuperados íntegramente de objetos Git locales; proyecto sin versión fijada'
+            return
+    SOURCE_VERSION = None
+    SOURCE_DESCRIPTION = 'contenido local no equivalente a un SHA canónico verificado; proyecto sin versión fijada'
+
+
+def configure_project(project, config, args):
+    if project is None or (config or {}).get('_blocked'):
+        raise InputError('Selecciona un proyecto local sin archivos privados bajo seguimiento Git.')
+    data = dict(config or {'version': 1, 'name': project.name, 'related_repos': []})
+    if args.migrate_legacy:
+        try:
+            directory = project_local.open_directory(ROOT / '.project-os')
+            try:
+                fd = os.open('config.json', os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory)
+                with os.fdopen(fd, encoding='utf-8') as stream:
+                    if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
+                        raise InputError('La configuración antigua no es un archivo regular.')
+                    legacy = json.load(stream)
+            finally:
+                os.close(directory)
+        except (OSError, ValueError):
+            raise InputError('La configuración antigua no es válida; se conserva.')
+        if not isinstance(legacy, dict) or set(legacy) - {'repo', 'output_dir'} or not all(isinstance(x, str) for x in legacy.values()):
+            raise InputError('La configuración antigua no es reconocida; se conserva.')
+        check_sensitive(legacy)
+        if not args.repo or repo_value(args.repo) != legacy.get('repo'):
+            raise InputError('Indica --repo con el repositorio antiguo para asociarlo explícitamente al proyecto.')
+        if config is not None:
+            raise InputError('Ya existe una configuración del proyecto; no se reemplazará mediante migración.')
+        if legacy.get('output_dir') and not args.output_dir:
+            previous_folder = project_local.path(legacy['output_dir'])
+            try:
+                data['prompt_dir'] = previous_folder.relative_to(project).as_posix()
+            except ValueError:
+                print('El destino antiguo no pertenece al proyecto; se conserva sin reutilizar para evitar mezclar proyectos.')
+        print('Se conservarán la configuración y prompts anteriores. El destino central no se comparte con el proyecto.')
+    if args.repo is not None:
+        data['primary_repo'] = repo_value(args.repo)
+    if args.name is not None:
+        data['name'] = args.name
+    if args.related_repo is not None:
+        data['related_repos'] = list(dict.fromkeys(repo_value(value) for value in args.related_repo))
+    if args.checkout is not None:
+        paths = {}
+        for entry in args.checkout:
+            name, separator, location = entry.partition('=')
+            if not separator:
+                raise InputError('Usa --checkout owner/repo=/ruta/local.')
+            paths[repo_value(name)] = str(project_local.path(location))
+        data['checkouts'] = paths
+    if args.output_dir:
+        folder = project_local.path(args.output_dir)
+        try:
+            data['prompt_dir'] = folder.relative_to(project).as_posix()
+        except ValueError:
+            data['prompt_dir'] = str(folder)
+    else:
+        data.setdefault('prompt_dir', '.project-os/prompts')
+    check_sensitive(data)
+    print(project_local.save_config(project, data))
+    print('Configuración local guardada en el proyecto; las instrucciones versionadas no se han modificado.')
+
+
 def main(argv=None):
     parser = Parser(description='Genera prompts Markdown sin ejecutar operaciones.')
     parser.add_argument('--list', action='store_true', help='listar operaciones y skills')
+    parser.add_argument('--project', help='raíz local del proyecto o workspace')
+    parser.add_argument('--adopt', action='store_true', help='preparar encargo de adaptación')
+    parser.add_argument('--target-version', help='SHA completo objetivo de adaptación o actualización')
+    parser.add_argument('--configure', action='store_true', help='guardar preferencias locales explícitamente')
+    parser.add_argument('--migrate-legacy', action='store_true', help='migrar preferencias centrales antiguas al proyecto elegido')
+    parser.add_argument('--name', help='nombre local del proyecto (con --configure)')
+    parser.add_argument('--related-repo', action='append', help='repositorio relacionado local (con --configure)')
+    parser.add_argument('--checkout', action='append', help='checkout local owner/repo=/ruta (con --configure)')
     parser.add_argument('--repo', help='repositorio owner/repo')
     parser.add_argument('--workflow', help='operación (default: continue)')
     parser.add_argument('--skill', action='append', default=[])
@@ -650,48 +872,89 @@ def main(argv=None):
     parser.add_argument('--objective', help='entrada principal de la operación')
     parser.add_argument('--feedback', help='comentario del PM')
     parser.add_argument('--question', help='pregunta del PM')
-    parser.add_argument('--output-dir', help='carpeta de salida')
+    parser.add_argument('--output-dir', help='carpeta de salida explícita')
     parser.add_argument('--prototype', action='store_true', help='implement + rapid-prototype')
     args = parser.parse_args(argv)
     try:
-        check_sensitive(args.repo, args.workflow, *args.skill, args.locator, args.objective, args.feedback, args.question, args.output_dir)
-        if args.list and (args.repo or args.workflow or args.skill or args.locator or args.objective or args.feedback or args.question or args.prototype):
-            parser.error('--list no se combina con selección ni contexto')
-        if args.prototype and args.workflow:
-            parser.error('--prototype no se combina con --workflow')
-        operations, skills, templates = discover()
+        check_sensitive(args.project, args.repo, args.workflow, *args.skill, args.locator, args.objective, args.feedback, args.question, args.output_dir, args.name, args.related_repo, args.checkout, args.target_version)
         if args.list:
+            operations, skills, templates = discover()
             for name in ORDER:
                 if name in operations:
                     print(f'{name} — {description(operations[name])}')
             for name in sorted(skills):
                 print(f'{name} — {description(skills[name])}')
             return 0
+        if args.prototype and args.workflow:
+            parser.error('--prototype no se combina con --workflow')
+        if args.adopt and (args.workflow or args.prototype or args.skill or args.locator or args.objective or args.feedback or args.question):
+            parser.error('--adopt no se combina con opciones de operación')
+        if args.target_version and not args.adopt:
+            parser.error('--target-version requiere --adopt')
+        if (args.name or args.related_repo or args.checkout) and not args.configure:
+            parser.error('--name, --related-repo y --checkout requieren --configure')
+        if args.migrate_legacy and not args.configure:
+            parser.error('--migrate-legacy requiere --configure')
+        if args.configure and (args.adopt or args.workflow or args.skill or args.locator or args.objective or args.feedback or args.question or args.prototype):
+            parser.error('--configure no se combina con generación de prompts')
+        cli = bool(args.repo or args.workflow or args.skill or args.locator or args.objective or args.feedback or args.question or args.prototype or args.adopt or args.configure)
+        project, config, remote = select_project(args.project, not cli)
+        if args.configure:
+            configure_project(project, config, args)
+            return 0
+        choose_sources(None if args.adopt and args.target_version else project)
+        operations, skills, templates = discover()
         if any(name not in skills for name in BASE):
             parser.error('Faltan skills base o sus rutas no son seguras.')
         operation = 'implement' if args.prototype else (args.workflow or 'continue')
         selected = list(dict.fromkeys((['rapid-prototype'] if args.prototype else []) + args.skill))
         if operation not in operations or any(name not in skills for name in selected):
             parser.error('Operación o skill desconocida.')
-        cli = bool(args.repo or args.workflow or args.skill or args.locator or args.objective or args.feedback or args.question or args.prototype)
+        if args.output_dir:
+            folder = safe_path(args.output_dir)
+        elif project is not None:
+            folder = preference_folder(project, config)
+        else:
+            folder = None
+        repo = repo_value(args.repo) if args.repo else (config or {}).get('primary_repo', remote)
         if not cli:
-            config = load_config()
-            folder = safe_path(args.output_dir or config.get('output_dir') or DEFAULT_DIR)
-            return interactive(operations, skills, templates, folder, config.get('repo', ''))
-        repo = repo_value(args.repo) if args.repo else ''
+            if (ROOT / '.project-os/config.json').exists():
+                print('Hay configuración central antigua; no se utiliza automáticamente. Conserva sus archivos hasta migrar preferencias de forma explícita.')
+            return interactive(operations, skills, templates, folder, repo, project, config)
         locator = locator_value(args.locator or '')
-        folder = safe_path(args.output_dir or DEFAULT_DIR)
-        content = render(operation, selected, args.objective or '', locator, operations, skills, templates,
-                         repo=repo, feedback=args.feedback or '', question=args.question or '', local_only=args.repo == '-')
+        target_version = project_local.commit(ROOT, args.target_version) if args.target_version else SOURCE_VERSION
+        content = adoption_prompt(repo, target_version, project_local.version(project) if project else None) if args.adopt else render(
+            operation, selected, args.objective or '', locator, operations, skills, templates,
+            repo=repo, feedback=args.feedback or '', question=args.question or '', local_only=args.repo == '-')
         print('\n--- Vista previa ---\n' + content)
+        if folder is None:
+            print('Solo vista previa: selecciona explícitamente --output-dir o un proyecto local para guardar.')
+            return 0
+        if project is not None and not (config or {}).get('_blocked'):
+            try:
+                print(project_local.preflight(project / '.project-os', prepare=False))
+            except project_local.ProjectError:
+                config = {'_blocked': True}
+                print('La configuración del proyecto no está protegida; solo se admite un destino externo explícito.', file=sys.stderr)
+        if project is not None and (config or {}).get('_blocked'):
+            if not args.output_dir:
+                print('Solo vista previa: la configuración local está bajo seguimiento Git; elige --output-dir externo.')
+                return 0
+            try:
+                folder.relative_to(project)
+            except ValueError:
+                pass
+            else:
+                raise InputError('El destino debe estar fuera del proyecto desprotegido.')
+        print(project_local.preflight(folder, prepare=False))
         print('Se reemplazarán solo prompts anteriores del selector después de escribir el nuevo.')
-        path, failures = save_prompt(folder, content)
-        print(f'Prompt guardado: {path}')
+        output, failures = save_prompt(folder, content)
+        print(f'Prompt guardado: {output}')
         if failures:
             print('No se pudieron quitar algunos prompts anteriores.', file=sys.stderr)
             return 1
         return 0
-    except InputError as exc:
+    except (InputError, project_local.ProjectError) as exc:
         print(str(exc), file=sys.stderr)
         return 1
     except (OSError, ValueError):

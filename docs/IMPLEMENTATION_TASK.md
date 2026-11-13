@@ -10,3 +10,8 @@ Implementar el MVP descrito en [V3_SPEC.md](V3_SPEC.md) y sus [addenda](V3_ADDEN
 - Separar preparación, ejecución y verificación. Continuar lo seguro ante incertidumbres secundarias; detener exclusivamente acciones sensibles sin autorización específica. Proteger secretos y no inventar resultados.
 - La publicación de este MVP en el repositorio público y su draft PR están autorizados. Merge, release, deploy y configuración sensible no lo están por defecto.
 - Ejecutar pruebas reales, registrar comandos y resultados, y conservar explícitamente como pendientes las pruebas de aceptación que necesiten otro chat, agente o superficie si no se ejecutaron. No construir kernel, resolver, catálogo MOS, estado propio, gates generalizados ni handoffs mecánicos.
+
+- Instalar una sola vez con `install.sh`, venv aislado y launcher sin sudo; conservar fallback stdlib y archivos existentes. No guardar perfiles en el kit central ni copiar el kit a proyectos.
+- Seleccionar proyecto o workspace, proteger archivos locales con Git antes de escribir, preservar configuraciones desconocidas y facilitar adopción, migración y actualización explícitas mediante un encargo al agente.
+- Fijar SHA canónico en AGENTS.md por repositorio, resolver los documentos efectivos desde objetos Git de esa referencia y no atribuir modificaciones locales al commit. Documentar relaciones multirrepositorio solo si son verificables y divulgables.
+- Tratar seguridad y protección de secretos como reglas transversales; validar instalador, selección, aislamiento, integridad, regresiones y, cuando esté autorizado y disponible, el recorrido integral con un agente nuevo.

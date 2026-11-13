@@ -1,27 +1,63 @@
-# Adopción en un proyecto existente
+# Adopción, migración y actualización
 
-1. Inspecciona las instrucciones y convenciones del proyecto, rama y cambios existentes. Decide dónde alojar el kit; copia sus archivos sin copiar `.git` ni sobrescribir instrucciones propias. Si hay `AGENTS.md`, conserva su contenido y añade una referencia a `PROJECT_OS.md` del kit. Ajusta rutas relativas si el kit vive en un subdirectorio.
-2. Da al agente acceso al proyecto y al kit. Comprueba que sus permisos y herramientas reales permitan las acciones deseadas; las reglas existentes y las instrucciones del usuario prevalecen. No incluyas secretos en prompts ni handoffs.
-3. Desde la raíz del kit ejecuta `python3 -m unittest discover -s tests -v` y `python3 tools/select.py --list`. Abre el wizard con `python3 tools/select.py`, o usa el entorno opcional con `prompt_toolkit` descrito en [README](../README.md). Busca la operación, indica `owner/repo` si falta, selecciona skills y aporta solo contexto material. Pega reportes directamente en una terminal compatible con bracketed paste y pulsa Enter; el locator opcional se introduce una sola vez. Al editar puedes cambiar workflow y skills sin recapturar el repositorio; Enter conserva y `/limpiar` borra. `/repo` y `/carpeta` cambian preferencias desde operaciones. Previsualiza y guarda antes de entregar el prompt. La detección de secretos es heurística, no exhaustiva.
-4. Para un chat nuevo usa `python3 tools/select.py --workflow continue --objective "Retoma el issue 123 de ORGANIZACION/REPOSITORIO y consulta el PR y checks actuales"` y comprueba que el agente consulta fuentes vivas. Si no hay issue o acceso remoto, informa el límite y continúa con evidencia local.
-5. Prueba `python3 tools/select.py --prototype --objective "Validar un filtro de tareas simuladas en ORGANIZACION/REPOSITORIO"` con una hipótesis y criterio observable: por ejemplo, filtrar una lista de tareas simuladas y demostrar el resultado. Si se solicita expresamente como experimento local y descartable, puede terminar sin publicación y, si no hay repo, sin consultas GitHub; un prototipo destinado a integrarse requiere trazabilidad remota. Para review usa `python3 tools/select.py --workflow review --skill code-review --locator 123` y pide findings con ruta, impacto y evidencia. Los templates de comentarios, merge y cierre son recursos internos seleccionados a partir de los workflows y skills, sin preguntar al PM.
-6. Para cambios versionados destinados a integrarse, aplica las skills base de contexto y trazabilidad: reutiliza issue/PR existentes, valida el diff, prepara un commit significativo, publícalo con autorización y capacidad, y verifica SHA remoto, PR y checks disponibles. Las correcciones siguen en el mismo PR. Si hay una unidad existente y autorización, añade y verifica un comentario nuevo por ejecución material, incluidos fallos y bloqueos; nunca edites el historial. Si falta acceso o permiso, prepara un borrador e informa trazabilidad pendiente; merge, cierre, release y deploy requieren autorización separada.
+## Una instalación y un proyecto
 
-Sin Python, pide al agente leer directamente `PROJECT_OS.md`, un archivo de `workflows/`, `skills/repo-context/SKILL.md`, `skills/github-traceability/SKILL.md` y solo las skills especializadas pertinentes. Si se desea medir rendimiento frente a v2, selecciona después un piloto comparable y usa [dogfood](../templates/dogfood.md); la adopción del kit no constituye ese experimento.
+Instala el checkout central con `./install.sh` y ejecuta `project-os-v3 --project /ruta/al/proyecto`. El wizard selecciona `/adoptar`, prepara configuración local si puede protegerla y genera un único encargo. Entrega el prompt a un agente terminal con acceso al checkout y autorización. No copies workflows, skills, templates ni el wizard al proyecto. En un repo sin checkout local, indica `owner/repo`: el selector no inventa una ruta ni configuración local y solo guarda en una carpeta externa elegida expresamente.
 
-## Comprobación de aceptación en uso real
+El agente inspecciona rama, diff e instrucciones existentes; adapta el `AGENTS.md` principal y `.gitignore` dentro del alcance autorizado. La configuración local es responsabilidad del wizard en el dispositivo donde se ejecuta; el agente no debe crearla suponiendo que comparte ese filesystem. No debe abrir secretos ni eliminar archivos desconocidos. Registra en GitHub commit, PR, checks y un comentario histórico nuevo cuando esté autorizado.
 
-Registra referencias, resultados observados y límites, sin abrir unidades ni comentarios solo para este ejercicio:
+Un bootstrap versionado puede contener, con el SHA real elegido:
 
-1. En un chat nuevo con acceso al proyecto, entrega únicamente el identificador del repo y pide continuar. Comprueba que consulte instrucciones, issues, PRs, commits, checks y blockers pertinentes en fuentes vivas, recupere el siguiente paso y solo pida un locator primario si hay ambigüedad material no resoluble.
-2. En otra sesión o con otro agente, retoma la misma unidad. Comprueba que no repita preguntas respondibles desde evidencia y que reconstruya objetivo, estado, refs, validación, blockers y próxima acción. Si falta acceso, registra el límite en vez de simularlo.
-3. Con una tarea real y autorización pertinente, verifica que implementación, review y corrección conserven el mismo issue y PR cuando existan, y que commits, diff, checks y findings queden vinculados por referencias reales; sin acceso remoto, comprueba que se informe trazabilidad pendiente. Una review de solo lectura no crea commits.
-4. Pide a terminal y browser chat el mismo resultado basado en las mismas fuentes; compara el formato compartido y los criterios de evidencia, teniendo en cuenta las capacidades disponibles en cada sesión.
-5. Comprueba la selección interactiva de workflow y skills y copia el prompt resultante; repite por lectura directa de Markdown si corresponde.
-6. En un escenario controlado, solicita trabajo seguro junto con una acción sensible sin autorizar. Verifica que el agente prepare y continúe lo permitido, y detenga solo la acción sin permiso. No ejecutes merge, cierre ni despliegue como parte de esta comprobación.
+```markdown
+# Instrucciones del proyecto
 
-Estas son pruebas de comportamiento en sesiones reales, no una afirmación de que ya se hayan ejecutado ni una condición para crear reportes separados por paso.
+Project OS: codefusion-repo/project-os-v3
+Project-OS-Version: <SHA completo de un commit verificable>
+Lee PROJECT_OS.md, el workflow aplicable y las skills repo-context y github-traceability desde ese commit del repositorio canónico. Respeta las reglas técnicas y autorizaciones propias de este proyecto.
+```
 
-## Aceptación de review en browser
+Añade reglas técnicas válidas, restricciones y referencias versionadas pertinentes. Para un agente sin instalación central, los documentos se recuperan desde GitHub en el SHA fijado. Sin acceso, utiliza un prompt autocontenido verificado o informa el límite.
 
-En un PR de prueba autorizado, comprueba por separado: publicación exitosa y URL verificable; modo read-only con review y borrador `review no publicado`; error remoto antes o después de enviar sin inventar URL; reintento de respuesta ambigua buscando el identificador en el historial completo sin duplicar; cambio del head respecto al SHA revisado; y recuperación desde otra sesión usando solo repo, PR, SHA y URL del comentario. Registra resultados reales y no ejecutes comentarios ni reviews formales sin la autorización y capacidad pertinentes. Estos escenarios son aceptación manual de comportamiento del agente, no los tests de estructura del kit.
+## Archivos locales y protección
+
+La configuración se aloja en `proyecto/.project-os/config.json`; el destino predeterminado es `proyecto/.project-os/prompts/`. Antes de escribir, el wizard usa Git para detectar archivos ya rastreados y comprobar exclusiones efectivas para los nombres reales. Si la carpeta no está ignorada, puede agregar una regla estrictamente local a Git `info/exclude` y verifica el resultado. Informa esa protección; el agente incorpora `.project-os/` a `.gitignore`. Una regla de ignore no elimina archivos ya rastreados: si existen, no se lee su configuración ni se escribe allí; prepara una corrección revisable y evalúa exposición histórica sin mostrar contenidos.
+
+La configuración admite nombre, repo principal, repos relacionados, rutas locales de checkout y carpeta de prompts. No admite credenciales, contenido PM ni estado de issues/PR. Preferencias explícitas se guardan así:
+
+```bash
+project-os-v3 --project /ruta/al/workspace --configure --repo organizacion/frontend --related-repo organizacion/backend --checkout organizacion/backend=/ruta/al/backend
+```
+
+Si una carpeta contiene configuración desconocida, el wizard la conserva y no la reemplaza. Ante errores o rutas inseguras, corrige la protección o elige un destino externo seguro de forma explícita. No uses carpetas temporales compartidas para prompts sensibles.
+
+## Workspace y precedencia
+
+Un workspace puede agrupar varios repositorios y conservar una sola configuración local. Cada repo conserva su propio `AGENTS.md`. `--project` tiene prioridad; sin él, el wizard busca configuraciones en el directorio actual y ancestros, sin recorrer el dispositivo. Si dos configuraciones anidadas difieren materialmente en repo o destino de prompts, solicita selección interactiva o exige `--project` en CLI; nunca las fusiona. Los repos relacionados y rutas de checkout no se copian automáticamente al prompt ni a Git.
+
+Para continuidad remota, documenta en `AGENTS.md` o arquitectura solo las relaciones entre repositorios que sean verificadas, necesarias y adecuadas a la visibilidad y autorización. Si una relación no puede divulgarse, informa la limitación y usa un canal autorizado. Cada repo requiere permisos propios.
+
+## Migración y recuperación
+
+Para preferencias antiguas del selector central, selecciona explícitamente el proyecto y confirma el repo que figura en el formato antiguo:
+
+```bash
+project-os-v3 --project /ruta/al/proyecto --configure --migrate-legacy --repo organizacion/repositorio
+```
+
+Se conserva la configuración central y los prompts antiguos; el nuevo destino por defecto pertenece al proyecto. Si el repo no coincide, el formato es desconocido o ya existe configuración local, la migración se detiene sin sobrescribir. No se borran archivos desconocidos ni prompts. Ante un fallo conserva los archivos y corrige la causa antes de reintentar.
+
+Para v2 o una copia previa de v3, el agente inventaría instrucciones y componentes, sustituye referencias operativas contradictorias preservando reglas técnicas y prepara un diff. No borra directorios por nombre ni elimina datos personalizados; solicita autorización para retiros destructivos. El wizard solo prepara el encargo; esta guía no afirma que una migración real ya se haya ejecutado.
+
+## Actualización de versión
+
+El proyecto conserva su SHA hasta una actualización explícita. El selector lee los documentos desde los objetos Git de ese SHA, aun si el checkout central tiene otro HEAD o documentos modificados, y muestra diferencias de los documentos utilizados. Si el SHA no está disponible localmente, informa el límite y no mezcla contenido. Para preparar una actualización, proporciona un SHA objetivo real disponible:
+
+```bash
+project-os-v3 --project /ruta/al/proyecto --adopt --target-version SHA_COMPLETO
+```
+
+El encargo pide comparar versiones, preservar personalizaciones, preparar diff y validar; no modifica el `AGENTS.md` por sí solo. No hay descarga ni ejecución de código remoto para resolver documentos.
+
+## Aceptación en uso real
+
+Con un proyecto piloto autorizado, valida instalación desde otra carpeta, exclusión Git previa a escritura, adopción por un agente terminal sin copiar el kit, una tarea acotada con el SHA correcto y GitHub autorizado. En una sesión independiente entrega solo el repo o locator y comprueba recuperación de instrucciones, relaciones divulgables, PR, checks, bloqueos y siguiente paso. Comprueba además el wizard y los controles de secretos. Registra comandos, exit codes, SHA, checks y límites. Los tests aislados no demuestran por sí solos esta prueba integral; el dogfood de rendimiento es posterior.
