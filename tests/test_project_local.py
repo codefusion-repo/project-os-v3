@@ -46,11 +46,21 @@ class Privacy(unittest.TestCase):
             for target in (central, development):
                 subprocess.run(['git', 'clone', '--quiet', '--no-hardlinks', str(ROOT), str(target)],
                                check=True, capture_output=True)
+            git(central, 'switch', '-C', 'main')
+            shutil.copy2(ROOT / 'install.sh', central / 'install.sh')
+            git(central, 'add', 'install.sh')
+            git(central, '-c', 'user.name=Test', '-c', 'user.email=test@example.invalid',
+                'commit', '-qm', 'installer fixture')
+            remote = base / 'central-remote.git'
+            subprocess.run(['git', 'clone', '--bare', '-q', str(central), str(remote)], check=True)
+            git(central, 'remote', 'set-url', 'origin', 'https://github.com/codefusion-repo/project-os-v3.git')
             wheels = base / 'wheels'
             wheels.mkdir()
             wheel(wheels)
             env = dict(os.environ, HOME=str(base), PROJECT_OS_BIN_DIR=str(base / 'bin'),
-                       PIP_NO_INDEX='1', PIP_FIND_LINKS=str(wheels))
+                       PIP_NO_INDEX='1', PIP_FIND_LINKS=str(wheels), GIT_CONFIG_COUNT='1',
+                       GIT_CONFIG_KEY_0=f'url.{remote.as_uri()}.insteadOf',
+                       GIT_CONFIG_VALUE_0='https://github.com/codefusion-repo/project-os-v3.git')
             result = subprocess.run([str(central / 'install.sh')], cwd=base, env=env,
                                     text=True, capture_output=True)
             self.assertEqual(result.returncode, 0, result.stderr)

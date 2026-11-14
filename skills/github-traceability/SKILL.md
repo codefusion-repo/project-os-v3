@@ -20,7 +20,7 @@ Repo, scope autorizado y locator de issue/PR si existe.
 
 El [adapter browser](../../adapters/browser-chat.md) es la fuente del procedimiento de `review.read` y `review.publish`: autorización, SHA, identificador, reintentos y estado **review no publicado**. Aplica también [review](../../workflows/review.md).
 
-Para closeout de un PR en browser chat, el [adapter](../../adapters/browser-chat.md#closeout-de-un-pr) define la ejecución, idempotencia, fallback y salida mínima; aplica también [close](../../workflows/close.md). Una entrada de merge suficiente no necesita comentario redundante.
+Para closeout de un PR en browser chat, el [adapter](../../adapters/browser-chat.md#closeout-de-un-pr) define la ejecución, idempotencia, fallback y salida mínima; aplica también [close](../../workflows/close.md). Identifica el issue vinculado y verifica su estado; solo el GO específico autoriza cerrarlo tras verificar el merge. Una entrada de merge suficiente no necesita comentario redundante.
 
 ## Validación y salida
 SHA o URL remotos verificados, issue/PR, enlace al comentario nuevo confirmado o borrador pendiente, checks, tests, fallos y riesgos reales. No inventar resultados ni declarar publicación sin evidencia.

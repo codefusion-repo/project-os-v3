@@ -8,7 +8,7 @@ Dejar claro qué está completo y qué falta para cerrar la unidad.
 Después de implementación y revisión, cuando se evalúa cierre.
 ## Ruta rápida
 1. Consulta criterios, diff, issue/PR y checks actuales cuando estén disponibles.
-2. Comprueba findings, validación y pendientes; documenta cualquier límite.
+2. Identifica el issue vinculado y comprueba su estado, findings, validación y pendientes; documenta cualquier límite. El cierre del issue requiere GO específico y verificación tras el merge; no lo infieras del vínculo.
 3. En browser chat, con un PR concreto y GO explícito de closeout con merge, ejecuta las acciones autorizadas disponibles y verifica el resultado siguiendo el [adapter](../adapters/browser-chat.md#closeout-de-un-pr). Sin GO, no mutaciones; aplica allí el fallback y la salida mínima.
 4. En otros casos prepara el cierre y realiza solo las acciones explícitamente autorizadas.
 ## Evidencia y validación

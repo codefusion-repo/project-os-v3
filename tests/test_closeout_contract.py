@@ -9,6 +9,8 @@ fallback plus local cleanup. Verify no unauthorized mutation, atomic HEAD guard,
 no duplicate entries, safe commands and confirmed outcomes. Use a controlled
 connector double for ambiguous failures and never record secrets. Record each
 result and evidence separately; without an isolated environment mark untested.
+Also exercise an identified issue with explicit close GO, already-closed issue,
+open issue without GO, missing identification and unavailable close capability.
 """
 import unittest
 from pathlib import Path
@@ -33,6 +35,9 @@ class BrowserCloseoutContract(unittest.TestCase):
                        'issue separado', 'Sin GO, ninguna mutación'):
             with self.subTest(phrase=phrase):
                 self.assertIn(phrase, closeout)
+        for phrase in ('issue vinculado y su estado', 'closed/completed',
+                       'si ya está cerrado no repitas', 'solo con GO'):
+            self.assertIn(phrase, closeout)
 
     def test_branch_cleanup_safe_command_is_distinct_from_prohibition(self):
         # Do not case-fold: git branch -D is force deletion, not git branch -d.
