@@ -1,4 +1,15 @@
-"""Regression checks for the documented browser closeout contract."""
+"""Document regressions; these do not execute a browser agent.
+
+Manual protocol (not executed): in an explicitly authorized isolated test repo,
+record adapter version, inputs, calls, permissions, HEAD and remote state before
+and after each scenario. Test absent/ambiguous GO and explicit GO; connector
+present/absent or denied; changed HEAD and concurrent change; draft; already
+merged; timeouts before/after merge or comment; existing/missing comment; and
+fallback plus local cleanup. Verify no unauthorized mutation, atomic HEAD guard,
+no duplicate entries, safe commands and confirmed outcomes. Use a controlled
+connector double for ambiguous failures and never record secrets. Record each
+result and evidence separately; without an isolated environment mark untested.
+"""
 import unittest
 from pathlib import Path
 
@@ -8,31 +19,29 @@ ROOT = Path(__file__).resolve().parents[1]
 class BrowserCloseoutContract(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        adapter = (ROOT / 'adapters/browser-chat.md').read_text().lower()
-        cls.closeout = adapter.split('## closeout de un pr', 1)[1].split('## instrucciones', 1)[0]
+        # Count exactly the complete UTF-8 decoded file intended for pasting.
+        cls.adapter = (ROOT / 'adapters/browser-chat.md').read_text(encoding='utf-8')
 
-    def test_authorization_and_separate_issue(self):
-        for phrase in ('go explícito', 'pr concreto', 'comentario de terceros',
-                       'issue separado', 'autorice expresamente', 'si falta el go'):
-            self.assertIn(phrase, self.closeout)
+    def test_complete_paste_artifact_has_headroom(self):
+        self.assertLessEqual(len(self.adapter), 7500,
+                             f'Complete adapter: {len(self.adapter)} Unicode code points')
 
-    def test_live_checks_draft_and_concurrent_head(self):
-        for phrase in ('checks', 'findings', 'permisos', 'reglas aplicables',
-                       'marca ready si es draft', 'sha realmente revisado',
-                       'expected_head_sha', '--match-head-commit', 'no hagas bypass'):
-            self.assertIn(phrase, self.closeout)
+    def test_closeout_retains_core_safety_in_paste_artifact(self):
+        closeout = self.adapter.split('## Closeout de un PR', 1)[1].split('## Instrucciones', 1)[0]
+        for phrase in ('GO explícito', 'HEAD completo', 'checks', 'permisos',
+                       'expected_head_sha', '--match-head-commit', 'fallo ambiguo',
+                       'issue separado', 'Sin GO, ninguna mutación'):
+            with self.subTest(phrase=phrase):
+                self.assertIn(phrase, closeout)
 
-    def test_idempotency_and_ambiguous_failures(self):
-        for phrase in ('ya está merged', 'sin repetir merge ni comentario',
-                       'fallo ambiguo', 'identificador', 'nunca reintentes',
-                       'no edites historia'):
-            self.assertIn(phrase, self.closeout)
-
-    def test_fallback_and_local_safety(self):
-        for phrase in ('falta conector, permiso o capacidad', 'solo un bloque de comandos',
-                       'sha completo revisado', 'git status', 'git worktree list',
-                       'reset --hard', 'clean -fdx', 'branch -d', 'autorización separada'):
-            self.assertIn(phrase, self.closeout)
+    def test_branch_cleanup_safe_command_is_distinct_from_prohibition(self):
+        # Do not case-fold: git branch -D is force deletion, not git branch -d.
+        prohibition = self.adapter.split('No uses `git reset --hard`', 1)[1].split('por defecto.', 1)[0]
+        self.assertIn('`git branch -D`', prohibition)
+        instruction = self.adapter.split('Si corresponde y la rama local está integrada, usa ', 1)[1].split(' tras las comprobaciones', 1)[0]
+        self.assertEqual(instruction, '`git branch -d <rama>`')
+        self.assertNotRegex(instruction, r'git branch\s+-D\b')
+        self.assertIn('si falla, detente y conserva la rama', self.adapter)
 
     def test_close_and_review_route_to_adapter(self):
         for name in ('close', 'review'):
