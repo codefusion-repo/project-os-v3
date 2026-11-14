@@ -17,7 +17,7 @@ Toda implementación, corrección o modificación versionada destinada a integra
 
 El procedimiento para commits, checks, comentario nuevo por cada ejecución material autorizada —incluidos intentos y fallas—, borrador y trazabilidad pendiente está en la skill base; no edites historia. La excepción para experimentos locales descartables y la publicación de reviews se definen allí.
 
-En closeout de un PR desde browser chat, el [adapter](adapters/browser-chat.md#closeout-de-un-pr) concreta la ejecución autorizada y la salida mínima; el merge puede aportar la trazabilidad suficiente sin comentario redundante.
+El workflow [review_for_close](workflows/review_for_close.md) revisa y ejecuta el closeout autorizado en un recorrido; el [adapter](adapters/browser-chat.md#review-y-closeout-en-una-operación) concreta sus controles y salida. El merge puede aportar trazabilidad suficiente sin comentario redundante.
 
 ## Selección de templates
 

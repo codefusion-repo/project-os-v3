@@ -12,13 +12,31 @@ from test_select import outputs, selector
 
 
 class PromptContent(unittest.TestCase):
+    def test_pinned_legacy_version_is_not_silently_mixed(self):
+        with tempfile.TemporaryDirectory() as temp:
+            base = Path(temp)
+            kit, project, _, _ = fixture(base)
+            subprocess.run(['git', '-C', str(kit), 'rm', '-q', 'workflows/review_for_close.md'], check=True)
+            (kit / 'workflows/review.md').write_text('# review\n\nLegacy.\n')
+            subprocess.run(['git', '-C', str(kit), 'add', 'workflows/review.md'], check=True)
+            subprocess.run(['git', '-C', str(kit), '-c', 'user.name=Test', '-c',
+                            'user.email=test@example.invalid', 'commit', '-qm', 'legacy fixture'], check=True)
+            sha = subprocess.check_output(['git', '-C', str(kit), 'rev-parse', 'HEAD'], text=True).strip()
+            (project / 'AGENTS.md').write_text('codefusion-repo/project-os-v3\nProject-OS-Version: ' + sha + '\n')
+            result = subprocess.run([sys.executable, str(kit / 'tools/select.py'), '--project', str(project),
+                                     '--workflow', 'review_for_close', '--output-dir', str(base / 'out')],
+                                    text=True, capture_output=True)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn('no está disponible en la versión aplicable', result.stderr)
+            self.assertFalse((base / 'out').exists())
+
     def test_cli_keeps_request_and_version_without_copying_the_kit(self):
         with tempfile.TemporaryDirectory() as temp:
             base = Path(temp)
             kit, project, old, _ = fixture(base)
             folder = base / 'out'
             args = [sys.executable, str(kit / 'tools/select.py'), '--project', str(project),
-                    '--workflow', 'review', '--skill', 'testing', '--skill', 'code-review',
+                    '--workflow', 'review_for_close', '--skill', 'testing', '--skill', 'code-review',
                     '--locator', 'https://github.com/org/main/pull/42',
                     '--objective', 'Reporte uno\n\nReporte dos',
                     '--feedback', 'Comentario uno\n\nComentario dos', '--question', 'Pregunta uno\nPregunta dos',
@@ -27,7 +45,7 @@ class PromptContent(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
             text = outputs(folder)[0].read_text()
             self.assertIn('**Versión de Project OS:** ' + old, text)
-            self.assertIn('**Workflow:** review', text)
+            self.assertIn('**Workflow:** review_for_close', text)
             self.assertIn('**Skills:** repo-context, github-traceability, testing, code-review', text)
             self.assertIn('**Referencia:** https://github.com/org/main/pull/42', text)
             self.assertIn('Reporte uno\n\nReporte dos', text)
@@ -37,7 +55,7 @@ class PromptContent(unittest.TestCase):
             self.assertNotIn('## Trazabilidad GitHub obligatoria', text)
             self.assertNotIn('# Comentario de ejecución', text)
             self.assertIn('skills/repo-context/SKILL.md', text)
-            self.assertIn('workflows/review.md', text)
+            self.assertIn('workflows/review_for_close.md', text)
             self.assertIn('lee su AGENTS.md', text)
             self.assertIn('verifica la referencia', text)
             self.assertIn('informa el límite sin inventar', text)
@@ -51,7 +69,7 @@ class PromptContent(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             kit, project, old, _ = fixture(Path(temp))
             dest = Path(temp) / 'out'
-            entries = ['review', 'testing', 'Solicitud', '#42', 'Nota', 'Pregunta', 'g', 's']
+            entries = ['review_for_close', 'testing', 'Solicitud', '#42', 'Nota', 'Pregunta', 'g', 's']
             result = subprocess.run([sys.executable, str(kit / 'tools/select.py'), '--project', str(project),
                                      '--output-dir', str(dest)], input='\n'.join(entries) + '\n',
                                     text=True, capture_output=True)
@@ -75,11 +93,11 @@ class PromptContent(unittest.TestCase):
             kit, project, _, _ = fixture(Path(temp))
             with patch.object(selector, 'ROOT', kit), patch.object(selector.project_local.urllib.request, 'build_opener', side_effect=AssertionError('unexpected network')):
                 with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
-                    self.assertEqual(selector.main(['--project', str(project), '--workflow', 'review']), 0)
+                    self.assertEqual(selector.main(['--project', str(project), '--workflow', 'review_for_close']), 0)
                     token = 'ghp_' + 'K' * 36
                     err = io.StringIO()
                     with contextlib.redirect_stderr(err):
-                        self.assertNotEqual(selector.main(['--project', str(project), '--workflow', 'review', '--feedback', token]), 0)
+                        self.assertNotEqual(selector.main(['--project', str(project), '--workflow', 'review_for_close', '--feedback', token]), 0)
                     self.assertNotIn(token, err.getvalue())
 
 

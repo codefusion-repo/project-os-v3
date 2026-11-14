@@ -150,7 +150,7 @@ class MultiRepository(unittest.TestCase):
             self.assertEqual(len(outputs(remote)), 2)
             first_remote = next(path for path in outputs(remote) if 'org/first' in path.read_text())
             second_remote = next(path for path in outputs(remote) if path != first_remote)
-            result = run(remote, '--workflow', 'review', '--repo', 'ORG/FIRST')
+            result = run(remote, '--workflow', 'review_for_close', '--repo', 'ORG/FIRST')
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertFalse(first_remote.exists())
             self.assertTrue(second_remote.exists())
@@ -166,7 +166,7 @@ class MultiRepository(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             folder = Path(temp) / 'out'
             def generate(objective):
-                entries = ['org/repo', 'review', '', objective, '#1', '', '', 'g', str(folder), 's']
+                entries = ['org/repo', 'review_for_close', '', objective, '#1', '', '', 'g', str(folder), 's']
                 result = execute(input_text='\n'.join(entries) + '\n', cwd=temp)
                 self.assertEqual(result.returncode, 0, result.stderr)
             generate('Primero')
@@ -231,7 +231,7 @@ class MultiRepository(unittest.TestCase):
             config = self.configured(project)
             before = config.read_bytes()
             # Restrict the first operation, then reuse the workflow for a new unrestricted one.
-            entries = ['/alcance', '1,2', 'review', '', 'Primero', '#1', 'Nota anterior', '', 'g',
+            entries = ['/alcance', '1,2', 'review_for_close', '', 'Primero', '#1', 'Nota anterior', '', 'g',
                        'm', '', 'Segundo', '#2', '', '', 'g', 's']
             result = run(base / 'out', input_text='\n'.join(entries) + '\n', kit=kit)
             self.assertEqual(result.returncode, 0, result.stderr)

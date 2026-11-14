@@ -29,14 +29,14 @@ class BrowserCloseoutContract(unittest.TestCase):
                              f'Complete adapter: {len(self.adapter)} Unicode code points')
 
     def test_closeout_retains_core_safety_in_paste_artifact(self):
-        closeout = self.adapter.split('## Closeout de un PR', 1)[1].split('## Instrucciones', 1)[0]
-        for phrase in ('GO explícito', 'HEAD completo', 'checks', 'permisos',
+        closeout = self.adapter.split('## Review y closeout en una operación', 1)[1].split('## Instrucciones', 1)[0]
+        for phrase in ('autorización explícita', 'HEAD completo', 'checks', 'permisos',
                        'expected_head_sha', '--match-head-commit', 'fallo ambiguo',
-                       'issue separado', 'Sin GO, ninguna mutación'):
+                       'issue vinculado', 'ninguna mutación no concedida'):
             with self.subTest(phrase=phrase):
                 self.assertIn(phrase, closeout)
-        for phrase in ('issue vinculado y su estado', 'closed/completed',
-                       'si ya está cerrado no repitas', 'solo con GO'):
+        for phrase in ('issue vinculado y estado', 'closed/completed',
+                       'Si ya está cerrado no repitas', 'sin otra confirmación'):
             self.assertIn(phrase, closeout)
 
     def test_branch_cleanup_safe_command_is_distinct_from_prohibition(self):
@@ -49,7 +49,7 @@ class BrowserCloseoutContract(unittest.TestCase):
         self.assertIn('si falla, detente y conserva la rama', self.adapter)
 
     def test_close_and_review_route_to_adapter(self):
-        for name in ('close', 'review'):
+        for name in ('review_for_close',):
             self.assertIn('../adapters/browser-chat.md',
                           (ROOT / 'workflows' / f'{name}.md').read_text())
 

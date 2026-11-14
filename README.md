@@ -65,7 +65,7 @@ Para usar el selector sin la dependencia opcional: `python3 /ruta/al/kit/tools/s
 
 ```bash
 project-os-v3 --list
-project-os-v3 --project /ruta/al/proyecto --workflow review --skill code-review --skill testing --locator 123 --objective 'Revisar el PR'
+project-os-v3 --project /ruta/al/proyecto --workflow review_for_close --skill code-review --skill testing --locator 123 --objective 'Revisar el PR'
 project-os-v3 --project /ruta/al/proyecto --prototype --skill testing --objective 'Validar un filtro con datos simulados'
 project-os-v3 --project /ruta/al/proyecto --configure --repo organizacion/frontend --repo organizacion/backend
 project-os-v3 --help
@@ -73,4 +73,4 @@ project-os-v3 --help
 
 La generación no interactiva puede leer preferencias del proyecto, pero no las cambia; `--repo` repetido limita solo la operación y, con `--configure`, agrega repositorios a la lista; `--configure` solicita explícitamente modificarlas. `--prototype` combina `implement` con `rapid-prototype` y admite más skills. El prompt referencia documentos e indica al agente que verifique su procedencia y disponibilidad. Si la versión fijada falta localmente, señala ese límite sin mezclar otra versión. Si todavía no hay SHA fijado se indica la procedencia disponible sin afirmar que el proyecto ya está adaptado.
 
-Para uso directo, lee [PROJECT_OS.md](PROJECT_OS.md), el workflow y las skills base [repo-context](skills/repo-context/SKILL.md) y [github-traceability](skills/github-traceability/SKILL.md). El kit incluye seis workflows, nueve skills, catorce templates y dos adapters. La [especificación](docs/V3_SPEC.md), el [addendum](docs/V3_ADDENDUM.md) y la [validación histórica](docs/VALIDATION.md) son evidencia consultable cuando la tarea la requiera; no se cargan por defecto en el trabajo diario. Ejecuta `python3 -m unittest discover -s tests -v` para comprobar el kit.
+Para uso directo, lee [PROJECT_OS.md](PROJECT_OS.md), el workflow y las skills base [repo-context](skills/repo-context/SKILL.md) y [github-traceability](skills/github-traceability/SKILL.md). El kit incluye cinco workflows, nueve skills, catorce templates y dos adapters. `review_for_close` revisa y, con autorización explícita vigente para el PR y su issue, ejecuta el cierre en la misma operación; sin ella informa PASS pendiente. Los nombres legados `review` y `close` se rechazan: usa `review_for_close` y, si la versión fijada no lo contiene, actualiza el proyecto explícitamente. La [especificación](docs/V3_SPEC.md), el [addendum](docs/V3_ADDENDUM.md) y la [validación histórica](docs/VALIDATION.md) son evidencia consultable cuando la tarea la requiera; no se cargan por defecto en el trabajo diario. Ejecuta `python3 -m unittest discover -s tests -v` para comprobar el kit.

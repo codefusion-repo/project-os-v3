@@ -4,7 +4,7 @@ from pathlib import Path
 from urllib.parse import unquote, urlsplit
 
 ROOT = Path(__file__).resolve().parents[1]
-WORKFLOWS = {'continue', 'create', 'implement', 'review', 'close', 'release'}
+WORKFLOWS = {'continue', 'create', 'implement', 'review_for_close', 'release'}
 SKILLS = {'repo-context', 'rapid-prototype', 'implement-change', 'debug', 'testing',
           'security-review', 'code-review', 'github-traceability', 'documentation'}
 TEMPLATES = {'task', 'issue', 'pull-request', 'review', 'execution', 'decision',
@@ -76,14 +76,14 @@ class Structure(unittest.TestCase):
     def test_browser_review_publication_contract_is_connected(self):
         adapter = (ROOT / 'adapters/browser-chat.md').read_text().lower()
         skill = (ROOT / 'skills/github-traceability/SKILL.md').read_text().lower()
-        workflow = (ROOT / 'workflows/review.md').read_text().lower()
+        workflow = (ROOT / 'workflows/review_for_close.md').read_text().lower()
         for term in ('review.read', 'review.publish', 'autorización', 'sha',
                      'identificador', 'reintento', 'review no publicado', 'comentario nuevo'):
             self.assertIn(term, adapter)
         for link in ('../adapters/browser-chat.md', '../skills/github-traceability/SKILL.md'):
             self.assertIn(link.lower(), workflow)
         self.assertIn('../../adapters/browser-chat.md', skill)
-        self.assertIn('../workflows/review.md', adapter)
+        self.assertIn('../workflows/review_for_close.md', adapter)
         self.assertIn('<url_permanente_del_comentario>', adapter)
 
     def test_relative_markdown_links(self):

@@ -38,8 +38,7 @@ workflows/
   continue.md
   create.md
   implement.md
-  review.md
-  close.md
+  review_for_close.md
   release.md
 skills/
   repo-context/SKILL.md
@@ -87,15 +86,14 @@ Los nombres son la interfaz inicial. Se permiten ajustes pequeños de organizaci
 
 `AGENTS.md` es un bootstrap breve; `PROJECT_OS.md` concentra reglas compartidas. `README.md` enseña un inicio en 30 segundos, selección interactiva, invocación directa de Markdown y prototipo rápido. `docs/ADOPTION.md` explica cómo integrar este kit a un repositorio existente sin sobrescribir instrucciones propias ni copiar historia Git.
 
-## 4. Workflows (seis, conservados)
+## 4. Workflows (cinco)
 
 | Archivo | Outcome | Skills especializadas sugeridas; `repo-context` y `github-traceability` son base |
 |---|---|---|
 | `continue.md` | Cold start y continuación desde evidencia viva | — |
 | `create.md` | Convertir idea en outcome con criterios verificables; issue o borrador si aporta valor | `rapid-prototype`, `documentation` |
 | `implement.md` | Construir feature, fix o **prototipo rápido**, validar y registrar cambios autorizados | `implement-change`, `rapid-prototype`, `debug`, `testing`, `security-review` |
-| `review.md` | Revisar diff/código/tests/riesgos y entregar findings accionables | `code-review`, `security-review`, `testing` |
-| `close.md` | Verificar readiness y preparar/realizar únicamente acciones permitidas | `testing` |
+| `review_for_close.md` | Revisar diff/código/tests y ejecutar closeout autorizado en el mismo recorrido | `code-review`, `security-review`, `testing` |
 | `release.md` | Evaluar release-readiness y preparar ejecución con controles de producción | `security-review`, `documentation` |
 
 Cada archivo define en lenguaje natural: `Objetivo`, `Cuándo usar`, `Ruta rápida` (máximo 5 pasos prácticos), `Evidencia y validación`, `Salida` y `Escalación localizada`. Debe funcionar sin selector y sin crear subissues/handoffs automáticos. La combinación sugerida es una ayuda de UX, no un grafo de aprobaciones.
@@ -127,7 +125,7 @@ python3 tools/select.py --output-dir /ruta/a/prompts
 python3 tools/select.py --list
 python3 tools/select.py --workflow implement --skill rapid-prototype --objective "Validar una idea"
 python3 tools/select.py --prototype
-python3 tools/select.py --workflow review --locator 123
+python3 tools/select.py --workflow review_for_close --locator 123
 ```
 
 1. El wizard es la interfaz principal y comienza por buscar o seleccionar operación; Enter usa `continue`. Si no hay coincidencia, conserva la intención como pregunta del PM y usa `continue`. Luego solicita la lista de repositorios solo si aún no existe, skills y contexto de la operación, preview y guardado. Muestra los repositorios y la carpeta actual; `/alcance` limita temporalmente la tarea y `/carpeta` cambia el destino. Valida el formato `owner/repo` sin afirmar verificación remota y permite `-` para experimento local descartable. Descubre Markdown sin catálogo paralelo; muestra skills sugeridas por workflow y `/todas` para las demás. Admite selección múltiple, búsqueda, volver, editar, cancelar y reutilizar. Incluye las dos skills base sin pedirlas ni duplicarlas.

@@ -39,16 +39,15 @@ SOURCE_DESCRIPTION = 'contenido local no equivalente a un SHA canónico verifica
 SOURCE_CHANGED = set()
 TRACK_SOURCE = False
 BASE = ('repo-context', 'github-traceability')
-ORDER = ('continue', 'create', 'implement', 'review', 'close', 'release')
+ORDER = ('continue', 'create', 'implement', 'review_for_close', 'release')
 LABELS = {
     'continue': 'Fuente de continuación o último reporte',
     'create': 'Idea o requerimiento',
     'implement': 'Especificación, issue o reporte de corrección',
-    'review': 'Reporte de ejecución o solicitud de review',
-    'close': 'Resultado de validación o QA',
+    'review_for_close': 'PR a revisar y autorización de closeout si existe',
     'release': 'Evidencia de release-readiness',
 }
-UNIT_OPERATIONS = frozenset(('continue', 'implement', 'review', 'close', 'release'))
+UNIT_OPERATIONS = frozenset(('continue', 'implement', 'review_for_close', 'release'))
 NAME = re.compile(r'[a-z0-9]+(?:-[a-z0-9]+)*\Z')
 OWNED_NAME = re.compile(r'project-os-prompt-[0-9a-f]{32}\.md\Z')
 PROJECT_OWNED_NAME = re.compile(r'project-os-prompt-([0-9a-f]{64})-([0-9a-f]{32})\.md\Z')
@@ -175,7 +174,7 @@ def discover():
         tree = project_local.git(ROOT, 'ls-tree', '-r', '--name-only', SOURCE_VERSION, '--', 'workflows', 'skills', 'templates')
         for entry in tree.stdout.decode('utf-8').splitlines():
             parts = Path(entry).parts
-            if len(parts) == 2 and parts[0] == 'workflows' and entry.endswith('.md') and NAME.fullmatch(Path(entry).stem):
+            if len(parts) == 2 and parts[0] == 'workflows' and entry.endswith('.md') and Path(entry).stem in ORDER:
                 operations[Path(entry).stem] = ROOT / entry
             elif len(parts) == 3 and parts[0] == 'skills' and parts[2] == 'SKILL.md' and NAME.fullmatch(parts[1]):
                 skills[parts[1]] = ROOT / entry
@@ -183,7 +182,7 @@ def discover():
                 templates[Path(entry).stem] = ROOT / entry
         return operations, skills, templates
     for path in (ROOT / 'workflows').glob('*.md'):
-        if NAME.fullmatch(path.stem):
+        if path.stem in ORDER:
             try:
                 source(path)
             except InputError:
@@ -550,6 +549,9 @@ def choose_operation(operations, current='continue', session_controls=True):
             continue
         if query.isdecimal() and 1 <= int(query) <= len(visible):
             return visible[int(query) - 1]
+        if query in ('review', 'close'):
+            print('Operación retirada: usa review_for_close. Si la versión fijada no la contiene, actualiza el proyecto explícitamente.')
+            continue
         if query in operations:
             return query
         matches = [name for name in names if query.casefold() in name.casefold() or query.casefold() in description(operations[name]).casefold()]
@@ -1011,7 +1013,7 @@ def main(argv=None):
     parser.add_argument('--name', help='nombre local del proyecto (con --configure)')
     parser.add_argument('--checkout', action='append', help='checkout local owner/repo=/ruta (con --configure)')
     parser.add_argument('--repo', action='append', help='repositorio owner/repo; repetir para varios (alcance temporal, o agregar con --configure)')
-    parser.add_argument('--workflow', help='operación (default: continue)')
+    parser.add_argument('--workflow', help='operación (default: continue); review/close fueron reemplazadas por review_for_close')
     parser.add_argument('--skill', action='append', default=[])
     parser.add_argument('--locator', help='número o URL de issue/PR')
     parser.add_argument('--objective', help='entrada principal de la operación')
@@ -1052,6 +1054,10 @@ def main(argv=None):
         if any(name not in skills for name in BASE):
             parser.error('Faltan skills base o sus rutas no son seguras.')
         operation = 'implement' if args.prototype else (args.workflow or 'continue')
+        if operation in ('review', 'close'):
+            parser.error('review y close fueron retiradas; usa review_for_close con una versión que lo contenga.')
+        if operation == 'review_for_close' and operation not in operations:
+            parser.error('review_for_close no está disponible en la versión aplicable; actualiza el proyecto explícitamente.')
         selected = list(dict.fromkeys((['rapid-prototype'] if args.prototype else []) + args.skill))
         if operation not in operations or any(name not in skills for name in selected):
             parser.error('Operación o skill desconocida.')

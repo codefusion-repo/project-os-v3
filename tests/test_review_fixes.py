@@ -104,7 +104,7 @@ class CanonicalSource(unittest.TestCase):
             output = io.StringIO()
             with patch.object(selector, 'ROOT', kit), patch.object(selector.project_local.urllib.request, 'build_opener', side_effect=AssertionError('unexpected network')):
                 with contextlib.redirect_stdout(output), contextlib.redirect_stderr(io.StringIO()):
-                    status = selector.main(['--project', str(project), '--workflow', 'review'])
+                    status = selector.main(['--project', str(project), '--workflow', 'review_for_close'])
             self.assertEqual(status, 0)
             self.assertIn('Vista previa', output.getvalue())
 
@@ -169,7 +169,7 @@ class WizardReviewFixes(unittest.TestCase):
                 project = kit / 'project'
                 selector.project_local.save_config(project, {'version': 2, 'name': 'fixture', 'repositories': ['org/main', 'org/api', 'org/mobile'],
                                                               'prompt_dir': '.project-os/prompts'})
-                entries = ['/repo', selection, 'review', '', '', '', '', '', 'g', 's']
+                entries = ['/repo', selection, 'review_for_close', '', '', '', '', '', 'g', 's']
                 result = run(root / 'out', input_text='\n'.join(entries) + '\n', kit=kit)
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertIn('Repositorios del proyecto:', result.stdout)

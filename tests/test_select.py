@@ -49,11 +49,17 @@ class CommandLine(unittest.TestCase):
             result = run(dest, '--list')
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertIn('continue', result.stdout)
+            self.assertIn('review_for_close —', result.stdout)
+            self.assertNotRegex(result.stdout, r'(?m)^(review|close) —')
             self.assertIn('rapid-prototype', result.stdout)
             self.assertFalse(dest.exists())
+            for legacy in ('review', 'close'):
+                old = run(dest, '--workflow', legacy)
+                self.assertNotEqual(old.returncode, 0)
+                self.assertIn('usa review_for_close', old.stderr)
             for args in [('--workflow', '../review'), ('--skill', '../debug'),
                          ('--locator', '../../secret'), ('--locator', 'https://evil.test/a/b/pull/1'),
-                         ('--prototype', '--workflow', 'review'), ('--template', 'review')]:
+                         ('--prototype', '--workflow', 'review_for_close'), ('--template', 'review_for_close')]:
                 with self.subTest(args=args):
                     self.assertNotEqual(run(dest, *args).returncode, 0)
             self.assertFalse(dest.exists())
@@ -94,7 +100,7 @@ class CommandLine(unittest.TestCase):
 
     def test_inconsistent_reference_is_warned_without_changing_pm_fields(self):
         with tempfile.TemporaryDirectory() as temp:
-            result = run(temp, '--repo', 'org/repo', '--workflow', 'review', '--locator', '#9',
+            result = run(temp, '--repo', 'org/repo', '--workflow', 'review_for_close', '--locator', '#9',
                          '--objective', 'Revisar PR #7', '--feedback', 'Nota exacta', '--question', 'Consulta exacta')
             self.assertEqual(result.returncode, 0, result.stderr)
             text = outputs(temp)[0].read_text()
@@ -111,7 +117,7 @@ class CommandLine(unittest.TestCase):
             before = previous.read_bytes()
             for option in ('--objective', '--feedback', '--question', '--repo', '--locator', '--workflow', '--skill'):
                 with self.subTest(option=option):
-                    result = run(temp, '--workflow', 'review', option, token)
+                    result = run(temp, '--workflow', 'review_for_close', option, token)
                     self.assertNotEqual(result.returncode, 0)
                     self.assertNotIn(token, result.stdout + result.stderr)
                     self.assertEqual(previous.read_bytes(), before)
@@ -122,8 +128,8 @@ class CommandLine(unittest.TestCase):
     def test_sensitive_source_is_not_copied_into_prompt(self):
         operations, skills, templates = selector.discover()
         token = 'ghp_' + 'C' * 36
-        with patch.object(selector, 'SOURCE_VERSION', 'a' * 40), patch.object(selector, 'SOURCE_LOCAL_AVAILABLE', True), patch.object(selector, 'source', side_effect=lambda path: token if path == operations['review'] else '# Documento'):
-            text = selector.render('review', [], '', '', operations, skills, templates)
+        with patch.object(selector, 'SOURCE_VERSION', 'a' * 40), patch.object(selector, 'SOURCE_LOCAL_AVAILABLE', True), patch.object(selector, 'source', side_effect=lambda path: token if path == operations['review_for_close'] else '# Documento'):
+            text = selector.render('review_for_close', [], '', '', operations, skills, templates)
         self.assertNotIn(token, text)
 
     def test_path_traversal_and_directory_symlinks_rejected(self):
@@ -224,14 +230,14 @@ class Wizard(unittest.TestCase):
             entries = ['revisar', '1', 'org/repo', '', '', '', '', '', 'g', 's']
             result = run(dest, input_text=chr(10).join(entries) + chr(10), kit=kit)
             self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertIn('**Workflow:** review', outputs(dest)[0].read_text())
+            self.assertIn('**Workflow:** review_for_close', outputs(dest)[0].read_text())
 
     def test_operation_first_relevant_skills_and_optional_reference(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             kit = install(root / 'kit')
             dest = root / 'out'
-            result = run(dest, input_text='review\norg/repo\ncode-review,testing\nReporte PR #1\n#1\nNota\nPregunta\ng\ns\n', kit=kit)
+            result = run(dest, input_text='review_for_close\norg/repo\ncode-review,testing\nReporte PR #1\n#1\nNota\nPregunta\ng\ns\n', kit=kit)
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertLess(result.stdout.index('1/3'), result.stdout.index('Repositorios owner/repo'))
             menu = result.stdout.split('Skills sugeridas:', 1)[1].split('Skills [Enter', 1)[0]
@@ -248,7 +254,7 @@ class Wizard(unittest.TestCase):
             root = Path(temp)
             kit = install(root / 'kit')
             dest = root / 'out'
-            data = ('review\norg/repo\ncode-review\nReporte\n#1\nComentario\nPregunta\n'
+            data = ('review_for_close\norg/repo\ncode-review\nReporte\n#1\nComentario\nPregunta\n'
                     'e\nimplement\ndebug,testing\n\n\n\n\ng\ns\n')
             result = run(dest, input_text=data, kit=kit)
             self.assertEqual(result.returncode, 0, result.stderr)
@@ -267,7 +273,7 @@ class Wizard(unittest.TestCase):
             root = Path(temp)
             kit = install(root / 'kit')
             dest = root / 'out'
-            data = ('review\norg/repo\n\nPrimero\n#1\nComentario anterior\nPregunta anterior\ng\n'
+            data = ('review_for_close\norg/repo\n\nPrimero\n#1\nComentario anterior\nPregunta anterior\ng\n'
                     'm\n\nSegundo\n#2\n\n\ng\ns\n')
             result = run(dest, input_text=data, kit=kit)
             self.assertEqual(result.returncode, 0, result.stderr)
@@ -285,7 +291,7 @@ class Wizard(unittest.TestCase):
             dest = root / 'out'
             self.assertEqual(run(dest, '--prototype').returncode, 0)
             old = outputs(dest)[0]
-            result = run(dest, input_text='review\norg/repo\n\nReporte\n\n\n\nc\n', kit=kit)
+            result = run(dest, input_text='review_for_close\norg/repo\n\nReporte\n\n\n\nc\n', kit=kit)
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual(outputs(dest), [old])
 
@@ -307,7 +313,7 @@ class Wizard(unittest.TestCase):
             root = Path(temp)
             kit = install(root / 'kit')
             dest = root / 'out'
-            first = run(dest, input_text='review\norg/repo\n\nReporte\n#1\nNota privada\nPregunta\ng\ns\n', kit=kit)
+            first = run(dest, input_text='review_for_close\norg/repo\n\nReporte\n#1\nNota privada\nPregunta\ng\ns\n', kit=kit)
             self.assertEqual(first.returncode, 0, first.stderr)
             second = subprocess.run([sys.executable, str(kit / 'tools/select.py')],
                                     input='continue\n\n\n\n\n\ng\ns\n', text=True,
@@ -325,7 +331,7 @@ class Wizard(unittest.TestCase):
             root = Path(temp)
             kit = install(root / 'kit')
             dest = root / 'out'
-            data = ('review\norg/repo\ncode-review\nReporte\n#1\nComentario\nPregunta\n'
+            data = ('review_for_close\norg/repo\ncode-review\nReporte\n#1\nComentario\nPregunta\n'
                     'e\n\n\n/limpiar\n\n/limpiar\n\ng\ns\n')
             result = run(dest, input_text=data, kit=kit)
             self.assertEqual(result.returncode, 0, result.stderr)
@@ -344,7 +350,7 @@ class Wizard(unittest.TestCase):
                 path = bindir / name
                 path.write_text('#!/bin/sh\n: > "$PROJECT_OS_TEST_SENTINEL"\n')
                 path.chmod(0o755)
-            result = subprocess.run([sys.executable, str(SCRIPT), '--workflow', 'review', '--output-dir', str(root / 'out')],
+            result = subprocess.run([sys.executable, str(SCRIPT), '--workflow', 'review_for_close', '--output-dir', str(root / 'out')],
                                     text=True, capture_output=True,
                                     env=dict(os.environ, PATH=str(bindir) + os.pathsep + os.environ.get('PATH', ''), PROJECT_OS_TEST_SENTINEL=str(marker)))
             self.assertEqual(result.returncode, 0, result.stderr)
@@ -381,12 +387,12 @@ class PasteInTerminal(unittest.TestCase):
             feedback = 'Comentario uno\n\nComentario dos'
             try:
                 until(b'Operaci')
-                send(b'review\n')
+                send(b'review_for_close\n')
                 until(b'Repositorios owner/repo')
                 send(b'org/repo\n')
                 until(b'Skills [Enter')
                 send(b'code-review\n')
-                until('Reporte de ejecución o solicitud de review [Enter'.encode())
+                until('PR a revisar y autorización de closeout si existe [Enter'.encode())
                 send(b'\x1b[200~' + report.encode() + b'\x1b[201~')
                 time.sleep(0.2)
                 while select.select([master], [], [], 0)[0]:
@@ -408,7 +414,7 @@ class PasteInTerminal(unittest.TestCase):
                 send(b'\n')
                 until(b'Skills [Enter')
                 send(b'\n')
-                until('Reporte de ejecución o solicitud de review [Enter'.encode())
+                until('PR a revisar y autorización de closeout si existe [Enter'.encode())
                 send(b'\n')
                 until(b'Issue/PR opcional')
                 send(b'\n')
