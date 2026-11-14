@@ -2,6 +2,8 @@
 
 ## Una instalación y un proyecto
 
+Para empezar desde cero utiliza el [recorrido de instalación y primer proyecto](../README.md#instalar-y-actualizar) del README; esta guía cubre detalles avanzados de adopción, protección, migración y versiones. Ejecuta los comandos de proyecto desde **la raíz de su checkout Git**: en Bash, `$PWD` contiene la ruta absoluta del directorio actual. El checkout central del kit y los proyectos son carpetas separadas.
+
 Instala y actualiza el checkout central desde `main` siguiendo el [inicio rápido](../README.md#instalar-y-actualizar) y ejecuta `project-os-v3 --project /ruta/al/proyecto`. Selecciona `/adoptar`; el wizard prepara configuración local si puede protegerla y genera un único encargo. Si el proyecto ya tiene una versión fijada, muestra esa versión y el HEAD local del kit y permite indicar otro SHA objetivo. Entrega el prompt a un agente terminal con acceso al checkout y autorización. No copies workflows, skills, templates ni el wizard al proyecto. En un repo sin checkout local, indica `owner/repo`: el selector no inventa una ruta ni configuración local y solo guarda en una carpeta externa elegida expresamente.
 
 El agente inspecciona rama, diff e instrucciones existentes; adapta el `AGENTS.md` principal y `.gitignore` dentro del alcance autorizado. La configuración local es responsabilidad del wizard en el dispositivo donde se ejecuta; el agente no debe crearla suponiendo que comparte ese filesystem. No debe abrir secretos ni eliminar archivos desconocidos. Registra en GitHub commit, PR, checks y un comentario histórico nuevo cuando esté autorizado.
@@ -25,6 +27,8 @@ Lee PROJECT_OS.md, el workflow aplicable y las skills repo-context y github-trac
 Añade reglas técnicas válidas, restricciones y referencias versionadas pertinentes. Para un agente sin instalación central, los documentos se recuperan desde GitHub en el SHA fijado. Sin acceso a los documentos aplicables, informa el límite y continúa solo lo que sea seguro.
 
 ## Archivos locales y protección
+
+En el primer proyecto, `--configure --repo OWNER/REPO` registra preferencias y `--adopt` prepara el prompt para un agente; **ninguno ejecuta la adopción ni crea un PR por sí solo**. Tras aplicar el encargo, comprueba el SHA canónico fijado en `AGENTS.md`, la revisión de `AGENTS.md` y `.gitignore`, el resultado de `git check-ignore -v .project-os/config.json .project-os/prompts/example.md` y que `git ls-files -- .project-os/` no muestre archivos. El [quickstart](../README.md#comprobar-la-adopción) contiene los comandos. Si se detectan datos privados rastreados, no los publiques ni confíes en que añadir `.gitignore` los desversiona.
 
 La configuración se aloja en `proyecto/.project-os/config.json`; el destino predeterminado es `proyecto/.project-os/prompts/`. Antes de escribir, el wizard usa Git para detectar archivos ya rastreados y comprobar exclusiones efectivas para los nombres reales. Si la carpeta no está ignorada, puede agregar una regla estrictamente local a Git `info/exclude` y verifica el resultado. Informa esa protección; el agente incorpora `.project-os/` a `.gitignore`. Una regla de ignore no elimina archivos ya rastreados: si existen, no se lee su configuración ni se escribe allí; prepara una corrección revisable y evalúa exposición histórica sin mostrar contenidos.
 

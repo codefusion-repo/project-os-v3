@@ -2,7 +2,7 @@
 
 > Esta especificación incorpora las decisiones del PM y sus [addenda](V3_ADDENDUM.md); prevalecen las instrucciones más recientes ante contradicciones.
 
-**Estado:** borrador para implementación, no adoptado ni validado en producción.
+**Estado del documento:** especificación histórica del MVP, actualizada para reflejar cinco workflows. La implementación está integrada en `main`, pero la instalación y adopción end-to-end en un proyecto real siguen pendientes de validación. Para el uso vigente consulta el [README](../README.md) y la [guía de adopción](ADOPTION.md).
 
 **Destino:** `codefusion-repo/project-os-v3`. **Fuente:** handoff de v3 + correcciones expresas del PM (13-11-2026).
 
@@ -14,7 +14,7 @@ Project OS v3 es un **kit operativo Markdown-first** de **workflows + skills + t
 
 **Hipótesis por medir, no promesa:** menor tiempo, tokens/créditos e intervenciones humanas que v2 en tareas equivalentes, sin empeorar calidad o seguridad. No construir infraestructura propia para justificar la hipótesis.
 
-**Decisiones que sustituyen al handoff inicial:** (a) el **selector se entrega obligatoriamente** en el MVP; (b) hay una biblioteca utilizable de skills, no un directorio vacío; (c) se entregan **catorce templates**, incluidos los diez base y cuatro operativos GitHub. Los workflows siguen siendo seis. Son obligatorios como *artefactos distribuidos*, no una barrera de acceso: un agente con una intención clara puede leer los Markdown directamente sin ejecutar un script.
+**Decisiones que sustituyen al handoff inicial:** (a) el **selector se entrega obligatoriamente** en el MVP; (b) hay una biblioteca utilizable de skills, no un directorio vacío; (c) se entregan **catorce templates**, incluidos los diez base y cuatro operativos GitHub. Los workflows actuales son **cinco**: `continue`, `create`, `implement`, `review_for_close` y `release` (la operación unificada reemplazó `review` y `close`). Son obligatorios como *artefactos distribuidos*, no una barrera de acceso: un agente con una intención clara puede leer los Markdown directamente sin ejecutar un script.
 
 ## 2. Modelo operativo
 
@@ -191,7 +191,7 @@ Otros agentes: Markdown directo. Añadir adapter cuando una diferencia real lo e
 
 ## 10. Validación mínima y aceptación del MVP
 
-- Existencia y enlaces correctos de **6 workflows, 9 skills, 14 templates, 2 adapters, selector y tests**, además de `AGENTS.md`, `PROJECT_OS.md`, `README.md`, esta spec y `docs/ADOPTION.md`.
+- Existencia y enlaces correctos de **5 workflows, 9 skills, 14 templates, 2 adapters, selector y tests**, además de `AGENTS.md`, `PROJECT_OS.md`, `README.md`, esta spec y `docs/ADOPTION.md`.
 - `tools/select.py`: primera sesión y configuración existente, validación de repo, contexto PM multilínea sin reutilización ni filtración a config, selección y navegación, preview, guardado en carpeta temporal, reemplazo seguro, cancelación, fallos, locator, discovery y protección de rutas. Pruebas stdlib (`unittest`), sin red ni writes de producción.
 - Pruebas de estructura/referencias Markdown y revisión humana de legibilidad; **no** tests frágiles de wording.
 - Ejemplo documentado y reproducible de inicio `continue`, de prototipo rápido y de review. Se puede usar el kit leyendo los Markdown sin Python; Python se usa para el selector entregado.
