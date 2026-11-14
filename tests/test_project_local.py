@@ -10,6 +10,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
+from test_install import wheel
 
 ROOT = Path(__file__).resolve().parents[1]
 spec = importlib.util.spec_from_file_location('project_local_tests', ROOT / 'tools/project_local.py')
@@ -38,6 +39,43 @@ def save(root, name, github, folder='.project-os/prompts'):
 
 
 class Privacy(unittest.TestCase):
+    def test_develop_kit_with_separate_installed_checkout_and_autodetection(self):
+        with tempfile.TemporaryDirectory() as temp:
+            base = Path(temp)
+            central, development = base / 'central', base / 'development'
+            for target in (central, development):
+                subprocess.run(['git', 'clone', '--quiet', '--no-hardlinks', str(ROOT), str(target)],
+                               check=True, capture_output=True)
+            wheels = base / 'wheels'
+            wheels.mkdir()
+            wheel(wheels)
+            env = dict(os.environ, HOME=str(base), PROJECT_OS_BIN_DIR=str(base / 'bin'),
+                       PIP_NO_INDEX='1', PIP_FIND_LINKS=str(wheels))
+            result = subprocess.run([str(central / 'install.sh')], cwd=base, env=env,
+                                    text=True, capture_output=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            launch = base / 'bin/project-os-v3'
+            result = subprocess.run([str(launch), '--project', str(development), '--configure',
+                                     '--name', 'Project OS v3', '--repo', 'codefusion-repo/project-os-v3'],
+                                    cwd=base, env=env, text=True, capture_output=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            git(development, 'check-ignore', '.project-os/config.json')
+            result = subprocess.run([str(launch), '--workflow', 'implement', '--locator', '1',
+                                     '--objective', 'Corregir el PR'], cwd=development / 'workflows',
+                                    env=env, text=True, capture_output=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            text = next((development / '.project-os/prompts').glob('*.md')).read_text()
+            self.assertIn('**Proyecto:** Project OS v3', text)
+            self.assertIn('codefusion-repo/project-os-v3', text)
+            self.assertIn('**Versión de Project OS:** ' + git(central, 'rev-parse', 'HEAD'), text)
+            self.assertIn('proyecto sin versión fijada', text)
+            self.assertFalse((central / '.project-os').exists())
+            result = subprocess.run([str(launch), '--project', str(central), '--configure',
+                                     '--repo', 'codefusion-repo/project-os-v3'],
+                                    cwd=base, env=env, text=True, capture_output=True)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertFalse((central / '.project-os').exists())
+
     def test_first_use_prepares_and_verifies_local_exclude(self):
         with tempfile.TemporaryDirectory() as temp:
             root = repo(Path(temp) / 'repo')

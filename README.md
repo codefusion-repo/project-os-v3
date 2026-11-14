@@ -4,18 +4,23 @@ Kit Markdown-first con workflows, skills, templates y un wizard para preparar pr
 
 ## Instalar una vez
 
-Para el piloto previo al merge, en Linux o WSL con Git y Python 3.9 o superior, obtén el SHA revisado del draft PR y compruébalo antes de instalar:
+Para el piloto previo al merge, en Linux o WSL con Git y Python 3.9 o superior, consulta el [draft PR](https://github.com/codefusion-repo/project-os-v3/pull/1) y selecciona el SHA completo revisado y aprobado para tu piloto. Compáralo con el head y los checks del PR; si eliges uno anterior, confirma que es la versión que quieres probar. El siguiente ejemplo verifica que el SHA elegido sea un commit alcanzable desde el head actual del PR y que el checkout coincida antes de instalar:
 
 ```bash
-git clone --no-checkout https://github.com/codefusion-repo/project-os-v3.git
-cd project-os-v3
-git checkout --detach 5a7252fdb76afbbd49647838fed059252faf8152 &&
-  test "$(git rev-parse HEAD)" = 5a7252fdb76afbbd49647838fed059252faf8152 &&
+git clone --no-checkout https://github.com/codefusion-repo/project-os-v3.git project-os-v3-central &&
+  cd project-os-v3-central &&
+  git fetch origin refs/pull/1/head:refs/remotes/origin/project-os-pilot &&
+  read -r -p 'SHA completo revisado y aprobado: ' PROJECT_OS_PILOT_SHA &&
+  [[ "$PROJECT_OS_PILOT_SHA" =~ ^[0-9a-f]{40}$ ]] &&
+  git cat-file -e "$PROJECT_OS_PILOT_SHA^{commit}" &&
+  git merge-base --is-ancestor "$PROJECT_OS_PILOT_SHA" refs/remotes/origin/project-os-pilot &&
+  git checkout --detach "$PROJECT_OS_PILOT_SHA" &&
+  test "$(git rev-parse HEAD)" = "$PROJECT_OS_PILOT_SHA" &&
   test -f install.sh &&
   ./install.sh
 ```
 
-El SHA fija la versión revisada para este piloto; consulta el [draft PR](https://github.com/codefusion-repo/project-os-v3/pull/1) para una versión posterior y verifica su SHA antes de sustituirlo. `main` todavía no contiene el instalador. El instalador crea `.venv` aislado con `prompt_toolkit` y `~/.local/bin/project-os-v3`; no usa sudo, paquetes globales ni modifica archivos del shell. Si el destino no está en `PATH`, añade esa carpeta de forma explícita. Si falla la dependencia opcional, informa el fallo y prepara un launcher que usa Python estándar. No sobrescribe un launcher ajeno. Requiere apertura segura de directorios y enlaces duros en el filesystem.
+El bloque usa Bash y se detiene si falla alguna comprobación. La pertenencia al historial del PR no acredita revisión, aprobación ni checks: compruébalos en GitHub para el SHA seleccionado. `main` todavía no contiene el instalador. El instalador crea `.venv` aislado con `prompt_toolkit` y `~/.local/bin/project-os-v3`; no usa sudo, paquetes globales ni modifica archivos del shell. Si el destino no está en `PATH`, añade esa carpeta de forma explícita. Si falla la dependencia opcional, informa el fallo y prepara un launcher que usa Python estándar. No sobrescribe un launcher ajeno. Requiere apertura segura de directorios y enlaces duros en el filesystem.
 
 ## Adaptar un proyecto
 
@@ -24,6 +29,19 @@ project-os-v3 --project /ruta/al/proyecto
 ```
 
 Elige `/adoptar` en la selección de operación. Si ya hay una versión fijada, puedes seleccionar explícitamente otro SHA. El wizard comprueba en GitHub que el SHA objetivo se puede recuperar del repositorio canónico; si no puede verificarlo, genera un borrador marcado como no verificado que exige comprobar el SHA antes de fijarlo. El wizard crea o valida la configuración local cuando Git permite protegerla, muestra un encargo para un agente terminal y permite guardarlo. El agente inspecciona instrucciones existentes, conserva reglas técnicas, sustituye instrucciones operativas antiguas, prepara un único `AGENTS.md` principal con SHA canónico completo y actualiza `.gitignore`. No copia el kit y no crea la configuración privada del dispositivo del PM. Consulta [adopción y migración](docs/ADOPTION.md).
+
+## Desarrollar Project OS con su wizard
+
+Usa una instalación central y un checkout de desarrollo separados. Desde la carpeta que contiene `project-os-v3-central`:
+
+```bash
+git clone --branch work/project-os-v3-mvp https://github.com/codefusion-repo/project-os-v3.git project-os-v3-dev
+project-os-v3 --project "$PWD/project-os-v3-dev" --configure --name 'Project OS v3' --repo codefusion-repo/project-os-v3
+cd project-os-v3-dev
+project-os-v3 --workflow implement --locator 1 --objective 'Corregir el PR'
+```
+
+El último comando detecta la configuración del checkout de desarrollo y guarda el prompt allí, sin crear configuración ni prompts en la instalación central. Examina el PR y el estado de la rama antes de trabajar. La versión de instrucciones proviene del SHA fijado por el proyecto si existe; si no, el prompt identifica el commit de la instalación central y exige verificar su procedencia. La instalación central se excluye de la autodetección y no puede usarse como `--project`; no se admite compartir el mismo checkout para ambos roles. Consulta [adopción](docs/ADOPTION.md#desarrollar-project-os-con-su-wizard).
 
 ## Usar diariamente
 
