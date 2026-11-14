@@ -50,7 +50,7 @@ class Privacy(unittest.TestCase):
             shutil.copy2(ROOT / 'install.sh', central / 'install.sh')
             git(central, 'add', 'install.sh')
             git(central, '-c', 'user.name=Test', '-c', 'user.email=test@example.invalid',
-                'commit', '-qm', 'installer fixture')
+                'commit', '--allow-empty', '-qm', 'installer fixture')
             remote = base / 'central-remote.git'
             subprocess.run(['git', 'clone', '--bare', '-q', str(central), str(remote)], check=True)
             git(central, 'remote', 'set-url', 'origin', 'https://github.com/codefusion-repo/project-os-v3.git')
