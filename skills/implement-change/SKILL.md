@@ -14,7 +14,7 @@ Outcome, criterios de aceptación y repo/archivos pertinentes.
 2. Elegir la solución reversible más simple que cubra criterios; señalar solo trade-offs materiales.
 3. Editar la superficie mínima; no mezclar refactors no solicitados ni secretos.
 4. Ejecutar tests/lint/build pertinentes y revisar diff para detectar regresiones.
-5. Si está autorizado, commitear/pushear y actualizar el **mismo** PR; documentar evidencia real.
+5. La solicitud de implementación autoriza commit y push de los cambios propios y actualización del **mismo** PR o creación de uno draft, salvo restricciones superiores o instrucciones contrarias; ejecutarlos con capacidad y documentar evidencia real.
 
 ## Validación y salida
 Rutas, diff/commit, comandos y resultados, defectos y pendientes.
