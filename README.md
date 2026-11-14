@@ -10,106 +10,106 @@ Kit Markdown-first con workflows, skills, templates y un wizard para preparar pr
 
 En una terminal Bash, antes de ejecutar el instalador, inspecciona el clon y su código:
 
-\`\`\`bash
+```bash
 git --version
 python3 --version
 git clone --branch main https://github.com/codefusion-repo/project-os-v3.git "$HOME/project-os-v3-central"
 cd "$HOME/project-os-v3-central"
 git rev-parse HEAD
 sed -n '1,220p' install.sh
-\`\`\`
+```
 
 Si el código es el esperado, instala y verifica:
 
-\`\`\`bash
+```bash
 ./install.sh
 export PATH="$HOME/.local/bin:$PATH"
 command -v project-os-v3
 project-os-v3 --help
 project-os-v3 --list
-\`\`\`
+```
 
-\`export PATH=...\` agrega el launcher solo a **esta sesión de shell**. Si abres otra terminal y no se encuentra \`project-os-v3\`, repite ese \`export\` o configura tu PATH manualmente. El instalador no modifica \`~/.bashrc\` ni requiere \`sudo\`. \`prompt_toolkit\` es opcional; ante fallo de instalación, el launcher puede usar Python estándar.
+`export PATH=...` agrega el launcher solo a **esta sesión de shell**. Si abres otra terminal y no se encuentra `project-os-v3`, repite ese `export` o configura tu PATH manualmente. El instalador no modifica `~/.bashrc` ni requiere `sudo`. `prompt_toolkit` es opcional; ante fallo de instalación, el launcher puede usar Python estándar.
 
 ### Actualización posterior
 
 Desde el **mismo checkout central** (no desde un proyecto adoptado):
 
-\`\`\`bash
+```bash
 cd "$HOME/project-os-v3-central"
 git status --short
 ./install.sh
 git rev-parse HEAD
-\`\`\`
+```
 
-\`./install.sh\` verifica el origen canónico, permisos, checkout limpio y avance rápido hasta el \`main\` integrado; si no hay red, hay divergencia o archivos ajenos, se detiene sin descartar cambios locales. No actualiza automáticamente al abrir el wizard. Si no encuentra el launcher, comprueba el PATH; si rechaza el checkout, revisa \`git status --short\` y \`git remote -v\` antes de volver a intentarlo. No uses \`reset --hard\`, \`clean -fdx\` ni \`sudo\` como solución.
+`./install.sh` verifica el origen canónico, permisos, checkout limpio y avance rápido hasta el `main` integrado; si no hay red, hay divergencia o archivos ajenos, se detiene sin descartar cambios locales. No actualiza automáticamente al abrir el wizard. Si no encuentra el launcher, comprueba el PATH; si rechaza el checkout, revisa `git status --short` y `git remote -v` antes de volver a intentarlo. No uses `reset --hard`, `clean -fdx` ni `sudo` como solución.
 
-Actualizar el kit **no** modifica \`Project-OS-Version\` de \`AGENTS.md\`, \`.project-os/\` ni prompts de proyectos ya adoptados: esa actualización se solicita por separado con \`/adoptar\`.
+Actualizar el kit **no** modifica `Project-OS-Version` de `AGENTS.md`, `.project-os/` ni prompts de proyectos ya adoptados: esa actualización se solicita por separado con `/adoptar`.
 
 ## Adaptar un proyecto
 
 ### Primer proyecto real
 
-Los siguientes comandos se ejecutan **en la raíz del repositorio Git de tu proyecto**, nunca en \`project-os-v3-central\`. Si no está clonado, clónalo primero con \`git clone https://github.com/OWNER/REPO.git /ruta/al/proyecto\`.
+Los siguientes comandos se ejecutan **en la raíz del repositorio Git de tu proyecto**, nunca en `project-os-v3-central`. Si no está clonado, clónalo primero con `git clone https://github.com/OWNER/REPO.git /ruta/al/proyecto`.
 
-\`\`\`bash
+```bash
 cd /ruta/al/proyecto
 git rev-parse --show-toplevel
 git status --short
 pwd
-\`\`\`
+```
 
-\`$PWD\` significa *Present Working Directory*: la ruta absoluta de la carpeta actual. Usa \`cd\` para situarte en la raíz correcta antes de ejecutar estos comandos. Sustituye \`OWNER/REPO\` por el identificador real del repositorio en GitHub y el nombre por el de tu proyecto:
+`$PWD` significa *Present Working Directory*: la ruta absoluta de la carpeta actual. Usa `cd` para situarte en la raíz correcta antes de ejecutar estos comandos. Sustituye `OWNER/REPO` por el identificador real del repositorio en GitHub y el nombre por el de tu proyecto:
 
-\`\`\`bash
+```bash
 project-os-v3 --project "$PWD" --configure \
   --name "Mi proyecto" \
   --repo OWNER/REPO
 
 project-os-v3 --project "$PWD" --adopt
-\`\`\`
+```
 
-\`--configure\` guarda las preferencias locales protegidas en \`.project-os/config.json\`; \`--adopt\` **genera un prompt**, no crea ni modifica \`AGENTS.md\` directamente. Como alternativa, ejecuta \`project-os-v3 --project "$PWD"\` y selecciona \`/adoptar\` en el menú interactivo.
+`--configure` guarda las preferencias locales protegidas en `.project-os/config.json`; `--adopt` **genera un prompt**, no crea ni modifica `AGENTS.md` directamente. Como alternativa, ejecuta `project-os-v3 --project "$PWD"` y selecciona `/adoptar` en el menú interactivo.
 
 Ubica el encargo generado (destino predeterminado, salvo que hayas elegido uno distinto):
 
-\`\`\`bash
+```bash
 find .project-os/prompts -maxdepth 1 -type f -name 'project-os-prompt-*.md' -print
-\`\`\`
+```
 
-Abre ese archivo y entrégalo a un **agente terminal con acceso autorizado al checkout**. El agente revisa las instrucciones existentes, propone cambios versionados en \`AGENTS.md\` y \`.gitignore\`, fija un SHA completo verificable de \`codefusion-repo/project-os-v3\`, valida y publica sus cambios mediante rama/PR cuando corresponda. El wizard no hace commits, PR, merge ni adopción por su cuenta. No copies el kit al repositorio del proyecto.
+Abre ese archivo y entrégalo a un **agente terminal con acceso autorizado al checkout**. El agente revisa las instrucciones existentes, propone cambios versionados en `AGENTS.md` y `.gitignore`, fija un SHA completo verificable de `codefusion-repo/project-os-v3`, valida y publica sus cambios mediante rama/PR cuando corresponda. El wizard no hace commits, PR, merge ni adopción por su cuenta. No copies el kit al repositorio del proyecto.
 
 ### Comprobar la adopción
 
 Después de que el agente termine, comprueba desde la raíz del proyecto:
 
-\`\`\`bash
+```bash
 git status --short
 git diff -- AGENTS.md .gitignore
 grep '^Project-OS-Version:' AGENTS.md
 git check-ignore -v .project-os/config.json .project-os/prompts/example.md
 git ls-files -- .project-os/
-\`\`\`
+```
 
-Revisa también los **archivos nuevos** indicados por \`git status\` (no aparecen en \`git diff\` si todavía no están rastreados). El SHA de \`Project-OS-Version\` debe ser completo (40 caracteres hexadecimales) y verificable en el repositorio canónico. \`git check-ignore\` debe mostrar la regla que protege las rutas locales; \`git ls-files -- .project-os/\` debe estar vacío. Si hay archivos privados rastreados, detén la publicación y revisa su posible exposición: \`.gitignore\` no los elimina del historial. Consulta los controles avanzados en [docs/ADOPTION.md](docs/ADOPTION.md#archivos-locales-y-protección).
+Revisa también los **archivos nuevos** indicados por `git status` (no aparecen en `git diff` si todavía no están rastreados). El SHA de `Project-OS-Version` debe ser completo (40 caracteres hexadecimales) y verificable en el repositorio canónico. `git check-ignore` debe mostrar la regla que protege las rutas locales; `git ls-files -- .project-os/` debe estar vacío. Si hay archivos privados rastreados, detén la publicación y revisa su posible exposición: `.gitignore` no los elimina del historial. Consulta los controles avanzados en [docs/ADOPTION.md](docs/ADOPTION.md#archivos-locales-y-protección).
 
 ### Primera tarea y PR
 
 Una vez adoptado el proyecto, crea un encargo real para el agente:
 
-\`\`\`bash
+```bash
 project-os-v3 --project "$PWD" --workflow implement \
   --objective "Implementar una tarea concreta del proyecto"
-\`\`\`
+```
 
-Cuando exista un PR, sustituye \`123\` por su número real:
+Cuando exista un PR, sustituye `123` por su número real:
 
-\`\`\`bash
+```bash
 project-os-v3 --project "$PWD" --workflow review_for_close \
   --locator 123 --objective "Revisar este PR"
-\`\`\`
+```
 
-\`review_for_close\` revisa código y checks; solo con autorización explícita **vigente** para ese PR, su merge y el cierre del issue identificado ejecuta el closeout en la misma operación. Sin permiso devuelve PASS pendiente; con defectos, BLOCKED. El selector únicamente prepara el encargo. Esta guía define cómo hacer el piloto, **no afirma que ya se haya ejecutado una adopción real**. Para migraciones, múltiples repositorios y versiones fijadas consulta [docs/ADOPTION.md](docs/ADOPTION.md).
+`review_for_close` revisa código y checks; solo con autorización explícita **vigente** para ese PR, su merge y el cierre del issue identificado ejecuta el closeout en la misma operación. Sin permiso devuelve PASS pendiente; con defectos, BLOCKED. El selector únicamente prepara el encargo. Esta guía define cómo hacer el piloto, **no afirma que ya se haya ejecutado una adopción real**. Para migraciones, múltiples repositorios y versiones fijadas consulta [docs/ADOPTION.md](docs/ADOPTION.md).
 
 ## Desarrollar Project OS con su wizard
 
