@@ -41,6 +41,9 @@ class PromptContent(unittest.TestCase):
             self.assertIn('lee su AGENTS.md', text)
             self.assertIn('verifica la referencia', text)
             self.assertIn('informa el límite sin inventar', text)
+            self.assertIn('la solicitud de implementación autoriza commit, push, PR draft', text)
+            self.assertIn('sin pedir autorización redundante', text)
+            self.assertIn('merge, cierre, release y deploy requieren autorización específica', text)
             self.assertIn('Documentos locales distintos de la referencia:** PROJECT_OS.md', text)
             self.assertNotIn('Cambio local para prueba.', text)
 

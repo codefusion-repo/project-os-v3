@@ -410,7 +410,8 @@ def render(operation, selected, context, locator, operations, skills, templates,
                 'Inspecciona su estado y unidad de trabajo pertinente; realiza la operación autorizada y valida lo realizado. '
                 'Si una referencia numérica es ambigua entre repositorios, resuélvela con fuentes vivas y pregunta solo si persiste una ambigüedad material. '
                 'Reutiliza el issue o PR existente de cada repositorio y registra evidencia y fallos reales. Para cambios versionados destinados a integración, '
-                'prepara y publica un commit significativo solo cuando exista autorización y capacidad; verifica el SHA y los checks. '
+                'la solicitud de implementación autoriza commit, push, PR draft y registro de sus cambios dentro del alcance, salvo restricciones superiores o instrucciones contrarias; '
+                'publícalos con capacidad sin pedir autorización redundante y verifica el SHA y los checks. '
                 'Si no puedes publicarlo, informa trazabilidad pendiente. Una consulta de solo lectura no requiere commit.', '',
                 '**Documentos:** ' + ', '.join(f'`{path}`' for path in paths), ''])
     text = '\n'.join(out) + '\n'
