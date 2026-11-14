@@ -1,0 +1,22 @@
+name: Selector and structure
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run stdlib tests
+        run: python3 -m unittest discover -s tests -v
+      - name: Test optional enhanced terminal
+        run: |
+          python3 -m venv /tmp/project-os-ci-venv
+          /tmp/project-os-ci-venv/bin/python -m pip install 'prompt_toolkit==3.0.53'
+          /tmp/project-os-ci-venv/bin/python -m unittest discover -s tests -v
