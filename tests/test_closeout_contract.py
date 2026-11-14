@@ -11,6 +11,11 @@ connector double for ambiguous failures and never record secrets. Record each
 result and evidence separately; without an isolated environment mark untested.
 Also exercise an identified issue with explicit close GO, already-closed issue,
 open issue without GO, missing identification and unavailable close capability.
+For one scoped authorization verify review, ready, guarded merge and completed
+issue happen in one operation, without a second prompt. Verify PASS alone has no
+mutation; failed CI, findings or changed HEAD yield BLOCKED. For missing connector
+inspect guarded fallback; for already merged/closed and ambiguous timeouts verify
+no duplicated action. Check cleanup ancestry and preservation of unrelated data.
 """
 import unittest
 from pathlib import Path
@@ -36,7 +41,9 @@ class BrowserCloseoutContract(unittest.TestCase):
             with self.subTest(phrase=phrase):
                 self.assertIn(phrase, closeout)
         for phrase in ('issue vinculado y estado', 'closed/completed',
-                       'Si ya está cerrado no repitas', 'sin otra confirmación'):
+                       'Si ya está cerrado no repitas', 'sin otra confirmación',
+                       'PASS / CLOSEOUT PENDIENTE DE AUTORIZACIÓN', '**BLOCKED**',
+                       'previa verificable o dada en esta solicitud', 'ancestry'):
             self.assertIn(phrase, closeout)
 
     def test_branch_cleanup_safe_command_is_distinct_from_prohibition(self):

@@ -33,7 +33,7 @@ git(kit,'-c','user.name=Fixture','-c','user.email=fixture@example.invalid','comm
 sha=git(kit,'rev-parse','HEAD')
 run('crear remoto controlado', ['git', 'clone', '--bare', '-q', str(kit), str(base/'remote.git')])
 git(kit,'remote','add','origin','https://github.com/codefusion-repo/project-os-v3.git')
-canonical_sha=git(source,'rev-parse','HEAD')
+canonical_sha=git(source,'rev-parse','origin/main')
 git(kit,'fetch','--no-tags',str(source),canonical_sha)
 git(project,'init','-q')
 (project/'AGENTS.md').write_text('Instrucciones v2 antiguas.\nRegla técnica: ejecutar pruebas locales.\n')
