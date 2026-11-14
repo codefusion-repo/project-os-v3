@@ -46,11 +46,21 @@ class Privacy(unittest.TestCase):
             for target in (central, development):
                 subprocess.run(['git', 'clone', '--quiet', '--no-hardlinks', str(ROOT), str(target)],
                                check=True, capture_output=True)
+            git(central, 'switch', '-C', 'main')
+            shutil.copy2(ROOT / 'install.sh', central / 'install.sh')
+            git(central, 'add', 'install.sh')
+            git(central, '-c', 'user.name=Test', '-c', 'user.email=test@example.invalid',
+                'commit', '--allow-empty', '-qm', 'installer fixture')
+            remote = base / 'central-remote.git'
+            subprocess.run(['git', 'clone', '--bare', '-q', str(central), str(remote)], check=True)
+            git(central, 'remote', 'set-url', 'origin', 'https://github.com/codefusion-repo/project-os-v3.git')
             wheels = base / 'wheels'
             wheels.mkdir()
             wheel(wheels)
             env = dict(os.environ, HOME=str(base), PROJECT_OS_BIN_DIR=str(base / 'bin'),
-                       PIP_NO_INDEX='1', PIP_FIND_LINKS=str(wheels))
+                       PIP_NO_INDEX='1', PIP_FIND_LINKS=str(wheels), GIT_CONFIG_COUNT='1',
+                       GIT_CONFIG_KEY_0=f'url.{remote.as_uri()}.insteadOf',
+                       GIT_CONFIG_VALUE_0='https://github.com/codefusion-repo/project-os-v3.git')
             result = subprocess.run([str(central / 'install.sh')], cwd=base, env=env,
                                     text=True, capture_output=True)
             self.assertEqual(result.returncode, 0, result.stderr)
@@ -98,7 +108,7 @@ class Privacy(unittest.TestCase):
                 save(root, 'one', 'org/one')
             self.assertEqual(config.read_text(), 'not json and confidential')
             external = Path(temp) / 'external'
-            result = execute('--project', root, '--workflow', 'review', '--output-dir', external)
+            result = execute('--project', root, '--workflow', 'review_for_close', '--output-dir', external)
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertIn('bajo seguimiento', result.stderr)
             self.assertNotIn('confidential', result.stdout + result.stderr)
@@ -155,7 +165,7 @@ class Privacy(unittest.TestCase):
             config.write_text(json.dumps({'version': 2, 'repositories': ['org/a']}))
             before = config.read_bytes()
             external = base / 'external'
-            result = execute('--project', root, '--workflow', 'review', '--output-dir', external)
+            result = execute('--project', root, '--workflow', 'review_for_close', '--output-dir', external)
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertIn('no está protegida', result.stderr)
             self.assertEqual(config.read_bytes(), before)
@@ -214,7 +224,7 @@ class Projects(unittest.TestCase):
             save(a, 'a', 'org/a')
             save(b, 'b', 'org/b')
             for root, context in ((a, 'context A'), (b, 'context B')):
-                result = execute('--project', root, '--workflow', 'review', '--objective', context)
+                result = execute('--project', root, '--workflow', 'review_for_close', '--objective', context)
                 self.assertEqual(result.returncode, 0, result.stderr)
             pa = next((a / '.project-os/prompts').glob('*.md'))
             pb = next((b / '.project-os/prompts').glob('*.md'))
@@ -268,7 +278,7 @@ class Projects(unittest.TestCase):
 
     def test_remote_without_checkout_only_previews(self):
         with tempfile.TemporaryDirectory() as temp:
-            result = execute('--repo', 'org/remote', '--workflow', 'review', cwd=temp)
+            result = execute('--repo', 'org/remote', '--workflow', 'review_for_close', cwd=temp)
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertIn('Solo vista previa', result.stdout)
             self.assertEqual(list(Path(temp).iterdir()), [])
@@ -376,7 +386,7 @@ class Versions(unittest.TestCase):
             root = repo(Path(temp) / 'repo')
             save(root, 'a', 'org/a')
             (root / 'AGENTS.md').write_text('codefusion-repo/project-os-v3\nProject-OS-Version: ' + sha + '\n')
-            result = execute('--project', root, '--workflow', 'review')
+            result = execute('--project', root, '--workflow', 'review_for_close')
             self.assertEqual(result.returncode, 0, result.stderr)
             text = next((root / '.project-os/prompts').glob('*.md')).read_text()
             self.assertIn(sha, text)
@@ -396,7 +406,7 @@ class Versions(unittest.TestCase):
             project = repo(base / 'project')
             save(project, 'a', 'org/a')
             (project / 'AGENTS.md').write_text('codefusion-repo/project-os-v3\nProject-OS-Version: ' + old + '\n')
-            cmd = [sys.executable, str(kit / 'tools/select.py'), '--project', str(project), '--workflow', 'review']
+            cmd = [sys.executable, str(kit / 'tools/select.py'), '--project', str(project), '--workflow', 'review_for_close']
             (kit / 'unrelated.txt').write_text('cambio ajeno')
             clean_operational = subprocess.run(cmd, text=True, capture_output=True)
             self.assertEqual(clean_operational.returncode, 0, clean_operational.stderr)

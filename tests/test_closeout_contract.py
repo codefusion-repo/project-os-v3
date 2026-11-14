@@ -9,6 +9,13 @@ fallback plus local cleanup. Verify no unauthorized mutation, atomic HEAD guard,
 no duplicate entries, safe commands and confirmed outcomes. Use a controlled
 connector double for ambiguous failures and never record secrets. Record each
 result and evidence separately; without an isolated environment mark untested.
+Also exercise an identified issue with explicit close GO, already-closed issue,
+open issue without GO, missing identification and unavailable close capability.
+For one scoped authorization verify review, ready, guarded merge and completed
+issue happen in one operation, without a second prompt. Verify PASS alone has no
+mutation; failed CI, findings or changed HEAD yield BLOCKED. For missing connector
+inspect guarded fallback; for already merged/closed and ambiguous timeouts verify
+no duplicated action. Check cleanup ancestry and preservation of unrelated data.
 """
 import unittest
 from pathlib import Path
@@ -27,12 +34,17 @@ class BrowserCloseoutContract(unittest.TestCase):
                              f'Complete adapter: {len(self.adapter)} Unicode code points')
 
     def test_closeout_retains_core_safety_in_paste_artifact(self):
-        closeout = self.adapter.split('## Closeout de un PR', 1)[1].split('## Instrucciones', 1)[0]
-        for phrase in ('GO explícito', 'HEAD completo', 'checks', 'permisos',
+        closeout = self.adapter.split('## Review y closeout en una operación', 1)[1].split('## Instrucciones', 1)[0]
+        for phrase in ('autorización explícita', 'HEAD completo', 'checks', 'permisos',
                        'expected_head_sha', '--match-head-commit', 'fallo ambiguo',
-                       'issue separado', 'Sin GO, ninguna mutación'):
+                       'issue vinculado', 'ninguna mutación no concedida'):
             with self.subTest(phrase=phrase):
                 self.assertIn(phrase, closeout)
+        for phrase in ('issue vinculado y estado', 'closed/completed',
+                       'Si ya está cerrado no repitas', 'sin otra confirmación',
+                       'PASS / CLOSEOUT PENDIENTE DE AUTORIZACIÓN', '**BLOCKED**',
+                       'previa verificable o dada en esta solicitud', 'ancestry'):
+            self.assertIn(phrase, closeout)
 
     def test_branch_cleanup_safe_command_is_distinct_from_prohibition(self):
         # Do not case-fold: git branch -D is force deletion, not git branch -d.
@@ -44,7 +56,7 @@ class BrowserCloseoutContract(unittest.TestCase):
         self.assertIn('si falla, detente y conserva la rama', self.adapter)
 
     def test_close_and_review_route_to_adapter(self):
-        for name in ('close', 'review'):
+        for name in ('review_for_close',):
             self.assertIn('../adapters/browser-chat.md',
                           (ROOT / 'workflows' / f'{name}.md').read_text())
 

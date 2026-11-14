@@ -8,7 +8,7 @@ Complementa [V3_SPEC.md](V3_SPEC.md). La decisión consolidada de instalación c
 
 ## Templates operativos GitHub
 
-La biblioteca se amplía de diez a catorce templates: [merge](../templates/merge.md), [close](../templates/close.md), [comment](../templates/comment.md) y [review-comment](../templates/review-comment.md) preparan mensajes y acciones con referencias y resultados verificados. Se integran con implement, review, close y github-traceability y los agentes los utilizan cuando aportan valor, sin selección manual en el wizard. Preparación, ejecución y confirmación son distintas; merge y cierre requieren autorización específica. Se reutilizan la unidad y conversación existentes.
+La biblioteca se amplía de diez a catorce templates: [merge](../templates/merge.md), [close](../templates/close.md), [comment](../templates/comment.md) y [review-comment](../templates/review-comment.md) preparan mensajes y acciones con referencias y resultados verificados. Se integran con implement, review_for_close y github-traceability y los agentes los utilizan cuando aportan valor, sin selección manual en el wizard. Preparación, ejecución y confirmación son distintas; merge y cierre requieren autorización específica. Se reutilizan la unidad y conversación existentes.
 
 ## Garantías esenciales
 
@@ -40,7 +40,7 @@ Editar recorre secuencialmente los campos mostrando valores actuales; Enter cons
 
 ## Reviews de browser chat
 
-El [adapter browser](../adapters/browser-chat.md), [review](../workflows/review.md) y [github-traceability](../skills/github-traceability/SKILL.md) distinguen `review.read` y `review.publish`, reutilizan la autorización previa efectiva de su alcance, publican reviews materiales como comentarios nuevos verificables y previenen duplicados al reintentar. El prompt de corrección solo referencia repo, PR, SHA y URL confirmada; ante falta de permiso o error ambiguo se entrega review/borrador con `review no publicado` y sin URL inventada.
+El [adapter browser](../adapters/browser-chat.md), [review_for_close](../workflows/review_for_close.md) y [github-traceability](../skills/github-traceability/SKILL.md) distinguen `review.read` y `review.publish`, reutilizan la autorización previa efectiva de su alcance, publican reviews materiales como comentarios nuevos verificables y previenen duplicados al reintentar. El prompt de corrección solo referencia repo, PR, SHA y URL confirmada; ante falta de permiso o error ambiguo se entrega review/borrador con `review no publicado` y sin URL inventada.
 
 ## Rediseño del wizard según la experiencia de v2
 

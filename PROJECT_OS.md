@@ -13,11 +13,11 @@ Para un prototipo, [implement](workflows/implement.md) con [rapid-prototype](ski
 
 ## Trazabilidad GitHub obligatoria
 
-Toda implementación, corrección o modificación versionada destinada a integrarse en un proyecto GitHub debe dejar evidencia remota identificable. Una solicitud de implementar o corregir en el repositorio autoriza al agente terminal a preparar y publicar sus propios cambios en una rama, abrir un PR draft si no existe uno para el resultado y registrar la ejecución, siempre dentro del alcance solicitado y sujeto a restricciones superiores, instrucciones contrarias y permisos efectivos. No pidas una autorización redundante para esos pasos. Aplica [github-traceability](skills/github-traceability/SKILL.md), también al operar directamente con Markdown. El kit o la capacidad por sí solos no conceden autorización; merge, cierre, release y deploy requieren autorización separada.
+Toda implementación, corrección o modificación versionada destinada a integrarse en un proyecto GitHub debe dejar evidencia remota identificable. Una solicitud de implementar o corregir en el repositorio autoriza al agente terminal a preparar y publicar sus propios cambios en una rama, abrir un PR draft si no existe uno para el resultado y registrar la ejecución, siempre dentro del alcance solicitado y sujeto a restricciones superiores, instrucciones contrarias y permisos efectivos. No pidas una autorización redundante para esos pasos. Aplica [github-traceability](skills/github-traceability/SKILL.md), también al operar directamente con Markdown. El kit o la capacidad por sí solos no conceden autorización; merge, cierre, release y deploy requieren autorización explícita para cada acción, previa o en la misma solicitud, y no otra confirmación si sigue vigente.
 
 El procedimiento para commits, checks, comentario nuevo por cada ejecución material autorizada —incluidos intentos y fallas—, borrador y trazabilidad pendiente está en la skill base; no edites historia. La excepción para experimentos locales descartables y la publicación de reviews se definen allí.
 
-En closeout de un PR desde browser chat, el [adapter](adapters/browser-chat.md#closeout-de-un-pr) concreta la ejecución autorizada y la salida mínima; el merge puede aportar la trazabilidad suficiente sin comentario redundante.
+El workflow [review_for_close](workflows/review_for_close.md) revisa y ejecuta el closeout autorizado en un recorrido; el [adapter](adapters/browser-chat.md#review-y-closeout-en-una-operación) concreta sus controles y salida. El merge puede aportar trazabilidad suficiente sin comentario redundante.
 
 ## Selección de templates
 

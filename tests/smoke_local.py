@@ -27,16 +27,21 @@ def run(label, argv, cwd=None, env=None):
     return p.stdout.strip()
 def git(root,*args):
     return run('git '+args[0], ['git','-C',str(root),*args])
-git(kit,'init','-q')
+git(kit,'init','-q','-b','main')
 git(kit,'add','.')
 git(kit,'-c','user.name=Fixture','-c','user.email=fixture@example.invalid','commit','-qm','fixture kit')
 sha=git(kit,'rev-parse','HEAD')
-canonical_sha=git(source,'rev-parse','HEAD')
+run('crear remoto controlado', ['git', 'clone', '--bare', '-q', str(kit), str(base/'remote.git')])
+git(kit,'remote','add','origin','https://github.com/codefusion-repo/project-os-v3.git')
+canonical_sha=git(source,'rev-parse','origin/main')
 git(kit,'fetch','--no-tags',str(source),canonical_sha)
 git(project,'init','-q')
 (project/'AGENTS.md').write_text('Instrucciones v2 antiguas.\nRegla técnica: ejecutar pruebas locales.\n')
 (project/'.env').write_text('SYNTHETIC=PRIVATE_TEST_VALUE_DO_NOT_PUBLISH\n')
-env=dict(os.environ, HOME=str(home), PROJECT_OS_BIN_DIR=str(home/'bin'), PIP_DISABLE_PIP_VERSION_CHECK='1')
+env=dict(os.environ, HOME=str(home), PROJECT_OS_BIN_DIR=str(home/'bin'), PIP_DISABLE_PIP_VERSION_CHECK='1',
+         PIP_NO_INDEX='1', GIT_CONFIG_COUNT='1',
+         GIT_CONFIG_KEY_0=f'url.{(base/"remote.git").as_uri()}.insteadOf',
+         GIT_CONFIG_VALUE_0='https://github.com/codefusion-repo/project-os-v3.git')
 run('install real', [str(kit/'install.sh')], cwd=base, env=env)
 launch=home/'bin/project-os-v3'
 run('launcher desde /', [str(launch),'--help'],cwd='/',env=env)
