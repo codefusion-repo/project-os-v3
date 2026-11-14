@@ -1,5 +1,7 @@
 # Validación del MVP
 
+> **Archivo histórico de evidencias.** Las tablas y comandos siguientes documentan ejecuciones realizadas en distintas etapas y SHAs; **no son una guía de uso actual** ni representan una prueba de adopción real. Las referencias históricas a las operaciones `review` y `close` se conservan fielmente: en la versión actual ambas fueron sustituidas por `review_for_close`. Usa el [quickstart vigente](../README.md#instalar-y-actualizar) para instalar y adoptar. El CI de `main` tras el [PR #5](https://github.com/codefusion-repo/project-os-v3/pull/5) pasó [92 pruebas](https://github.com/codefusion-repo/project-os-v3/actions/runs/43543120899); la adopción integral en el dispositivo del PM y en un proyecto piloto real continúa pendiente.
+
 Resultados observados al reconstruir el selector, en Linux con Python 3.12.13:
 
 | Comando | Exit | Resultado |
