@@ -74,14 +74,32 @@ jobs:
         run: ./local-bridge/tests/test_install_wrapper.ps1
 
   oci-audit:
+    # Retain the legacy check name; it cannot pass unless both candidate replicas pass.
+    needs: [alpine-fixture-only]
+    if: always()
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
-      - name: Audit pinned public fixture without running it
-        run: bash local-bridge/scripts/ci-oci-audit.sh
+      - name: Test original rejection evaluator
+        run: python3 -m unittest discover -s local-bridge/scripts -p test_oci_original_control.py -v
+      - name: Prove exact rejection of original public fixture without executing it
+        run: bash local-bridge/scripts/ci-oci-original-control.sh
+      - name: Preserve original scanner report and exit evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: original-oci-rejection-evidence
+          path: ${{ runner.temp }}/lb-original-oci-evidence/
+          if-no-files-found: error
+          retention-days: 90
+      - name: Require both fixture-only replicas even for legacy check
+        if: always()
+        env:
+          CANDIDATE: ${{ needs.alpine-fixture-only.result }}
+        run: test "$CANDIDATE" = success
 
   oci-comparison:
     runs-on: ubuntu-24.04
@@ -169,3 +187,22 @@ jobs:
           path: ${{ runner.temp }}/lb-oci-evidence/
           if-no-files-found: error
           retention-days: 90
+
+  oci-acceptance:
+    # PM-approved CI-only stdlib fixture; no local binding or general execution.
+    needs: [alpine-fixture-only, alpine-residual, oci-audit]
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Require both candidate replicas and both negative controls
+        env:
+          CANDIDATE: ${{ needs.alpine-fixture-only.result }}
+          RESIDUAL: ${{ needs.alpine-residual.result }}
+          ORIGINAL: ${{ needs.oci-audit.result }}
+        run: |
+          set -eu
+          test "$CANDIDATE" = success
+          test "$RESIDUAL" = success
+          test "$ORIGINAL" = success
+          echo 'OCI_ACCEPTANCE_PASS scope=ci-fixed-stdlib-fixture sha256:0c8e915d597f997fc64b7ddfc8e25de93873d06126faccbee1f46446deb30cfb'

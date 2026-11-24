@@ -16,10 +16,13 @@ tar -xzf "$archive" trivy
 image=docker.io/library/python@sha256:191083cdf6c7bda8c76158983163ead5d5cf7b77cf3033e805bb0f5296f51b4b
 # Isolated HOME/cache and no inherited registry or GitHub credentials.
 env -i PATH=/usr/bin:/bin HOME="$work/home" LC_ALL=C ./trivy --version
+scanner_rc=0
 env -i PATH=/usr/bin:/bin HOME="$work/home" LC_ALL=C ./trivy --cache-dir "$work/cache" image \
   --image-src remote --platform linux/amd64 --scanners vuln --pkg-types os,library \
   --ignorefile /dev/null --list-all-pkgs --no-progress --timeout 8m --format json \
-  --output "$work/report.json" "$image"
+  --output "$work/report.json" "$image" || scanner_rc=$?
+printf '%s\n' "$scanner_rc" > "$work/scanner-exit.txt"
+[ "$scanner_rc" = 0 ] || exit "$scanner_rc"
 env -i PATH=/usr/bin:/bin HOME="$work/home" LC_ALL=C ./trivy --cache-dir "$work/cache" --version
 python3 - "$work/report.json" "$image" <<'PY'
 import collections, json, sys
