@@ -145,6 +145,7 @@ fi
 [ "$scanner_rc" = 0 ] || exit 1
 [ -s "$evidence_dir/report.json" ] || exit 1
 "${scan_env[@]}" "$work/trivy" --cache-dir "$work/cache" --version | tee "$evidence_dir/scanner-version.txt"
+cp -- "$work/cache/db/metadata.json" "$evidence_dir/db-metadata.json"
 # Review every finding against the public Alpine v3.24 secdb. Never change the scan gate.
 for section in main community; do
   curl --fail --silent --show-error --proto '=https' --max-time 120 --max-filesize 10000000 -o "$work/$section.json" "https://secdb.alpinelinux.org/v3.24/$section.json"
@@ -164,7 +165,7 @@ PY
 printf '%s\n' "$audit" > "$evidence_dir/audit-exit.txt"
 printf '%s\n' "$digest" > "$evidence_dir/manifest.txt"
 if [ "$mode" != baseline ]; then
-  python3 "$repo/local-bridge/scripts/oci_control.py" "$work/report.json" "$work/oci@$digest" "$digest" "$mode" "$work/after" "$scanner_rc" | tee "$evidence_dir/control.txt"
+  python3 "$repo/local-bridge/scripts/oci_control.py" "$work/report.json" "$work/oci@$digest" "$digest" "$mode" "$work/after" "$scanner_rc" "$evidence_dir/db-metadata.json" | tee "$evidence_dir/control.txt"
 fi
 if [ "$mode" = residual ]; then
   # Success here is the negative test, not the vulnerable image audit.

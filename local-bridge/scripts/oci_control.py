@@ -1,6 +1,7 @@
 """CI evidence gate: rejected residual is a negative control, never an approved image."""
 import collections
 import hashlib
+from datetime import datetime, timedelta, timezone
 import json
 from pathlib import Path
 import re
@@ -32,6 +33,25 @@ def unique(pairs):
             raise ValueError("Duplicate JSON key")
         obj[key] = value
     return obj
+
+
+def validate_db(metadata, now):
+    if type(metadata.get("Version")) is not int or metadata["Version"] != 2:
+        raise ValueError("Unexpected scanner DB schema")
+    def timestamp(key):
+        value = metadata.get(key)
+        if not isinstance(value, str):
+            raise ValueError("Missing scanner DB timestamp")
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            raise ValueError("Scanner DB timestamp has no timezone")
+        return parsed
+    updated, downloaded, expires = (timestamp(key) for key in ("UpdatedAt", "DownloadedAt", "NextUpdate"))
+    if not updated <= downloaded <= now < expires:
+        raise ValueError("Stale or inconsistent scanner DB metadata")
+    if now - updated > timedelta(hours=24) or now - downloaded > timedelta(hours=1):
+        raise ValueError("Scanner DB freshness bound exceeded")
+    return {"updated": updated.isoformat(), "downloaded": downloaded.isoformat(), "next_update": expires.isoformat()}
 
 
 def evaluate(report, image, manifest, mode, expected_inventory, scanner_rc):
@@ -81,12 +101,17 @@ def evaluate(report, image, manifest, mode, expected_inventory, scanner_rc):
 
 
 def main():
-    path, image, manifest, mode, inventory, rc = sys.argv[1:]
+    path, image, manifest, mode, inventory, rc, db_path = sys.argv[1:]
     raw = Path(path).read_bytes()
     if not raw or len(raw) > 20_000_000:
         raise ValueError("Missing or oversized report")
     result = evaluate(json.loads(raw, object_pairs_hook=unique), image, manifest, mode,
                       Path(inventory).read_text(), int(rc))
+    db_raw = Path(db_path).read_bytes()
+    if not db_raw or len(db_raw) > 65536:
+        raise ValueError("Invalid scanner DB metadata")
+    result["db"] = validate_db(json.loads(db_raw, object_pairs_hook=unique), datetime.now(timezone.utc))
+    result["db_metadata_sha256"] = hashlib.sha256(db_raw).hexdigest()
     result["report_sha256"] = hashlib.sha256(raw).hexdigest()
     print("OCI_CONTROL_DECISION", json.dumps(result, sort_keys=True))
 

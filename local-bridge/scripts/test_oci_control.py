@@ -1,6 +1,7 @@
 import copy
+from datetime import datetime, timedelta, timezone
 import unittest
-from oci_control import evaluate, EXPECTED, RESIDUAL, FIXTURE
+from oci_control import evaluate, EXPECTED, RESIDUAL, FIXTURE, validate_db
 
 
 class OCIControlTests(unittest.TestCase):
@@ -62,3 +63,17 @@ class OCIControlTests(unittest.TestCase):
         self.report["Results"][0]["Vulnerabilities"] = [{"VulnerabilityID": "new", "PkgName": "a", "InstalledVersion": "1-r0", "Severity": "LOW"}]
         with self.assertRaises(ValueError):
             evaluate(self.report, image, FIXTURE, "fixture-only", "a-1-r0\n", 0)
+
+    def test_db_freshness_and_missing_metadata(self):
+        now = datetime(2026, 11, 24, 18, tzinfo=timezone.utc)
+        db = {"Version": 2, "UpdatedAt": (now-timedelta(hours=5)).isoformat(),
+              "DownloadedAt": (now-timedelta(minutes=1)).isoformat(),
+              "NextUpdate": (now+timedelta(hours=19)).isoformat()}
+        self.assertEqual(validate_db(db, now)["updated"], db["UpdatedAt"])
+        for key, value in (("Version", 1), ("NextUpdate", now.isoformat()),
+                           ("UpdatedAt", (now-timedelta(hours=25)).isoformat()),
+                           ("DownloadedAt", (now-timedelta(hours=2)).isoformat()),
+                           ("DownloadedAt", (now+timedelta(seconds=1)).isoformat()),
+                           ("UpdatedAt", "2026-11-24T13:00:00"), ("NextUpdate", None)):
+            with self.subTest(key=key, value=value), self.assertRaises(ValueError):
+                validate_db(dict(db, **{key:value}), now)
