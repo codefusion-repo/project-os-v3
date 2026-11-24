@@ -87,3 +87,12 @@ class VerticalTests(unittest.TestCase):
         with self.assertRaises(PermissionError):
             local_jobs(other,existing=True)
         self.assertEqual(list(other.iterdir()),[])
+
+    def test_fixture_quota(self):
+        from project_os_bridge.core import QueueLimitError
+        first=self.submit("first")
+        for n in range(7):
+            self.submit(str(n))
+        self.assertEqual(first,self.submit("first"))
+        with self.assertRaises(QueueLimitError):
+            self.submit("ninth")

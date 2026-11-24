@@ -86,6 +86,9 @@ class Jobs:
             if c.execute("SELECT count(*) FROM jobs WHERE principal=? AND state IN ('QUEUED','RUNNING')",
                          (principal,)).fetchone()[0] >= 32:
                 raise QueueLimitError("ACTIVE_JOB_LIMIT")
+            if workflow == "git_fixture_check" and c.execute(
+                    "SELECT count(*) FROM jobs WHERE workflow='git_fixture_check'").fetchone()[0] >= 8:
+                raise QueueLimitError("FIXTURE_STORAGE_LIMIT")
             job_id = uuid.uuid4().hex
             stamp = now()
             c.execute("INSERT INTO jobs VALUES(?,?,?,?,?,?,?,?,?)",

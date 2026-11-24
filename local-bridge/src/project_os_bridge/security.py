@@ -52,6 +52,7 @@ class RequestGate:
         self.limit=limit
         self.window=deque()
         self.active=0
+        self.last_rejection=float("-inf")
         self.lock=threading.Lock()
 
     async def __call__(self,scope,receive,send):
@@ -66,13 +67,17 @@ class RequestGate:
             if allowed:
                 self.window.append(now)
                 self.active+=1
+            record_rejection=not allowed and now-self.last_rejection>=60
+            if record_rejection:
+                self.last_rejection=now
         # Check audit availability before forwarding any admitted request.
         # A 503 here is fail-closed; audit saturation requires local maintenance.
         if not allowed:
-            try:
-                self.audit.record(429)
-            except (OSError,ValueError):
-                pass
+            if record_rejection:
+                try:
+                    self.audit.record(429)
+                except (OSError,ValueError):
+                    pass
             await JSONResponse({"error":"rate_limited"},status_code=429,
                                headers={"Retry-After":"60"})(scope,receive,send)
             return

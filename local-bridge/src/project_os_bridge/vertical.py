@@ -1,4 +1,4 @@
-"""Locally opted-in deterministic disposable Git workflow, not exposed via MCP."""
+"""Deterministic disposable Git workflow; local image approval required."""
 import argparse
 import json
 import os
@@ -78,7 +78,7 @@ def bind_image(jobs, image):
     with exclusive_worker(jobs):
         if not os.path.lexists(path):
             with jobs.transaction() as conn:
-                if conn.execute("SELECT 1 FROM jobs LIMIT 1").fetchone():
+                if conn.execute("SELECT 1 FROM jobs WHERE workflow='git_fixture_check' LIMIT 1").fetchone():
                     raise PermissionError("Legacy state has no bound image; use a new directory")
             fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY | os.O_NOFOLLOW, 0o600)
             with os.fdopen(fd, "w", encoding="utf-8") as file:

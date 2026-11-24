@@ -19,7 +19,7 @@ def exclusive_worker(jobs: Jobs):
         os.close(fd)
 
 
-def run_pending(jobs: Jobs, *, fixture_image=None, enabled=lambda: True):
+def run_pending(jobs: Jobs, *, fixture_image=None, enabled=lambda: True, fixture_allowed=lambda: True):
     """Drain queued disposable jobs, no shell, no repo access."""
     with exclusive_worker(jobs):
         jobs.recover_interrupted()
@@ -34,8 +34,11 @@ def run_pending(jobs: Jobs, *, fixture_image=None, enabled=lambda: True):
                     result = jobs.probe.read()
                     state = "SUCCEEDED"
                 elif row["workflow"] == "git_fixture_check":
-                    from .vertical import run_git_fixture
-                    state, result = run_git_fixture(jobs, row, fixture_image)
+                    if not fixture_allowed():
+                        state, result = "BLOCKED", {"reason":"FIXTURE_ACCESS_REVOKED"}
+                    else:
+                        from .vertical import run_git_fixture
+                        state, result = run_git_fixture(jobs, row, fixture_image)
                 else:
                     raise ValueError("Unknown handler")
             except Exception:

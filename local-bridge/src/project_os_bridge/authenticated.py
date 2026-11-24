@@ -19,9 +19,22 @@ from .core import Jobs, Policy
 from .worker import run_pending
 from .security import RequestGate, Audit
 from .github_fixture import SyntheticGitHubReader
+from .vertical import OPERATIONS, bind_image
+from .isolated import IMAGE
+from .workos_auth import private_file
 
 
-def build_server(verifier, jobs, fixture_reader=None):
+def fixture_enabled(verifier, image):
+    if not image or not verifier.enabled():
+        return False
+    try:
+        path = verifier.state_dir / "fixture-image"
+        return private_file(path).st_size <= 1024 and path.read_text(encoding="utf-8") == image + "\n"
+    except (OSError, ValueError):
+        return False
+
+
+def build_server(verifier, jobs, fixture_reader=None, *, fixture_image=None):
     mcp = MCPServer("Project OS authenticated disposable jobs",
                     token_verifier=verifier,
                     auth=AuthSettings(issuer_url=AnyHttpUrl(verifier.issuer),
@@ -40,17 +53,32 @@ def build_server(verifier, jobs, fixture_reader=None):
     def health() -> dict:
         """Report authenticated disposable service status."""
         principal()
-        return {"status":"ready","caller_identity_verified":True,"repository_access":False,"mode":"authenticated-disposable"}
+        return {"status":"ready","caller_identity_verified":True,"repository_access":False,"mode":"authenticated-disposable",
+                "git_fixture_available":fixture_enabled(verifier, fixture_image)}
 
     @mcp.tool(annotations=write)
     def submit_probe_job(request_key: str) -> dict:
         """Submit the fixed read-only probe_check job; no user commands or paths."""
         return {"job_id":jobs.submit(principal(),"disposable","probe_check",request_key)}
 
+    if fixture_image is not None:
+        @mcp.tool(annotations=write)
+        def submit_git_fixture(request_key: str) -> dict:
+            """Run only the registered disposable Git/Podman fixture; no paths, code or image arguments."""
+            actor = principal()
+            if not fixture_enabled(verifier, fixture_image):
+                raise PermissionError("DENIED")
+            return {"job_id":jobs.submit(actor,"disposable","git_fixture_check",request_key)}
+
     @mcp.tool(annotations=read)
     def get_job_status(job_id: str) -> dict:
         """Read the caller's disposable job result."""
         return jobs.get(principal(),job_id)
+
+    @mcp.tool(annotations=read)
+    def get_job_evidence(job_id: str) -> dict:
+        """Read the caller's persisted result and transitions; never execute a job."""
+        return jobs.evidence(principal(),job_id)
 
     @mcp.tool(annotations=write)
     def cancel_job(job_id: str) -> dict:
@@ -92,9 +120,9 @@ class LocalAuthorizationMiddleware:
         await self.app(scope, receive, send)
 
 
-def build_http_app(verifier, jobs, fixture_reader=None, *, audit=None, limit=120):
+def build_http_app(verifier, jobs, fixture_reader=None, *, audit=None, limit=120, fixture_image=None):
     """Use the same authenticated ASGI stack in production and HTTP tests."""
-    server = build_server(verifier, jobs, fixture_reader)
+    server = build_server(verifier, jobs, fixture_reader, fixture_image=fixture_image)
     app = server.streamable_http_app(
         stateless_http=True, json_response=True, max_request_body_size=65536,
         host="127.0.0.1",
@@ -118,19 +146,30 @@ def main():
     parser.add_argument("--config",required=True,type=Path)
     parser.add_argument("--state-dir",required=True,type=Path)
     parser.add_argument("--port",type=int,default=8765)
+    parser.add_argument("--fixture-image",help="Explicit local opt-in for fixed disposable fixture, approved digest only")
     args = parser.parse_args()
     os.umask(0o077)
     verifier = load_config(args.config, args.state_dir)
-    jobs = Jobs(args.state_dir,Policy((verifier.subject,op,"disposable") for op in ("submit","read","cancel")))
+    if os.getuid()==0 or os.path.lexists(args.state_dir/"local-fixture-mode"):
+        parser.error("Unprivileged dedicated HTTP state required")
+    if args.fixture_image is not None and not IMAGE.fullmatch(args.fixture_image):
+        parser.error("Digest-pinned image required")
+    operations = OPERATIONS if args.fixture_image else ("submit","read","cancel")
+    workflows = ("probe_check","git_fixture_check") if args.fixture_image else ("probe_check",)
+    jobs = Jobs(args.state_dir,Policy((verifier.subject,op,"disposable") for op in operations),workflows=workflows)
+    if args.fixture_image:
+        bind_image(jobs,args.fixture_image)
     fixture = SyntheticGitHubReader(Policy([(verifier.subject,"github_read","disposable")]),args.state_dir)
-    app = build_http_app(verifier,jobs,fixture)
+    app = build_http_app(verifier,jobs,fixture,fixture_image=args.fixture_image)
     stop = threading.Event()
 
     def worker():
         while not stop.is_set():
             try:
                 if verifier.enabled():
-                    run_pending(jobs, enabled=lambda: verifier.enabled() and not stop.is_set())
+                    run_pending(jobs, fixture_image=args.fixture_image,
+                                enabled=lambda: verifier.enabled() and not stop.is_set(),
+                                fixture_allowed=lambda: fixture_enabled(verifier,args.fixture_image))
             except BlockingIOError:
                 pass
             stop.wait(0.5)
@@ -139,7 +178,7 @@ def main():
     thread.start()
     try:
         import uvicorn
-        uvicorn.run(app, host="127.0.0.1", port=args.port)
+        uvicorn.run(app, host="127.0.0.1", port=args.port, access_log=False)
     finally:
         stop.set()
         thread.join(timeout=6)

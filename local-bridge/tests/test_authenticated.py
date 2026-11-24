@@ -116,7 +116,7 @@ class AuthTests(unittest.TestCase):
             listing=call(client,"tools/list",{})
             self.assertEqual(listing.status_code,200)
             self.assertEqual({x["name"] for x in listing.json()["result"]["tools"]},
-                             {"health","submit_probe_job","get_job_status","cancel_job","github_fixture_context"})
+                             {"health","submit_probe_job","get_job_status","get_job_evidence","cancel_job","github_fixture_context"})
             health=call(client,"tools/call",args)
             self.assertEqual(health.status_code,200)
             self.assertFalse(health.json()["result"].get("isError",False))
@@ -169,3 +169,33 @@ class AuthTests(unittest.TestCase):
         events=[json.loads(line) for line in raw.splitlines()]
         self.assertEqual([e["status"] for e in events],[100,401,100,401,429])
         self.assertTrue(all(set(e)=={"at","event","status"} for e in events))
+
+    def test_opt_in_fixture_and_evidence(self):
+        from project_os_bridge.vertical import OPERATIONS, bind_image
+        from project_os_bridge.worker import run_pending
+        image="example/python@sha256:"+"a"*64
+        jobs=Jobs(self.root,Policy((SUBJECT,op,"disposable") for op in OPERATIONS),
+                  workflows=("probe_check","git_fixture_check"))
+        jobs.submit(SUBJECT,"disposable","probe_check","old-probe")
+        bind_image(jobs,image)
+        app=build_http_app(self.verifier,jobs,fixture_image=image)
+        headers={"Accept":"application/json, text/event-stream","Authorization":"Bearer "+self.token()}
+        def call(client,method,params):
+            return client.post("/mcp",headers=headers,json={"jsonrpc":"2.0","id":1,"method":method,"params":params}).json()["result"]
+        def tool(client,name,**args):
+            return call(client,"tools/call",{"name":name,"arguments":args})
+        with TestClient(app,base_url="http://127.0.0.1:8765") as client:
+            init=call(client,"initialize",{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"test","version":"1"}})
+            headers["MCP-Protocol-Version"]=init["protocolVersion"]
+            first=tool(client,"submit_git_fixture",request_key="new-fixture")
+            self.assertFalse(first.get("isError",False))
+            job=first["structuredContent"]["job_id"]
+            self.assertEqual(first,tool(client,"submit_git_fixture",request_key="new-fixture"))
+            (self.root/"fixture-image").unlink()
+            self.assertTrue(tool(client,"submit_git_fixture",request_key="denied").get("isError"))
+            with patch("project_os_bridge.vertical.run_git_fixture") as run:
+                run_pending(jobs,fixture_image=image,fixture_allowed=lambda:False)
+                run.assert_not_called()
+            evidence=tool(client,"get_job_evidence",job_id=job)["structuredContent"]
+            self.assertEqual(evidence["state"],"BLOCKED")
+            self.assertEqual([e["state"] for e in evidence["events"]],["QUEUED","RUNNING","BLOCKED"])
