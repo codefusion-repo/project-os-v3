@@ -68,3 +68,22 @@ The stdio bootstrap remains unchanged. HTTP mode binds only to 127.0.0.1 and req
 The Git fixture creates its own repository and detached worktree in a fresh private directory. It accepts only a single text-file patch with expected HEAD and content digest; no caller path, remote, push or arbitrary checkout. Tests run actual Git operations. The rootless Podman validation profile exports only fixed fixture data, requires a locally approved digest-pinned Python image already present, disables networking and capabilities, uses a read-only root and mount, and does not fall back to host execution. This profile is not yet validated on WSL and is not a sandbox for arbitrary project code. Rootless Podman and a trusted local image are prerequisites, not automatically installed.
 
 Authenticated HTTP mode additionally exposes a synthetic GitHub context tool to test batching without disclosing actual issue/comment content or invoking gh. The real GitHub reader remains local-only. All synthetic data is labelled as such. No Git fixture or container tool is exposed remotely yet.
+
+## Local vertical workflow and preflight
+
+The disposable Git workflow is **local CLI only**, with a dedicated state directory; the authenticated MCP server still exposes only the original disposable tools. Use the preflight inventory without starting devices or inspecting credentials:
+
+```bash
+bash local-bridge/scripts/preflight.sh
+```
+
+Availability is not authorization or isolation evidence. The local fixture runner requires a trusted Python image already installed in rootless Podman, with its exact repository digest. No automatic pulls, no host execution fallback. Choose and verify the image locally before running.
+
+```bash
+umask 077
+FIXTURE_STATE="$(mktemp -d "$HOME/.project-os-fixture.XXXXXXXX")"
+read -rp "Approved local Python image with digest: " IMAGE
+local-bridge/.venv/bin/project-os-bridge-fixture --state-dir "$FIXTURE_STATE" --request-key first --image "$IMAGE"
+```
+
+Keep the state directory private. Reusing the same request key retrieves the original job result; a new key creates a new fixture. Interrupted jobs are not replayed automatically. Evidence includes state transitions, Git HEAD, content digests, staged diff and validation outcome. A blocked isolation profile is not a successful validation. Unit tests exercise real Git and mock the container boundary; the actual container must be tested separately. The HTTP worker checks local authorization before each claim; in-flight operations are not cancelled. No adopted repos or real GitHub calls are enabled.

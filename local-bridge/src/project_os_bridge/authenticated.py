@@ -126,7 +126,7 @@ def main():
         while not stop.is_set():
             try:
                 if verifier.enabled():
-                    run_pending(jobs)
+                    run_pending(jobs, enabled=lambda: verifier.enabled() and not stop.is_set())
             except BlockingIOError:
                 pass
             stop.wait(0.5)
