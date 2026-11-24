@@ -27,3 +27,6 @@ try {
 } finally {
     Remove-Item Function:\wsl.exe
 }
+
+# Expected mock failure leaves LASTEXITCODE nonzero; only reach this after every assertion and cleanup.
+exit 0

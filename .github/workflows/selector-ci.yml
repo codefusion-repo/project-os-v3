@@ -95,3 +95,13 @@ jobs:
       - name: Test wrapper argument forwarding and failure propagation
         shell: pwsh
         run: ./local-bridge/tests/test_install_wrapper.ps1
+
+  oci-audit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Audit pinned public fixture without running it
+        run: bash local-bridge/scripts/ci-oci-audit.sh
