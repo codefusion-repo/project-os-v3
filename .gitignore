@@ -5,3 +5,8 @@ __pycache__/
 
 .venv/
 .venv-install.*/
+
+# Local Bridge packaging outputs
+local-bridge/build/
+local-bridge/dist/
+local-bridge/src/*.egg-info/

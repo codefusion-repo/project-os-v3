@@ -39,9 +39,16 @@ Stop the old tunnel process; reuse the same runtime credentials entered privatel
   read -rsp "Runtime key: " CONTROL_PLANE_API_KEY
   printf '\n'
   export CONTROL_PLANE_TUNNEL_ID CONTROL_PLANE_API_KEY
-  tunnel-client run --mcp.server-url http://127.0.0.1:8765/mcp
+  read -rp "Private auth root: " AUTH_ROOT
+  ISSUER="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["issuer"])' "$AUTH_ROOT/oauth.json")"
+  tunnel-client run \
+    --mcp.server-url http://127.0.0.1:8765/mcp \
+    --mcp.oauth-trusted-origin "$ISSUER" \
+    --harpoon.allow-plaintext-http
 )
 ```
+
+For tunnel-client v0.0.21, the exact AuthKit origin must be trusted for OAuth discovery. The plaintext Harpoon exception is process-wide and is suitable only for the dedicated trusted loopback staging fixture; do not add other HTTP targets or use this exception for real resources. Prefer HTTPS for production. The PM observed automatic OAuth discovery after these flags were added. A new OAuth connector was needed because the previous connector was configured without authentication. Keep the old connector unused; retire it only with explicit authorization.
 
 Configure the ChatGPT plugin for OAuth/CIMD, not no authentication. Verify the discovered resource matches exactly, authenticate in AuthKit and consent, and refresh discovery. The bridge requests openid; only the standard CIMD scopes are accepted. Refresh behavior is client-dependent. Never pass bearer tokens as tool arguments.
 
