@@ -22,7 +22,7 @@ STATE="$(mktemp -d "$HOME/.project-os-probe.XXXXXXXX")"
 printf '%s\n' "$STATE"
 ```
 
-Keep the path for restart. Use the existing tunnel runtime key and ID, entered interactively; stop the previous embedded demo first. Use absolute paths without whitespace for this bootstrap command (the tunnel parses the command string). Do not place credentials in command arguments or logs.
+Keep the path for restart. The stdio child is launched with an empty inherited environment except for PATH; this reduces accidental credential inheritance but does not isolate same-user processes. Use the existing tunnel runtime key and ID, entered interactively; stop the previous embedded demo first. Use absolute paths without whitespace for this bootstrap command (the tunnel parses the command string). Do not place credentials in command arguments or logs.
 
 ```bash
 BRIDGE="$PWD/local-bridge/.venv/bin/project-os-bridge"
@@ -30,7 +30,7 @@ read -rp "Tunnel ID: " CONTROL_PLANE_TUNNEL_ID
 read -rsp "Runtime key: " CONTROL_PLANE_API_KEY
 printf '\n'
 export CONTROL_PLANE_TUNNEL_ID CONTROL_PLANE_API_KEY
-tunnel-client run --mcp.command "$BRIDGE --state-dir $STATE" --health.listen-addr 127.0.0.1:0 --health.url-file "$STATE/health.url"
+tunnel-client run --mcp.command "/usr/bin/env -i PATH=/usr/bin:/bin $BRIDGE --state-dir $STATE" --health.listen-addr 127.0.0.1:0 --health.url-file "$STATE/health.url"
 unset CONTROL_PLANE_API_KEY
 ```
 
