@@ -3,7 +3,7 @@ import json
 from pathlib import Path
 import unittest
 
-from oci_original_control import evaluate, IMAGE
+from oci_original_control import evaluate, IMAGE, report_records, fingerprint
 
 
 class OriginalControlTests(unittest.TestCase):
@@ -18,6 +18,23 @@ class OriginalControlTests(unittest.TestCase):
                        "Results": [{"Class": "os-pkgs", "Type": "debian",
                                     "Packages": [{"Name": n, "Version": v} for n,v in pkgs],
                                     "Vulnerabilities": copy.deepcopy(findings) + low}]}
+        # Synthetic report: model Trivy's Debian epoch/version/release and identifier fields.
+        packages = {}
+        for n, version in pkgs:
+            epoch, _, rest = version.rpartition(":")
+            version_part, _, release = rest.rpartition("-")
+            if not version_part:
+                version_part, release = rest, ""
+            identity = {"UID": n + "@" + version, "PURL": "synthetic:" + n + "@" + version}
+            packages[(n, version)] = {"ID": n + "@" + version, "Name": n, "Version": version_part,
+                                       "Epoch": int(epoch or 0), "Release": release, "Identifier": identity}
+        for finding in self.report["Results"][0]["Vulnerabilities"]:
+            pkg = packages[(finding["PkgName"], finding["InstalledVersion"])]
+            finding["PkgID"], finding["PkgIdentifier"] = pkg["ID"], copy.deepcopy(pkg["Identifier"])
+        self.report["Results"][0]["Packages"] = list(packages.values())
+        records, inventory = report_records(self.report)
+        self.lock.update(findings_count=len(records), inventory_count=len(inventory),
+                         findings_sha256=fingerprint(records), inventory_sha256=fingerprint(inventory))
         self.diagnostic = "OCI BLOCKED: EOL or high/critical findings require review"
 
     def check(self, report=None, scanner=0, audit=1, diagnostic=None):
@@ -62,3 +79,24 @@ class OriginalControlTests(unittest.TestCase):
                 findings.pop()
             with self.assertRaises(ValueError):
                 self.check(report)
+
+    def test_epoch_release_and_package_identity_required(self):
+        report = copy.deepcopy(self.report)
+        pkg = next(p for p in report["Results"][0]["Packages"] if p["Epoch"])
+        pkg["Epoch"] = 0
+        with self.assertRaises(ValueError):
+            self.check(report)
+        report = copy.deepcopy(self.report)
+        report["Results"][0]["Vulnerabilities"][0]["PkgIdentifier"]["PURL"] = "other"
+        with self.assertRaises(ValueError):
+            self.check(report)
+
+    def test_lower_severity_and_inventory_drift_same_counts_block(self):
+        report = copy.deepcopy(self.report)
+        next(v for v in report["Results"][0]["Vulnerabilities"] if v["Severity"] == "LOW")["VulnerabilityID"] = "different"
+        with self.assertRaises(ValueError):
+            self.check(report)
+        report = copy.deepcopy(self.report)
+        report["Results"][0]["Packages"].append({"ID":"extra@1","Name":"extra","Version":"1","Identifier":{"UID":"extra","PURL":"synthetic:extra"}})
+        with self.assertRaises(ValueError):
+            self.check(report)

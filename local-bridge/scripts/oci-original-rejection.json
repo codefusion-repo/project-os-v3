@@ -378,5 +378,11 @@
       "Severity": "HIGH",
       "VulnerabilityID": "CVE-2026-78410"
     }
-  ]
+  ],
+  "findings_sha256": "ad0eb5604829214ac8244bdee177806d435dd1dc8c9e48dcf287ebd4ad975ecd",
+  "inventory_sha256": "97250dd22e64901ccf21a1f725fd8a8a142be7e6ffbafc96303a27eaa2865974",
+  "findings_count": 228,
+  "inventory_count": 88,
+  "source_artifact": 14953478370,
+  "source_report_sha256": "86df9637db2e8f87a886edf799fd7b02ad781bbbd479223e9c6563936f102dbd"
 }

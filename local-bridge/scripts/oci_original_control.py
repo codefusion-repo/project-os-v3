@@ -14,6 +14,45 @@ IMAGE = "docker.io/library/python@sha256:191083cdf6c7bda8c76158983163ead5d5cf7b7
 FIELDS = ("VulnerabilityID", "PkgName", "InstalledVersion", "FixedVersion", "Severity")
 
 
+def fingerprint(rows):
+    canonical = sorted(json.dumps(row, ensure_ascii=True, separators=(",", ":")) for row in rows)
+    return hashlib.sha256(("\n".join(canonical) + "\n").encode()).hexdigest()
+
+
+def report_records(report):
+    findings, inventory = [], []
+    for row in report["Results"]:
+        cls, typ = row["Class"], row["Type"]
+        if (cls, typ) not in (("os-pkgs", "debian"), ("lang-pkgs", "python-pkg")):
+            raise ValueError("Unexpected result class/type")
+        packages = {}
+        for p in row["Packages"]:
+            identifier = p["Identifier"]
+            uid = identifier["UID"]
+            if not uid or uid in packages or not identifier["PURL"]:
+                raise ValueError("Missing or duplicate package identity")
+            epoch, release = p.get("Epoch", 0), p.get("Release", "")
+            if type(epoch) is not int or epoch < 0:
+                raise ValueError("Invalid package epoch")
+            version = (str(epoch) + ":" if epoch else "") + p["Version"] + ("-" + release if release else "")
+            packages[uid] = (p, version)
+            inventory.append([cls, typ, p.get("ID", ""), p["Name"], epoch, p["Version"], release, identifier["PURL"]])
+        if not packages:
+            raise ValueError("Empty package inventory")
+        for v in row.get("Vulnerabilities") or []:
+            if not all(isinstance(v.get(k), str) and v[k] for k in ("VulnerabilityID", "PkgName", "InstalledVersion", "Severity")):
+                raise ValueError("Incomplete finding")
+            identifier = v["PkgIdentifier"]
+            if identifier["UID"] not in packages:
+                raise ValueError("Finding not in package inventory")
+            p, version = packages[identifier["UID"]]
+            if (p["Identifier"] != identifier or p["Name"] != v["PkgName"] or version != v["InstalledVersion"]
+                    or (cls == "os-pkgs" and (p["ID"] != v["PkgID"] or p["ID"] != p["Name"] + "@" + version))):
+                raise ValueError("Finding package identity mismatch")
+            findings.append([cls, typ, *(v.get(k) for k in FIELDS)])
+    return findings, inventory
+
+
 def evaluate(report, lock, scanner_rc, audit_rc, diagnostics):
     if scanner_rc != 0 or audit_rc != 1:
         raise ValueError("Expected successful scan and rejected audit")
@@ -30,17 +69,10 @@ def evaluate(report, lock, scanner_rc, audit_rc, diagnostics):
     os_rows = [r for r in report["Results"] if r.get("Class") == "os-pkgs"]
     if len(os_rows) != 1 or os_rows[0].get("Type") != "debian" or not os_rows[0].get("Packages"):
         raise ValueError("Original OS inventory missing")
-    packages = {(p["Name"], p["Version"]) for p in os_rows[0]["Packages"]}
-    if len(packages) != len(os_rows[0]["Packages"]):
-        raise ValueError("Duplicate OS package")
-    for row in report["Results"]:
-        if row.get("Class") not in ("os-pkgs", "lang-pkgs"):
-            raise ValueError("Unexpected result class")
-        for v in row.get("Vulnerabilities") or []:
-            if not all(isinstance(v.get(k), str) and v[k] for k in ("VulnerabilityID", "PkgName", "InstalledVersion", "Severity")):
-                raise ValueError("Incomplete finding")
-            if row.get("Class") == "os-pkgs" and (v["PkgName"], v["InstalledVersion"]) not in packages:
-                raise ValueError("Finding not in OS inventory")
+    all_findings, inventory = report_records(report)
+    if (len(all_findings) != lock["findings_count"] or fingerprint(all_findings) != lock["findings_sha256"]
+            or len(inventory) != lock["inventory_count"] or fingerprint(inventory) != lock["inventory_sha256"]):
+        raise ValueError("Original complete inventory or finding identities changed")
     def records(rows):
         return collections.Counter(tuple(r.get(k) for k in FIELDS) for r in rows)
     if (result["candidate_gate"] != "BLOCKED" or result["counts"] != lock["counts"]
@@ -48,7 +80,8 @@ def evaluate(report, lock, scanner_rc, audit_rc, diagnostics):
         raise ValueError("Original rejection findings changed")
     return {"control": "ORIGINAL_EXPECTED_REJECTION_PASS", "candidate_gate": "BLOCKED",
             "approved": False, "image": IMAGE, "scanner_exit": scanner_rc, "audit_exit": audit_rc,
-            "counts": result["counts"], "os_packages": len(packages)}
+            "counts": result["counts"], "os_packages": len(os_rows[0]["Packages"]), "inventory_count": len(inventory),
+            "findings_sha256": fingerprint(all_findings), "inventory_sha256": fingerprint(inventory)}
 
 
 def load(path, limit):
