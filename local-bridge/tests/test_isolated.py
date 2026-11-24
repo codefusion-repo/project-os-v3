@@ -22,3 +22,18 @@ class IsolationTests(unittest.TestCase):
     def test_no_unpinned_image(self):
         with self.assertRaises(ValueError):
             validate_in_container(Mock(),"local","expected","python:latest")
+
+    def test_validation_command_and_exact_bytes(self):
+        import subprocess
+        import sys
+        from project_os_bridge.isolated import SCRIPT
+        self.assertIn("== b'after\\n'",SCRIPT)
+        repo=Mock()
+        repo.snapshot.return_value={"revision":"expected","text":"after\n"}
+        with patch("project_os_bridge.isolated.os.getuid",return_value=1000), patch("project_os_bridge.isolated.subprocess.run") as run:
+            run.side_effect=[Mock(returncode=0,stdout=b"true\n"),Mock(returncode=0),Mock(returncode=0)]
+            result=validate_in_container(repo,"local","expected","python@sha256:"+"a"*64)
+        self.assertEqual(result["status"],"SUCCEEDED")
+        args=run.call_args_list[1].args[0]
+        for flag in ("--pull=never","--network=none","--read-only","--cap-drop=ALL","--http-proxy=false","--image-volume=ignore"):
+            self.assertIn(flag,args)

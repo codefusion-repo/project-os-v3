@@ -9,7 +9,7 @@ from pathlib import Path
 from .git_fixture import GitFixture
 
 IMAGE = re.compile(r"[a-zA-Z0-9./:_-]+@sha256:[0-9a-f]{64}")
-SCRIPT = "from pathlib import Path; assert Path('/fixture/fixture.txt').read_text().strip()"
+SCRIPT = "from pathlib import Path; import sys; sys.exit(0 if Path('/fixture/fixture.txt').read_bytes() == b'after\\n' else 1)"
 
 
 def validate_in_container(repo: GitFixture, principal, expected_revision, image):
@@ -35,6 +35,7 @@ def validate_in_container(repo: GitFixture, principal, expected_revision, image)
             # Export only fixed data, not Git metadata, state, home, sockets or credentials.
             args=["/usr/bin/podman","run","--rm","--name",name,"--pull=never",
                   "--network=none","--read-only","--cap-drop=ALL","--security-opt=no-new-privileges",
+                  "--http-proxy=false","--image-volume=ignore",
                   "--pids-limit=64","--memory=128m","--cpus=1","--userns=keep-id",
                   "--volume",f"{path}:/fixture:ro","--entrypoint","python",image,"-I","-c",SCRIPT]
             try:

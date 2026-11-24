@@ -8,8 +8,8 @@ from pathlib import Path
 from .core import Jobs, Policy
 from .git_fixture import GitFixture
 from .isolated import IMAGE, validate_in_container
-from .workos_auth import private_directory
-from .worker import run_pending
+from .workos_auth import private_directory, private_file
+from .worker import run_pending, exclusive_worker
 
 PATCH = "diff --git a/fixture.txt b/fixture.txt\n--- a/fixture.txt\n+++ b/fixture.txt\n@@ -1 +1 @@\n-before\n+after\n"
 OPERATIONS = ("submit", "read", "cancel", "git_workflow", "git_prepare",
@@ -51,33 +51,63 @@ def run_git_fixture(jobs, row, image):
         return "FAILED", evidence
 
 
-def local_jobs(root):
+def local_jobs(root, *, existing=False):
     private_directory(root)
     # Refuse use of an HTTP service directory or an existing probe DB.
     # A dedicated local marker is created only by the CLI on a new empty directory.
     marker = root / "local-fixture-mode"
     if not marker.exists():
-        if any(root.iterdir()):
+        if existing or any(root.iterdir()):
             raise PermissionError("Use a new empty private directory")
         fd = os.open(marker, os.O_CREAT | os.O_EXCL | os.O_WRONLY | os.O_NOFOLLOW, 0o600)
         os.close(fd)
-    from .workos_auth import private_file
     if private_file(marker).st_size != 0 or os.path.lexists(root/"allow-authenticated-probe"):
         raise PermissionError("Dedicated local fixture state required")
+    if existing:
+        private_file(root / "jobs.sqlite3")
+        private_file(root / "probe.sqlite3")
     return Jobs(root, Policy(("local-fixture",op,"disposable") for op in OPERATIONS),
                 workflows=("git_fixture_check",))
+
+
+def bind_image(jobs, image):
+    """Pin one locally approved profile per state directory before submission."""
+    if not isinstance(image, str) or not IMAGE.fullmatch(image):
+        raise ValueError("Digest-pinned image required")
+    path = jobs.probe.root / "fixture-image"
+    with exclusive_worker(jobs):
+        if not os.path.lexists(path):
+            with jobs.transaction() as conn:
+                if conn.execute("SELECT 1 FROM jobs LIMIT 1").fetchone():
+                    raise PermissionError("Legacy state has no bound image; use a new directory")
+            fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY | os.O_NOFOLLOW, 0o600)
+            with os.fdopen(fd, "w", encoding="utf-8") as file:
+                file.write(image + "\n")
+                file.flush()
+                os.fsync(file.fileno())
+        if private_file(path).st_size > 1024 or path.read_text(encoding="utf-8") != image + "\n":
+            raise PermissionError("Image profile differs; use a new state directory")
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--state-dir", type=Path, required=True)
-    parser.add_argument("--request-key", required=True)
-    parser.add_argument("--image", required=True, help="Locally approved image@sha256:digest; never pulled")
+    mode = parser.add_mutually_exclusive_group(required=True)
+    mode.add_argument("--request-key")
+    mode.add_argument("--evidence-job-id", help="Retrieve existing evidence without executing a job")
+    parser.add_argument("--image", help="Locally approved image@sha256:digest; never pulled")
     args = parser.parse_args()
     os.umask(0o077)
-    if not IMAGE.fullmatch(args.image):
+    if args.evidence_job_id is not None:
+        if args.image is not None or not re.fullmatch(r"[0-9a-f]{32}", args.evidence_job_id):
+            parser.error("Evidence requires a valid job ID and no image")
+        jobs = local_jobs(args.state_dir, existing=True)
+        print(json.dumps(jobs.evidence("local-fixture", args.evidence_job_id), indent=2))
+        return
+    if not args.image or not IMAGE.fullmatch(args.image):
         parser.error("Digest-pinned image required")
     jobs = local_jobs(args.state_dir)
+    bind_image(jobs, args.image)
     job = jobs.submit("local-fixture","disposable","git_fixture_check",args.request_key)
     run_pending(jobs, fixture_image=args.image)
     evidence = jobs.evidence("local-fixture",job)

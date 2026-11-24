@@ -3,7 +3,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 from project_os_bridge.core import Jobs, Policy
-from project_os_bridge.vertical import local_jobs
+from project_os_bridge.vertical import local_jobs, bind_image, main
 from project_os_bridge.worker import run_pending
 
 IMAGE="example/python@sha256:"+"a"*64
@@ -62,3 +62,28 @@ class VerticalTests(unittest.TestCase):
         job=self.submit()
         run_pending(self.jobs,fixture_image=IMAGE,enabled=lambda:False)
         self.assertEqual(self.jobs.get("local-fixture",job)["state"],"QUEUED")
+
+    def test_bound_image_conflict(self):
+        bind_image(self.jobs,IMAGE)
+        bind_image(self.jobs,IMAGE)
+        with self.assertRaises(PermissionError):
+            bind_image(self.jobs,"example/python@sha256:"+"b"*64)
+
+    def test_legacy_state_cannot_bind_image(self):
+        self.submit()
+        with self.assertRaises(PermissionError):
+            bind_image(self.jobs,IMAGE)
+
+    def test_evidence_cli_does_not_run_worker(self):
+        job=self.submit()
+        with patch("sys.argv",["fixture","--state-dir",str(self.root),"--evidence-job-id",job]), patch("project_os_bridge.vertical.run_pending") as run, patch("builtins.print"):
+            main()
+        run.assert_not_called()
+        self.assertEqual(self.jobs.get("local-fixture",job)["state"],"QUEUED")
+
+    def test_evidence_refuses_new_state(self):
+        other=self.root/"new"
+        other.mkdir(mode=0o700)
+        with self.assertRaises(PermissionError):
+            local_jobs(other,existing=True)
+        self.assertEqual(list(other.iterdir()),[])
