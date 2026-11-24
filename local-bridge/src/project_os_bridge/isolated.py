@@ -4,7 +4,6 @@ import os
 import re
 import subprocess
 import tempfile
-import uuid
 from pathlib import Path
 
 from .git_fixture import GitFixture
@@ -50,32 +49,63 @@ CHECKS = ["exact_content","fixture_write_denied","synthetic_host_path_absent",
           "seccomp_filter","zero_capabilities","root_read_only","cgroup_limits"]
 
 
-def validate_in_container(repo: GitFixture, principal, expected_revision, image):
+def container_name(token):
+    if not isinstance(token, str) or not re.fullmatch(r"[0-9a-f]{32}", token):
+        raise ValueError("Invalid fixture identity")
+    return "project-os-fixture-" + token
+
+
+def podman_run(*args, timeout=10, capture=False):
+    env = {"PATH":"/usr/bin:/bin","HOME":os.environ.get("HOME",""),
+           "XDG_RUNTIME_DIR":f"/run/user/{os.getuid()}","LC_ALL":"C"}
+    return subprocess.run(["/usr/bin/podman",*args],env=env,stdin=subprocess.DEVNULL,
+                          stdout=subprocess.PIPE if capture else subprocess.DEVNULL,
+                          stderr=subprocess.DEVNULL,timeout=timeout)
+
+
+def rootless_host():
+    if os.getuid() == 0:
+        raise PermissionError("Rootless required")
+    info = podman_run("info","--format","json",capture=True)
+    if info.returncode or len(info.stdout)>262144:
+        raise ValueError("Podman info failed")
+    host = json.loads(info.stdout)["host"]
+    if host["security"].get("rootless") is not True:
+        raise PermissionError("Rootless required")
+    return host
+
+
+def container_absent(token):
+    # Check both the exact name and the unique ownership label (including renamed
+    # containers). Never remove a container by name or accept a failed query.
+    name = container_name(token)
+    exists = podman_run("container","exists",name)
+    owned = podman_run("ps","--all","--filter","label=io.project-os.fixture="+token,
+                       "--format","{{.ID}}",capture=True)
+    return exists.returncode == 1 and owned.returncode == 0 and owned.stdout == b""
+
+
+def validate_in_container(repo: GitFixture, principal, expected_revision, image, *, token):
     repo.policy.require(principal,"fixture_validate","disposable")
     if not isinstance(image,str) or not IMAGE.fullmatch(image):
         raise ValueError("Locally approved digest-pinned image required")
     snapshot=repo.snapshot(principal)
     if snapshot["revision"] != expected_revision:
-        return {"status":"BLOCKED","reason":"REVISION_CONFLICT"}
+        return {"status":"BLOCKED","reason":"REVISION_CONFLICT","container_absent":True}
     if os.getuid()==0:
-        return {"status":"BLOCKED","reason":"ROOTLESS_REQUIRED"}
-    env={"PATH":"/usr/bin:/bin","HOME":os.environ.get("HOME",""),
-         "XDG_RUNTIME_DIR":f"/run/user/{os.getuid()}","LC_ALL":"C"}
-    name="project-os-fixture-"+uuid.uuid4().hex
-    def run(*args, timeout=10, capture=False):
-        return subprocess.run(["/usr/bin/podman",*args],env=env,stdin=subprocess.DEVNULL,
-                              stdout=subprocess.PIPE if capture else subprocess.DEVNULL,
-                              stderr=subprocess.DEVNULL,timeout=timeout)
+        return {"status":"BLOCKED","reason":"ROOTLESS_REQUIRED","container_absent":True}
+    name=container_name(token)
+    attempted=False
     try:
-        info=run("info","--format","json",capture=True)
+        info=podman_run("info","--format","json",capture=True)
         if info.returncode or len(info.stdout)>262144:
-            return {"status":"BLOCKED","reason":"PODMAN_INFO_FAILED"}
+            return {"status":"BLOCKED","reason":"PODMAN_INFO_FAILED","container_absent":True}
         host=json.loads(info.stdout)["host"]
         security=host["security"]
         if security.get("rootless") is not True:
-            return {"status":"BLOCKED","reason":"ROOTLESS_UNAVAILABLE"}
+            return {"status":"BLOCKED","reason":"ROOTLESS_UNAVAILABLE","container_absent":True}
         if security.get("seccompEnabled") is not True or host.get("cgroupVersion")!="v2":
-            return {"status":"BLOCKED","reason":"SECURITY_PREFLIGHT_FAILED"}
+            return {"status":"BLOCKED","reason":"SECURITY_PREFLIGHT_FAILED","container_absent":True}
         with tempfile.TemporaryDirectory() as folder:
             path=Path(folder)
             mount=path/"export"
@@ -83,7 +113,7 @@ def validate_in_container(repo: GitFixture, principal, expected_revision, image)
             (mount/"fixture.txt").write_text(snapshot["text"],encoding="utf-8")
             sentinel=path/"private-synthetic-marker"
             sentinel.write_text("synthetic only",encoding="utf-8")
-            args=["run","--rm","--name",name,"--pull=never",
+            args=["run","--rm","--name",name,"--label","io.project-os.fixture="+token,"--pull=never",
                   "--network=none","--read-only","--read-only-tmpfs=false",
                   "--cap-drop=ALL","--security-opt=no-new-privileges",
                   "--http-proxy=false","--image-volume=ignore","--pid=private",
@@ -91,13 +121,10 @@ def validate_in_container(repo: GitFixture, principal, expected_revision, image)
                   "--pids-limit=64","--memory=128m","--cpus=1","--userns=keep-id",
                   "--volume",f"{mount}:/fixture:ro","--entrypoint","python",image,"-I","-B","-c",SCRIPT,
                   str(sentinel),f"/run/user/{os.getuid()}/podman/podman.sock"]
-            try:
-                result=run(*args,timeout=30)
-            finally:
-                removed=run("rm","-f","--ignore",name)
-                absent=run("container","exists",name)
-                if removed.returncode!=0 or absent.returncode!=1:
-                    return {"status":"BLOCKED","reason":"CLEANUP_UNVERIFIED"}
+            attempted=True
+            result=podman_run(*args,timeout=30)
+            if not container_absent(token):
+                return {"status":"BLOCKED","reason":"CLEANUP_UNVERIFIED"}
             return {"status":"SUCCEEDED" if result.returncode==0 else "FAILED",
                     "exit_code":result.returncode,"revision":expected_revision,
                     "profile":"fixture-python","cleanup_verified":True,
@@ -105,4 +132,4 @@ def validate_in_container(repo: GitFixture, principal, expected_revision, image)
                     "host_lsm":{"apparmor":security.get("apparmorEnabled") is True,
                                 "selinux":security.get("selinuxEnabled") is True}}
     except (OSError,subprocess.TimeoutExpired,ValueError,KeyError,TypeError,AttributeError):
-        return {"status":"BLOCKED","reason":"ISOLATION_UNAVAILABLE_OR_TIMEOUT"}
+        return {"status":"BLOCKED","reason":"CLEANUP_UNVERIFIED" if attempted else "ISOLATION_UNAVAILABLE_OR_TIMEOUT", "container_absent":not attempted}

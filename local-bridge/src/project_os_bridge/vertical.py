@@ -20,10 +20,10 @@ def run_git_fixture(jobs, row, image):
     principal = row["principal"]
     jobs.policy.require(principal, "git_workflow", "disposable")
     if not isinstance(image, str) or not IMAGE.fullmatch(image):
-        return "BLOCKED", {"reason":"LOCAL_IMAGE_REQUIRED", "steps":[]}
+        return "BLOCKED", {"reason":"LOCAL_IMAGE_REQUIRED", "steps":[], "container_absent":True}
     if not re.fullmatch(r"[0-9a-f]{32}", row["id"]):
         raise ValueError("Invalid job ID")
-    evidence = {"profile":"fixture-python", "image":image, "steps":[]}
+    evidence = {"profile":"fixture-python", "image":image, "steps":[], "container_absent":True}
     # New private directory for each job. Never reopen or overwrite a partial fixture.
     root = jobs.probe.root / ("fixture-" + row["id"])
     try:
@@ -40,7 +40,9 @@ def run_git_fixture(jobs, row, image):
             raise RuntimeError("Original fixture changed")
         evidence["steps"].append({"step":"patch","head":sha,"revision":after["revision"],
                                   "diff":diff["diff"],"original_unchanged":True})
-        result = validate_in_container(repo, principal, after["revision"], image)
+        evidence["container_absent"] = False
+        result = validate_in_container(repo, principal, after["revision"], image, token=row["effect_token"])
+        evidence["container_absent"] = result.get("cleanup_verified") is True or result.get("container_absent") is True
         evidence["steps"].append({"step":"validate", **result})
         state = result["status"]
         if state == "SUCCEEDED" and (result.get("revision") != after["revision"]

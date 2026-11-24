@@ -35,8 +35,9 @@ def run_pending(jobs: Jobs, *, fixture_image=None, enabled=lambda: True, fixture
             if row is None:
                 return
             if not enabled():
-                jobs.finish(row["id"], "BLOCKED", {"reason": "DISPATCH_DISABLED"})
+                jobs.finish(row["id"], "BLOCKED", {"reason": "DISPATCH_DISABLED"}, fixture_absent=True)
                 return
+            fixture_absent = False
             try:
                 if row["resource"] != "disposable":
                     raise ValueError("Unknown resource")
@@ -46,12 +47,14 @@ def run_pending(jobs: Jobs, *, fixture_image=None, enabled=lambda: True, fixture
                 elif row["workflow"] == "git_fixture_check":
                     if not fixture_allowed():
                         state, result = "BLOCKED", {"reason":"FIXTURE_ACCESS_REVOKED"}
+                        fixture_absent = True
                     else:
                         from .vertical import run_git_fixture
                         state, result = run_git_fixture(jobs, row, fixture_image)
+                        fixture_absent = result.get("container_absent") is True
                 else:
                     raise ValueError("Unknown handler")
             except Exception:
                 jobs.finish(row["id"], "FAILED", {"error": "HANDLER_FAILED"})
             else:
-                jobs.finish(row["id"], state, result)
+                jobs.finish(row["id"], state, result, fixture_absent=fixture_absent)

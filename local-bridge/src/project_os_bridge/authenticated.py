@@ -194,6 +194,8 @@ def serve_with_worker(server, jobs, verifier, fixture_image):
                         run_pending(jobs, fixture_image=fixture_image,
                                     enabled=lambda: verifier.enabled() and not stop.is_set(),
                                     fixture_allowed=lambda: fixture_enabled(verifier, fixture_image))
+                    if jobs.pending_effects():
+                        raise RuntimeError("RECONCILIATION_REQUIRED")
                 except WorkerBusy:
                     # Another exclusive worker owns the disposable queue.
                     pass

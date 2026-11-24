@@ -34,7 +34,7 @@ class WorkerLifecycleTests(unittest.TestCase):
         verifier.enabled.return_value = True
         with patch("project_os_bridge.authenticated.run_pending", side_effect=OSError("private fixture path")):
             with self.assertRaisesRegex(RuntimeError, "^DISPOSABLE_WORKER_FAILED$"):
-                serve_with_worker(server, Mock(), verifier, None)
+                serve_with_worker(server, Mock(**{"pending_effects.return_value": []}), verifier, None)
         self.assertTrue(server.should_exit)
 
     def test_normal_shutdown_waits_for_inflight_cleanup(self):
@@ -54,7 +54,7 @@ class WorkerLifecycleTests(unittest.TestCase):
             release.set()
         server.run.side_effect = serve
         with patch("project_os_bridge.authenticated.run_pending", side_effect=drain):
-            serve_with_worker(server, Mock(), verifier, None)
+            serve_with_worker(server, Mock(**{"pending_effects.return_value": []}), verifier, None)
         self.assertTrue(cleaned.is_set())
 
     def test_lock_contention_is_not_fatal(self):
@@ -67,7 +67,7 @@ class WorkerLifecycleTests(unittest.TestCase):
             server.should_exit = True
             raise WorkerBusy()
         with patch("project_os_bridge.authenticated.run_pending", side_effect=drain):
-            serve_with_worker(server, Mock(), verifier, None)
+            serve_with_worker(server, Mock(**{"pending_effects.return_value": []}), verifier, None)
         self.assertTrue(server.should_exit)
 
     def test_startup_failure_never_dispatches(self):
@@ -76,7 +76,7 @@ class WorkerLifecycleTests(unittest.TestCase):
         verifier.enabled.return_value = True
         with patch("project_os_bridge.authenticated.run_pending") as drain:
             with self.assertRaisesRegex(RuntimeError, "HTTP_STARTUP_FAILED"):
-                serve_with_worker(server, Mock(), verifier, None)
+                serve_with_worker(server, Mock(**{"pending_effects.return_value": []}), verifier, None)
             drain.assert_not_called()
 
     def test_other_blocking_io_failure_is_fatal(self):
@@ -85,7 +85,7 @@ class WorkerLifecycleTests(unittest.TestCase):
         verifier.enabled.return_value = True
         with patch("project_os_bridge.authenticated.run_pending", side_effect=BlockingIOError()):
             with self.assertRaisesRegex(RuntimeError, "DISPOSABLE_WORKER_FAILED"):
-                serve_with_worker(server, Mock(), verifier, None)
+                serve_with_worker(server, Mock(**{"pending_effects.return_value": []}), verifier, None)
 
     def test_exclusive_http_lock_released_on_exit(self):
         with tempfile.TemporaryDirectory() as folder:
@@ -144,7 +144,7 @@ class WorkerLifecycleTests(unittest.TestCase):
             with patch("project_os_bridge.authenticated.run_pending",
                        side_effect=OSError("synthetic failure")) as drain:
                 with self.assertRaisesRegex(RuntimeError, "DISPOSABLE_WORKER_FAILED"):
-                    serve_with_worker(server, Mock(), verifier, None)
+                    serve_with_worker(server, Mock(**{"pending_effects.return_value": []}), verifier, None)
                 drain.assert_called_once()
             self.assertTrue(server.started)
             self.assertTrue(server.should_exit)

@@ -23,7 +23,7 @@ class VerticalTests(unittest.TestCase):
     def test_real_git_and_persisted_blocked_validation(self):
         job=self.submit()
         with patch("project_os_bridge.vertical.validate_in_container",
-                   return_value={"status":"BLOCKED","reason":"ROOTLESS_UNAVAILABLE"}) as validate:
+                   return_value={"status":"BLOCKED","reason":"ROOTLESS_UNAVAILABLE","container_absent":True}) as validate:
             run_pending(self.jobs,fixture_image=IMAGE)
         validate.assert_called_once()
         result=local_jobs(self.root).evidence("local-fixture",job)
@@ -38,7 +38,7 @@ class VerticalTests(unittest.TestCase):
 
     def test_success_evidence_contract(self):
         job=self.submit()
-        def fixture_result(repo,principal,revision,image):
+        def fixture_result(repo,principal,revision,image,*,token):
             return {"status":"SUCCEEDED","revision":revision,"exit_code":0,
                     "profile":"fixture-python","cleanup_verified":True,"checks":CHECKS}
         with patch("project_os_bridge.vertical.validate_in_container",side_effect=fixture_result):
@@ -101,7 +101,7 @@ class VerticalTests(unittest.TestCase):
 
     def test_incomplete_isolation_evidence_blocks_success(self):
         job=self.submit()
-        def incomplete(repo,principal,revision,image):
+        def incomplete(repo,principal,revision,image,*,token):
             return {"status":"SUCCEEDED","revision":revision,"exit_code":0}
         with patch("project_os_bridge.vertical.validate_in_container",side_effect=incomplete):
             run_pending(self.jobs,fixture_image=IMAGE)

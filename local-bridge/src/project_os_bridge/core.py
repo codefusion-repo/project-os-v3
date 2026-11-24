@@ -53,6 +53,31 @@ class Jobs:
                 id INTEGER PRIMARY KEY, job_id TEXT NOT NULL, state TEXT NOT NULL,
                 at TEXT NOT NULL)""")
 
+            # Legacy interrupted/uncertain fixtures have no recorded identity.
+            # Do not infer absence or silently migrate their external effects.
+            exists = c.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='fixture_effects'").fetchone()
+            c.execute("""CREATE TABLE IF NOT EXISTS fixture_effects (
+                job_id TEXT PRIMARY KEY, token TEXT, resolved_at TEXT)""")
+            if not exists:
+                for row in c.execute("SELECT id,state,result FROM jobs WHERE workflow='git_fixture_check' AND state NOT IN ('QUEUED','CANCELLED')").fetchall():
+                    result = json.loads(row["result"] or "{}")
+                    steps = result.get("steps", [])
+                    if row["state"] == "SUCCEEDED" and steps and steps[-1].get("cleanup_verified") is True:
+                        continue
+                    c.execute("INSERT INTO fixture_effects VALUES(?,NULL,NULL)", (row["id"],))
+
+    def pending_effects(self):
+        with self.transaction() as c:
+            return [dict(row) for row in c.execute("SELECT job_id,token FROM fixture_effects WHERE resolved_at IS NULL ORDER BY job_id")]
+
+    def resolve_effect(self, job_id, token):
+        """Local reconciliation caller must hold exclusive worker lock and prove absence."""
+        with self.transaction() as c:
+            cur = c.execute("UPDATE fixture_effects SET resolved_at=? WHERE job_id=? AND token=? AND resolved_at IS NULL",
+                            (now(),job_id,token))
+            if cur.rowcount != 1:
+                raise RuntimeError("Reconciliation identity conflict")
+
     @contextmanager
     def transaction(self):
         self.probe._check_directory()
@@ -80,6 +105,8 @@ class Jobs:
                 if row["workflow"] != workflow:
                     raise ValueError("Idempotency conflict")
                 return row["id"]
+            if c.execute("SELECT 1 FROM fixture_effects WHERE resolved_at IS NULL LIMIT 1").fetchone():
+                raise QueueLimitError("RECONCILIATION_REQUIRED")
             # Bound total retained rows and active work; no implicit deletion.
             if c.execute("SELECT count(*) FROM jobs").fetchone()[0] >= 10000:
                 raise QueueLimitError("JOB_STORAGE_LIMIT")
@@ -119,6 +146,8 @@ class Jobs:
 
     def claim(self):
         with self.transaction() as c:
+            if c.execute("SELECT 1 FROM fixture_effects WHERE resolved_at IS NULL LIMIT 1").fetchone():
+                return None
             while True:
                 row = c.execute("SELECT * FROM jobs WHERE state='QUEUED' ORDER BY created,id LIMIT 1").fetchone()
                 if not row:
@@ -133,7 +162,12 @@ class Jobs:
                     self.transition(c,row["id"],"QUEUED","BLOCKED")
                     continue
                 self.transition(c,row["id"],"QUEUED","RUNNING")
-                return dict(row)
+                claimed = dict(row)
+                if row["workflow"] == "git_fixture_check":
+                    token = uuid.uuid4().hex
+                    c.execute("INSERT INTO fixture_effects VALUES(?,?,NULL)", (row["id"],token))
+                    claimed["effect_token"] = token
+                return claimed
 
     def transition(self,c,job_id,old,new,result=None):
         cur = c.execute("UPDATE jobs SET state=?,result=?,updated=? WHERE id=? AND state=?",
@@ -142,11 +176,13 @@ class Jobs:
             raise RuntimeError("State conflict")
         self.event(c,job_id,new)
 
-    def finish(self,job_id,state,result):
+    def finish(self,job_id,state,result, *, fixture_absent=False):
         if state not in {"SUCCEEDED","FAILED","BLOCKED"}:
             raise ValueError("Invalid terminal state")
         with self.transaction() as c:
             self.transition(c,job_id,"RUNNING",state,result)
+            if fixture_absent is True:
+                c.execute("UPDATE fixture_effects SET resolved_at=? WHERE job_id=? AND resolved_at IS NULL", (now(),job_id))
 
     def cancel(self,principal,job_id):
         with self.transaction() as c:
