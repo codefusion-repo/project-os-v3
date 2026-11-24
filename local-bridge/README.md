@@ -76,3 +76,9 @@ After a compatible issuer and public resource identifier are verified, run the H
 ## B2 preliminary primitives
 
 `repository.py` implements a fixed disposable UTF-8 file with digest-guarded atomic replacement and cooperating-process locking. `execution.py` validates that fixed fixture as data, without subprocesses. Neither is exposed by MCP. These are not a Git worktree provider or an execution sandbox. Same-user local processes are outside the trust boundary. Real repository changes and running repository-controlled tests require a separate isolated execution environment and additional acceptance tests.
+
+## Local Git and isolation fixtures
+
+The Git fixture creates its own repository and detached worktree in a fresh private directory. It accepts only a single text-file patch with expected HEAD and content digest; no caller path, remote, push or arbitrary checkout. Tests run actual Git operations. The rootless Podman validation profile exports only fixed fixture data, requires a locally approved digest-pinned Python image already present, disables networking and capabilities, uses a read-only root and mount, and does not fall back to host execution. This profile is not yet validated on WSL and is not a sandbox for arbitrary project code. Rootless Podman and a trusted local image are prerequisites, not automatically installed.
+
+Authenticated HTTP mode additionally exposes a synthetic GitHub context tool to test batching without disclosing actual issue/comment content or invoking gh. The real GitHub reader remains local-only. All synthetic data is labelled as such. No Git fixture or container tool is exposed remotely yet.

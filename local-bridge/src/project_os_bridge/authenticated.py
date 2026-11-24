@@ -19,6 +19,7 @@ from cryptography.hazmat.primitives.asymmetric.rsa import RSAPublicKey
 
 from .core import Jobs, Policy
 from .worker import run_pending
+from .github_fixture import SyntheticGitHubReader
 
 SCOPE = "bridge:probe"
 
@@ -76,7 +77,7 @@ def load_config(path: Path):
     return Verifier(cfg["issuer"],cfg["resource"],cfg["subject"],cfg["client_id"],cfg["public_key_pem"].encode())
 
 
-def build_server(verifier, jobs):
+def build_server(verifier, jobs, fixture_reader=None):
     mcp = MCPServer("Project OS authenticated disposable jobs",
                     token_verifier=verifier,
                     auth=AuthSettings(issuer_url=AnyHttpUrl(verifier.issuer),
@@ -112,6 +113,12 @@ def build_server(verifier, jobs):
         """Cancel the caller's queued disposable job; running jobs are not cancellable."""
         return {"cancelled":jobs.cancel(principal(),job_id)}
 
+    if fixture_reader is not None:
+        @mcp.tool(annotations=read)
+        def github_fixture_context(numbers: list[int]) -> dict:
+            """Aggregate synthetic issue fixtures only; never contacts GitHub."""
+            return fixture_reader.batch_issues(principal(), "disposable", numbers)
+
     return mcp
 
 
@@ -124,7 +131,8 @@ def main():
     os.umask(0o077)
     verifier = load_config(args.config)
     jobs = Jobs(args.state_dir,Policy((verifier.subject,op,"disposable") for op in ("submit","read","cancel")))
-    server = build_server(verifier,jobs)
+    fixture = SyntheticGitHubReader(Policy([(verifier.subject,"github_read","disposable")]),args.state_dir)
+    server = build_server(verifier,jobs,fixture)
     stop = threading.Event()
 
     def worker():
