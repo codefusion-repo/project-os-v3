@@ -17,7 +17,7 @@ One local operator, one WorkOS identity per instance. Project OS distributes cod
 
 Use a dedicated unprivileged Linux service account with no sudo, no personal home access, no privileged socket membership and separate scoped credentials. Provisioning accounts, filesystem ACLs and WSL policy is an explicit operator task; the wizard does not do this. Rootless Podman must use that account's own subuid/subgid and storage. Do not share the PM's personal gh config. Keep runtime keys out of arguments, logs and Git. Use a new private canonical directory outside all checkouts, mode 0700; files 0600. The init command creates only new local configuration, no opt-in. Existing installations are not migrated.
 
-Use a reviewed full Git SHA, a dedicated venv, pinned direct dependencies, pip check, and unit tests before startup. Transitive lockfiles, supply-chain audit and clean-device reproducibility are outstanding. Do not auto-install system packages or disable OS security protections. Use the exact issuer and resource for each operator, with signup disabled and MFA. Dedicated tunnel staging only; plaintext Harpoon exception is not acceptable for real resources. Retire unused unauthenticated connector and stop old stdio endpoint before real resources.
+Use a reviewed full Git SHA, a dedicated venv, pinned direct dependencies, pip check, and unit tests before startup. Runtime and build locks and Python audits have passed CI; independent clean-device validation and OCI remediation remain outstanding. Do not auto-install system packages or disable OS security protections. Use the exact issuer and resource for each operator, with signup disabled and MFA. Dedicated tunnel staging only; plaintext Harpoon exception is not acceptable for real resources. Retire unused unauthenticated connector and stop old stdio endpoint before real resources.
 
 ## Gate matrix
 
@@ -45,3 +45,7 @@ The validated disposable pilot at d5bf579b5adf43a6b8893d3d2005b5578f8b5f97 compl
 ## Account boundary inventory
 
 Run `python3 local-bridge/scripts/account_preflight.py` as the intended service user. It checks UID, known privileged groups, private home, effective traversal of other enumerated non-system homes, known privileged sockets, visible mount types and WSL interop indicators. It prints only booleans, never paths or account names. WSL always requires a separate host-boundary review; no automatic real-resource grant. This inventory cannot prove sudo policy, all ACLs, namespaces, remote endpoints or credential scopes. Do not run it as root to simulate the service account.
+
+## Grouped independent validation
+
+See [WSL-VALIDATION.md](WSL-VALIDATION.md). A separate Windows account or dedicated VM and independent host-boundary review are required; WSL inventory alone is not certification. Reference OCI scan is blocked; no image replacement or real access is authorized.
