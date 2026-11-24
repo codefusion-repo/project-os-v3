@@ -13,6 +13,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - name: Run stdlib tests
         run: python3 -m unittest discover -s tests -v
       - name: Test optional enhanced terminal
@@ -20,3 +22,91 @@ jobs:
           python3 -m venv /tmp/project-os-ci-venv
           /tmp/project-os-ci-venv/bin/python -m pip install 'prompt_toolkit==3.0.53'
           /tmp/project-os-ci-venv/bin/python -m unittest discover -s tests -v
+
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          fetch-depth: 1
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip --isolated install --only-binary=:all: --require-hashes -r local-bridge/requirements-linux-py312.lock
+      - run: python -m pip --isolated install --no-deps ./local-bridge
+      - run: python -m pip check
+      - run: python -m pip list --format=freeze
+      - run: python -m unittest discover -s local-bridge/tests -v
+      - run: project-os-bridge --help
+      - run: project-os-bridge-http --help
+      - run: project-os-bridge-fixture --help
+      - run: project-os-bridge-init --help
+
+  dependency-evidence:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Download exact runtime wheels
+        run: |
+          python -m pip --isolated download --index-url https://pypi.org/simple --only-binary=:all: --require-hashes --no-deps -r local-bridge/requirements-linux-py312.lock -d "$RUNNER_TEMP/bridge-wheels"
+          python local-bridge/scripts/lock_wheels.py local-bridge/requirements-linux-py312.txt "$RUNNER_TEMP/bridge-wheels" > "$RUNNER_TEMP/bridge-candidate.lock"
+          diff -u <(grep -v "^#" local-bridge/requirements-linux-py312.lock) "$RUNNER_TEMP/bridge-candidate.lock"
+      - name: Verify wheel hashes and dependency closure in fresh venv
+        run: |
+          python -m venv "$RUNNER_TEMP/bridge-clean"
+          "$RUNNER_TEMP/bridge-clean/bin/python" -m pip --isolated install --no-index --find-links "$RUNNER_TEMP/bridge-wheels" --only-binary=:all: --require-hashes -r "$RUNNER_TEMP/bridge-candidate.lock"
+          "$RUNNER_TEMP/bridge-clean/bin/python" -m pip check
+      - name: Audit exact runtime versions using separate tooling
+        run: |
+          python -m venv "$RUNNER_TEMP/bridge-audit"
+          "$RUNNER_TEMP/bridge-audit/bin/python" -m pip --isolated install --index-url https://pypi.org/simple pip-audit==2.10.1
+          "$RUNNER_TEMP/bridge-audit/bin/python" -m pip_audit --version
+          "$RUNNER_TEMP/bridge-audit/bin/python" -m pip_audit --require-hashes --no-deps --strict -r "$RUNNER_TEMP/bridge-candidate.lock"
+
+  build-backend-evidence:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Resolve build backend candidate
+        run: |
+          python -m pip --isolated download --index-url https://pypi.org/simple --only-binary=:all: --no-deps setuptools -d "$RUNNER_TEMP/build-wheels"
+          python - "$RUNNER_TEMP/build-wheels" <<'PY'
+          import sys, zipfile
+          from pathlib import Path
+          from email.parser import BytesParser
+          root=Path(sys.argv[1])
+          wheels=list(root.glob("*.whl"))
+          assert len(wheels)==1
+          with zipfile.ZipFile(wheels[0]) as z:
+              names=[n for n in z.namelist() if n.endswith(".dist-info/METADATA")]
+              assert len(names)==1
+              msg=BytesParser().parsebytes(z.read(names[0]))
+              assert msg["Name"].lower()=="setuptools"
+          (root/"pins.txt").write_text("setuptools=="+msg["Version"]+"\n")
+          PY
+          python local-bridge/scripts/lock_wheels.py "$RUNNER_TEMP/build-wheels/pins.txt" "$RUNNER_TEMP/build-wheels" > "$RUNNER_TEMP/build-candidate.lock"
+          cat "$RUNNER_TEMP/build-candidate.lock"
+      - name: Build with only the downloaded backend
+        run: |
+          python -m venv "$RUNNER_TEMP/build-clean"
+          "$RUNNER_TEMP/build-clean/bin/python" -m pip --isolated install --no-index --find-links "$RUNNER_TEMP/build-wheels" --require-hashes -r "$RUNNER_TEMP/build-candidate.lock"
+          "$RUNNER_TEMP/build-clean/bin/python" -m pip --isolated wheel --no-index --no-build-isolation --no-deps ./local-bridge -w "$RUNNER_TEMP/project-wheel"
+      - name: Audit build backend
+        run: |
+          python -m venv "$RUNNER_TEMP/build-audit"
+          "$RUNNER_TEMP/build-audit/bin/python" -m pip --isolated install --index-url https://pypi.org/simple pip-audit==2.10.1
+          "$RUNNER_TEMP/build-audit/bin/python" -m pip_audit --require-hashes --no-deps --strict -r "$RUNNER_TEMP/build-candidate.lock"
