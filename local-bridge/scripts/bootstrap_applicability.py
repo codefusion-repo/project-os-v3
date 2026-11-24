@@ -32,6 +32,20 @@ RULES = {
         "83.0.0", 2),
     "GHSA-xmj3-9gf7-h52w": ("GHSA-xmj3-9gf7-h52w", (frozenset(),), "84.1.0", 1),
 }
+# Advisory content from the reviewed, unfiltered CI report 138687172797.
+DESCRIPTION_HASHES = {
+    "PYSEC-2025-49": [
+        "6192c551a4ba4fa93ccc47a75032cfba3e763db771230958e4b8b11193d5b9e5",
+        "c490d09663a9420b2da2baec1e9bf0579c2b600fb6469d031a030bb0913a3eaa"
+    ],
+    "PYSEC-2026-3447": [
+        "43d9fee1ccc44e1c0ff49485a1d76ead736580062078b07b309ca77b2fecac6a",
+        "1d826bcd66d6157a8ba093398d9893e6c87934e86264c752ca74e4d0b275c1a0"
+    ],
+    "GHSA-xmj3-9gf7-h52w": [
+        "a31a71214a6806a492c5a9f38e7a0ec750d690b585165bf847c422fac42135b5"
+    ]
+}
 WARNINGS = [
     "WARNING:pip_audit._cli:--no-deps is supported, but users are encouraged to fully hash their pinned dependencies",
     "WARNING:pip_audit._cli:Consider using a tool like `pip-compile`: https://pip-tools.readthedocs.io/en/latest/#using-hashes",
@@ -115,7 +129,7 @@ def evaluate(pins, report, rc, stderr, expected_pins):
                     or not isinstance(observed, list) or not all(isinstance(x, str) for x in observed)
                     or len(observed) != len(set(observed)) or frozenset(observed) not in aliases
                     or vuln.get("fix_versions") != [fix] or not isinstance(vuln.get("description"), str)
-                    or not vuln["description"].strip()):
+                    or sha(vuln["description"].encode("utf-8")) not in DESCRIPTION_HASHES[vuln["id"]]):
                 raise ValueError("Advisory record changed; review required")
             counts[vuln["id"]] += 1
             if counts[vuln["id"]] > limit:
@@ -149,4 +163,5 @@ if __name__ == "__main__":
         raise ValueError("Scanner diagnostics exceed bound")
     decision = evaluate(pins.read_text(), read_report(report), int(sys.argv[7]), stderr.read_text(), expected)
     decision["raw_report_sha256"] = sha(report.read_bytes())
+    decision["scanner_stderr_sha256"] = sha(stderr.read_bytes())
     print("BOOTSTRAP_APPLICABILITY_DECISION", json.dumps(decision, sort_keys=True))

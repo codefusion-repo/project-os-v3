@@ -14,6 +14,9 @@ spec.loader.exec_module(module)
 
 class ApplicabilityTests(unittest.TestCase):
     def setUp(self):
+        patcher = patch.object(module, "DESCRIPTION_HASHES", {key: [module.sha(b"reviewed advisory")] for key in module.RULES})
+        patcher.start()
+        self.addCleanup(patcher.stop)
         self.pins = "pip==26.3\nsetuptools==70.3.0\n"
         self.report = {"dependencies": [
             {"name": "pip", "version": "26.3", "vulns": []},
@@ -46,7 +49,7 @@ class ApplicabilityTests(unittest.TestCase):
             self.check()
 
     def test_changed_alias_fix_version_or_missing_metadata_blocks(self):
-        for field, value in (("aliases", ["CVE-new"]), ("fix_versions", ["999"]), ("description", "")):
+        for field, value in (("aliases", ["CVE-new"]), ("fix_versions", ["999"]), ("description", ""), ("description", "newly affected component")):
             with self.subTest(field=field):
                 report = copy.deepcopy(self.report)
                 report["dependencies"][1]["vulns"][0][field] = value
@@ -106,3 +109,8 @@ class ApplicabilityTests(unittest.TestCase):
                 wheel.write_bytes(b"changed")
                 with self.assertRaises(ValueError):
                     module.artifact_inventory(wheel, lock, installed)
+
+    def test_excess_duplicate_records_block(self):
+        self.report["dependencies"][1]["vulns"].extend([copy.deepcopy(self.report["dependencies"][1]["vulns"][0]) for _ in range(2)])
+        with self.assertRaisesRegex(ValueError, "multiplicity"):
+            self.check(stderr="\n".join(module.WARNINGS + ["Found 5 known vulnerabilities in 1 package"])+"\n")
