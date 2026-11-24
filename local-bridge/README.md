@@ -54,3 +54,25 @@ B1 adds local-only `core.py`, `worker.py` and `github.py`. These are deliberatel
 The GitHub reader accepts a local project-to-repository mapping and explicit grants. It uses a dedicated private gh configuration directory, explicit GET requests to github.com, a bounded response and pagination budget, and batches at most five issue references with two concurrent readers. Returned issue/comment data is untrusted and can include sensitive content; do not expose or publish it without a disclosure policy. Mocked tests do not prove live gh authentication, scope, or performance. Do not reuse personal credentials or enable this remotely before the caller-authentication gate.
 
 Pending: real caller authentication, local policy configuration integration, worker service lifecycle, evidence retrieval and sanitization, real GitHub credentials validation, guarded repository operations, isolated validation, then Android QA. The MCP server still exposes only the four disposable probe tools.
+
+## Experimental authenticated HTTP mode (B1)
+
+The original stdio command remains unchanged. The new `project-os-bridge-http` entrypoint listens on 127.0.0.1 (default 8765) and exposes ONLY authenticated disposable jobs. It requires a private local JSON configuration with exactly these fields:
+
+```json
+{
+  "issuer": "https://issuer.example",
+  "resource": "https://resource.example/mcp",
+  "subject": "owner-subject",
+  "client_id": "registered-oauth-client",
+  "public_key_pem": "PEM RSA public key from the trusted issuer"
+}
+```
+
+These are placeholders, not a working issuer or connector configuration. Use a real compatible authorization server; do not generate a signing private key for the bridge or paste bearer tokens into chat. The verifier accepts only RS256 JWT access tokens of type at+jwt, signed by the pinned RSA public key, exact issuer, audience, subject and client_id, scope bridge:probe, and a maximum one-hour token lifetime. Key rotation requires trusted config replacement and restart. This is a deliberately narrow compatibility profile, not a generic OIDC integration; opaque tokens and other token profiles are unsupported. Revocation before expiry requires stopping the service; no live introspection is implemented.
+
+After a compatible issuer and public resource identifier are verified, run the HTTP server with a private config and existing private state directory, then point tunnel-client to `http://127.0.0.1:8765/mcp` via `--mcp.server-url` rather than stdio. Exact OAuth connector setup depends on the issuer and must be tested before use. Do not configure fake metadata or expose loopback publicly. No actual issuer or ChatGPT OAuth end-to-end flow has been validated. The HTTP mode runs a periodic local worker and accepts only disposable probe jobs; stopping the process stops the worker, and interrupted jobs are reconciled on next exclusive claim cycle.
+
+## B2 preliminary primitives
+
+`repository.py` implements a fixed disposable UTF-8 file with digest-guarded atomic replacement and cooperating-process locking. `execution.py` validates that fixed fixture as data, without subprocesses. Neither is exposed by MCP. These are not a Git worktree provider or an execution sandbox. Same-user local processes are outside the trust boundary. Real repository changes and running repository-controlled tests require a separate isolated execution environment and additional acceptance tests.
