@@ -8,8 +8,8 @@ class SyntheticGitHubReader(GitHubReader):
 
     def _request(self, endpoint):
         parts=endpoint.split("/")
-        number=int(parts[3])
-        if len(parts)==4:
+        number=int(parts[4])
+        if len(parts)==5:
             return {"complete":True,"data":{"number":number,"title":"Synthetic fixture"}}
         return {"complete":True,"data":[{"body":"Synthetic comment","id":number}]}
 
