@@ -38,6 +38,10 @@ def main():
     parser.add_argument("--root",type=Path,required=True)
     args=parser.parse_args()
     os.umask(0o077)
+    if args.prepare_service:
+        from .service_setup import interactive_prepare
+        interactive_prepare(args.root)
+        return
     initialize(args.root,input("Exact AuthKit issuer: ").strip(),
                input("Exact MCP resource: ").strip(),input("WorkOS subject: ").strip())
     print("Private instance initialized; access remains disabled. Review SECURITY.md and WORKOS.md.")
