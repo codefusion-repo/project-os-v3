@@ -99,3 +99,22 @@ See [SECURITY.md](SECURITY.md) for the threat model, gates, private setup and se
 ## Current pilot status and production follow-up
 
 The disposable authenticated Git/Podman lifecycle passed live, including replay, restart and local deny/restore, at the SHA and evidence recorded in SECURITY.md. Earlier pending statements above describe historical milestones. Private loopback TLS is available through the paired certificate/key flags; follow WORKOS.md and validate the new transport before use. Preflight now separately reports `adb_emulator_attach` without printing serials. Android device operations, real repository access, supervised startup and reproducible installation are not yet certified or enabled.
+
+## Supervised HTTPS preparation (explicit, local only)
+
+Use the existing selector with `project-os-v3 --bridge-setup /absolute/private/instance` or its existing installed bridge initializer with `--root /absolute/private/instance --prepare-service`. The dedicated bridge venv must already be installed. The local wizard asks for the verified tunnel-client executable, optional previously bound image and runtime key using a hidden prompt. It creates only a new owner-private service subdirectory, never overwrites existing files or modifies the OAuth configuration, SQLite or opt-in. It generates a private local CA and a loopback leaf certificate valid for 90 days; the CA signing key is not persisted. Rotation requires a separately prepared replacement and operator approval. A partial preparation is retained for inspection; do not automatically delete it.
+
+The generated user-systemd unit is not installed, enabled or started automatically. Inspect it locally, ensure the original bridge and tunnel are stopped, then explicitly link and start:
+
+```bash
+systemctl --user link /absolute/private/instance/service/project-os-bridge.service
+systemctl --user daemon-reload
+systemctl --user start project-os-bridge.service
+systemctl --user stop project-os-bridge.service
+```
+
+Enable at login only if desired, after a successful live test, with `systemctl --user enable project-os-bridge.service`. WSL startup and lingering are separate OS decisions. The supervisor uses fixed arguments and sanitized child environments, waits for verified loopback TLS metadata before launching the tunnel, and stops the tunnel before the bridge. It stops both if either exits; it does not automatically restart or retry uncertain effects. Local child output is suppressed to avoid accidental credential logging; only fixed supervisor status is emitted. Remote readiness requires live MCP health. A forced stop may require container reconciliation. The runtime key is owner-private at rest, not encrypted, and supplied only to the tunnel child environment; same-user processes remain outside the trust boundary. Do not share personal credentials with the service account.
+
+## Dependency baseline
+
+For Python 3.12 Linux/WSL, the constraints file records exact runtime versions from a successful CI resolver output. Install in a clean dedicated venv using `python -m pip install -c local-bridge/requirements-linux-py312.txt ./local-bridge` followed by `python -m pip check` and the tests. CI uses the same constraints. This is preparation for reproducibility, not a hash-verified lock: build isolation, wheel hashes, alternate platforms and vulnerability review remain outstanding.

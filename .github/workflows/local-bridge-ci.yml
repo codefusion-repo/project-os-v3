@@ -22,7 +22,9 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - run: python -m pip install ./local-bridge
+      - run: python -m pip install -c local-bridge/requirements-linux-py312.txt ./local-bridge
+      - run: python -m pip check
+      - run: python -m pip list --format=freeze
       - run: python -m unittest discover -s local-bridge/tests -v
       - run: project-os-bridge --help
       - run: project-os-bridge-http --help
