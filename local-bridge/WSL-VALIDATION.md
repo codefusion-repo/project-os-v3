@@ -151,3 +151,28 @@ Repeat TLS checks and MCP health/replay after restart. End by revoking only the 
 Do not pull or run the blocked reference image or any candidate without separate approval. Scan an exact platform manifest digest, require zero HIGH/CRITICAL and non-EOL with complete inventory; review MEDIUM/LOW/UNKNOWN and scanner/database freshness. Then with explicit permission use a fresh disposable fixture state, exact audited digest and all ten isolation checks. No changes to an existing image binding. Static scan alone is not functional validation.
 
 Report only reviewed SHA, installer/test counts and exit statuses, preflight booleans, TLS 200/401, MCP readiness/403/replay equality, systemd stop/start status, approved image digest and aggregate audit findings. Keep secrets and private identifiers local. All gates plus an independent security review and separate explicit resource grant are required before real access. This runbook does not grant authorization.
+
+
+## 6. Local reconciliation after uncertain fixture effects
+
+The new queue records a random fixture ownership token in SQLite atomically with claim, before Podman can launch. The exact name and matching label identify the potential container; a timeout, unknown cleanup or interrupted fixture retains a durable barrier. No new job dispatch or new submission while pending (existing request-key replay and queued evidence are preserved); the HTTP process exits if the barrier remains after drain, and refuses restart. Normal Podman --rm is retained; the bridge never force-removes a container by name. No remote reconciliation tool.
+
+Stop the dedicated service and verify it is inactive. Verify locally that no old worker, Podman client, helper or previous launch can still create/rename a container. If uncertain, do not acknowledge; preserve state and obtain operator assistance. Do not run this against a live legacy process or the pilot.
+
+```bash
+# Only on the explicitly reviewed independent installation, as its service user.
+local-bridge/.venv/bin/python -I -m project_os_bridge.reconcile --state-dir "$ROOT/state" --list
+```
+
+The command reports only pending job IDs, exact container names and ownership labels. It acquires exclusive service/worker locks, recovers interrupted rows without retrying, and does not touch containers. For an extant container, inspect the exact name and label under the same rootless store; verify full immutable ID, matching ownership label and origin before any separately authorized removal by ID. Never remove arbitrary names, other jobs or all containers. This runbook does not authorize removal. If the identity is null (legacy uncertain job), it cannot be acknowledged by this CLI; preserve the state and resolve independently, with explicit operator review. No implicit migration or fresh-state workaround for uncertain effects.
+
+After proving prior execution is quiescent and obtaining explicit permission, confirm only the exact job from the list:
+
+```bash
+read -rp 'Exact pending job ID: ' JOB_ID
+local-bridge/.venv/bin/python -I -m project_os_bridge.reconcile --state-dir "$ROOT/state" --confirm-absent "$JOB_ID" --confirm-quiescent
+```
+
+The command queries exact name absence and absence of any container with the unique ownership label, both in the same rootless store. Any nonconclusive response or timeout leaves the barrier intact. It records resolution without changing terminal job evidence or rerunning the job. Re-list and verify no barriers before independently authorizing service startup. The quiescence assertion is operator evidence, not proof against hostile same-user processes; keep the dedicated account boundary.
+
+For independent candidate reproduction see [OCI-LOCAL-VALIDATION.md](OCI-LOCAL-VALIDATION.md). Preparation only; no image or fixture approval follows.

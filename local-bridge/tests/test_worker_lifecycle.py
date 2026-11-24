@@ -151,3 +151,15 @@ class WorkerLifecycleTests(unittest.TestCase):
         finally:
             watchdog.cancel()
             watchdog.join()
+
+    def test_uncertain_effect_stops_http_after_drain(self):
+        server = FakeServer()
+        verifier = Mock()
+        verifier.enabled.return_value = True
+        jobs = Mock()
+        jobs.pending_effects.return_value = [{"job_id":"synthetic","token":"synthetic"}]
+        with patch("project_os_bridge.authenticated.run_pending") as drain:
+            with self.assertRaisesRegex(RuntimeError, "DISPOSABLE_WORKER_FAILED"):
+                serve_with_worker(server,jobs,verifier,None)
+            drain.assert_called_once()
+        self.assertTrue(server.should_exit)

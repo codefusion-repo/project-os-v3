@@ -71,3 +71,26 @@ class ReconciliationTests(unittest.TestCase):
             run_pending(self.jobs,fixture_image="fixture")
         self.assertFalse(self.open().pending_effects())
         self.assertEqual(self.jobs.get("p",self.second)["state"],"SUCCEEDED")
+
+    def test_legacy_unknown_container_cannot_be_reconciled(self):
+        with self.jobs.transaction() as c:
+            c.execute("DROP TABLE fixture_effects")
+            c.execute("UPDATE jobs SET state='RUNNING' WHERE id=?", (self.first,))
+        reopened = self.open()
+        self.assertEqual(reopened.pending_effects(), [{"job_id": self.first, "token": None}])
+        with patch("project_os_bridge.reconcile.rootless_host") as host:
+            with self.assertRaises(PermissionError):
+                reconcile(reopened,self.first)
+            host.assert_not_called()
+        self.assertIsNone(reopened.claim())
+        self.assertEqual(reopened.get("p",self.second)["state"],"QUEUED")
+
+    def test_reconcile_timeout_keeps_barrier(self):
+        with exclusive_worker(self.jobs):
+            self.jobs.claim()
+        with patch("project_os_bridge.reconcile.rootless_host"), patch("project_os_bridge.reconcile.container_absent",
+                   side_effect=subprocess.TimeoutExpired("podman",10)):
+            with self.assertRaises(subprocess.TimeoutExpired):
+                reconcile(self.jobs,self.first)
+        self.assertEqual(len(self.open().pending_effects()),1)
+        self.assertIsNone(self.open().claim())

@@ -71,3 +71,11 @@ class IsolationTests(unittest.TestCase):
         self.assertEqual(result["reason"],"CLEANUP_UNVERIFIED")
         self.assertFalse(result["container_absent"])
         self.assertEqual(run.call_count,2)
+
+    def test_cleanup_query_timeout_requires_reconciliation(self):
+        import subprocess
+        with patch("project_os_bridge.isolated.os.getuid",return_value=1000), patch("project_os_bridge.isolated.subprocess.run") as run:
+            run.side_effect=[self.info(),Mock(returncode=0),subprocess.TimeoutExpired("podman",10)]
+            result=self.invoke()
+        self.assertEqual(result["reason"],"CLEANUP_UNVERIFIED")
+        self.assertFalse(result["container_absent"])

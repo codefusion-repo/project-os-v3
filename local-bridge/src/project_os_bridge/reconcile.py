@@ -29,9 +29,13 @@ def main():
     mode = parser.add_mutually_exclusive_group(required=True)
     mode.add_argument("--list", action="store_true")
     mode.add_argument("--confirm-absent", metavar="JOB_ID")
+    parser.add_argument("--confirm-quiescent", action="store_true", help="Operator verified no prior Podman or fixture operation can still create containers")
     args = parser.parse_args()
+    if args.confirm_quiescent != bool(args.confirm_absent):
+        parser.error("Explicit quiescence confirmation required only with --confirm-absent")
     if os.getuid() == 0:
         parser.error("Run as dedicated unprivileged service account")
+    os.umask(0o077)
     private_directory(args.state_dir)
     for name in ("jobs.sqlite3", "probe.sqlite3"):
         private_file(args.state_dir / name)

@@ -243,6 +243,8 @@ def main():
         operations = OPERATIONS if args.fixture_image else ("submit","read","cancel")
         workflows = ("probe_check","git_fixture_check") if args.fixture_image else ("probe_check",)
         jobs = Jobs(args.state_dir,Policy((verifier.subject,op,"disposable") for op in operations),workflows=workflows)
+        if jobs.pending_effects():
+            parser.error("RECONCILIATION_REQUIRED; stop and use local reconciliation")
         if args.fixture_image:
             bind_image(jobs,args.fixture_image)
         fixture = SyntheticGitHubReader(Policy([(verifier.subject,"github_read","disposable")]),args.state_dir)
