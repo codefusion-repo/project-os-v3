@@ -8,6 +8,10 @@ from mcp.server import MCPServer
 from mcp.server.auth.middleware.auth_context import get_access_token
 from mcp.server.auth.settings import AuthSettings
 from mcp.types import ToolAnnotations
+from mcp.server.auth.middleware.bearer_auth import AuthenticatedUser
+from starlette.middleware import Middleware
+from starlette.middleware.authentication import AuthenticationMiddleware
+from starlette.responses import JSONResponse
 from pydantic import AnyHttpUrl
 
 from .workos_auth import Verifier, SCOPE, load_config
@@ -71,6 +75,40 @@ def build_server(verifier, jobs, fixture_reader=None):
     return mcp
 
 
+class LocalAuthorizationMiddleware:
+    """Deny authenticated requests without issuing an OAuth challenge."""
+    def __init__(self, app, verifier):
+        self.app = app
+        self.verifier = verifier
+
+    async def __call__(self, scope, receive, send):
+        if (scope["type"] == "http" and scope["path"] == "/mcp"
+                and isinstance(scope.get("user"), AuthenticatedUser)
+                and not self.verifier.enabled()):
+            response = JSONResponse({"error": "local_access_revoked"}, status_code=403)
+            await response(scope, receive, send)
+            return
+        await self.app(scope, receive, send)
+
+
+def build_http_app(verifier, jobs, fixture_reader=None):
+    """Use the same authenticated ASGI stack in production and HTTP tests."""
+    server = build_server(verifier, jobs, fixture_reader)
+    app = server.streamable_http_app(
+        stateless_http=True, json_response=True, max_request_body_size=65536,
+        host="127.0.0.1",
+    )
+    # SDK v2.3.0 authenticates before routing. Insert the local policy gate
+    # immediately after that middleware; fail closed if the stack changes.
+    positions = [i for i, m in enumerate(app.user_middleware)
+                 if m.cls is AuthenticationMiddleware]
+    if len(positions) != 1:
+        raise RuntimeError("Expected exactly one authentication middleware")
+    app.user_middleware.insert(positions[0] + 1,
+                               Middleware(LocalAuthorizationMiddleware, verifier=verifier))
+    return app
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--config",required=True,type=Path)
@@ -81,13 +119,14 @@ def main():
     verifier = load_config(args.config, args.state_dir)
     jobs = Jobs(args.state_dir,Policy((verifier.subject,op,"disposable") for op in ("submit","read","cancel")))
     fixture = SyntheticGitHubReader(Policy([(verifier.subject,"github_read","disposable")]),args.state_dir)
-    server = build_server(verifier,jobs,fixture)
+    app = build_http_app(verifier,jobs,fixture)
     stop = threading.Event()
 
     def worker():
         while not stop.is_set():
             try:
-                run_pending(jobs)
+                if verifier.enabled():
+                    run_pending(jobs)
             except BlockingIOError:
                 pass
             stop.wait(0.5)
@@ -95,8 +134,8 @@ def main():
     thread = threading.Thread(target=worker,daemon=True)
     thread.start()
     try:
-        server.run(transport="streamable-http",host="127.0.0.1",port=args.port,
-                   stateless_http=True,json_response=True,max_request_body_size=65536)
+        import uvicorn
+        uvicorn.run(app, host="127.0.0.1", port=args.port)
     finally:
         stop.set()
         thread.join(timeout=6)

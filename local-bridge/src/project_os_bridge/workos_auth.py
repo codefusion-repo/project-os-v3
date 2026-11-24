@@ -129,7 +129,7 @@ class Verifier:
             return False
 
     async def verify_token(self, token):
-        if not self.enabled() or not isinstance(token,str) or not 1 <= len(token) <= 16384:
+        if not isinstance(token,str) or not 1 <= len(token) <= 16384:
             return None
         try:
             header = jwt.get_unverified_header(token)
@@ -157,8 +157,6 @@ class Verifier:
             if SCOPE not in scopes or not scopes <= SCOPES:
                 return None
             if type(claims["exp"]) is not int or type(claims["iat"]) is not int or not 0 < claims["exp"]-claims["iat"] <= 3600:
-                return None
-            if not self.enabled():
                 return None
             return AccessToken(token=token,client_id=CLIENT_ID,subject=self.subject,
                 scopes=sorted(scopes),expires_at=claims["exp"],resource=self.resource,claims={"iss":self.issuer})

@@ -8,7 +8,7 @@ from unittest.mock import patch
 from cryptography.hazmat.primitives.asymmetric import rsa
 import jwt
 from starlette.testclient import TestClient
-from project_os_bridge.authenticated import build_server
+from project_os_bridge.authenticated import build_http_app
 from project_os_bridge.workos_auth import Verifier, JWKS, SCOPE, CLIENT_ID, load_config
 from project_os_bridge.core import Jobs, Policy
 from project_os_bridge.github_fixture import SyntheticGitHubReader
@@ -91,13 +91,14 @@ class AuthTests(unittest.TestCase):
             load_config(cfg,self.root)
         self.assertIsNotNone(self.verify(self.token()))
         self.flag.unlink()
-        self.assertIsNone(self.verify(self.token()))
+        self.assertFalse(self.verifier.enabled())
+        self.assertIsNotNone(self.verify(self.token()))
+        self.assertIsNone(self.verify(self.token({"exp":1})))
 
     def test_http_transport(self):
         policy=Policy((SUBJECT,op,"disposable") for op in ("submit","read","cancel","github_read"))
         jobs=Jobs(self.root,policy)
-        app=build_server(self.verifier,jobs,SyntheticGitHubReader(policy,self.root)).streamable_http_app(
-            stateless_http=True,json_response=True)
+        app=build_http_app(self.verifier,jobs,SyntheticGitHubReader(policy,self.root))
         headers={"Accept":"application/json, text/event-stream","Authorization":"Bearer "+self.token()}
         def call(client,method,params,auth=headers):
             return client.post("/mcp",headers=auth,json={"jsonrpc":"2.0","id":1,"method":method,"params":params})
@@ -127,5 +128,28 @@ class AuthTests(unittest.TestCase):
             self.assertIn("job_id",json.dumps(first.json()))
             self.assertEqual(call(client,"tools/call",write).json()["result"],first.json()["result"])
             self.flag.unlink()
-            self.assertEqual(call(client,"tools/call",args).status_code,401)
-            self.assertEqual(call(client,"tools/call",write).status_code,401)
+            denied_write={"name":"submit_probe_job","arguments":{"request_key":"revoked-new"}}
+            for method, params in (
+                ("tools/list", {}),
+                ("tools/call", args),
+                ("tools/call", denied_write),
+                ("tools/call", {"name":"github_fixture_context","arguments":{"numbers":[1]}}),
+                ("tools/call", {"name":"get_job_status","arguments":{"job_id":"unknown"}}),
+                ("tools/call", {"name":"cancel_job","arguments":{"job_id":"unknown"}}),
+            ):
+                with self.subTest(method=method, params=params):
+                    denied=call(client,method,params)
+                    self.assertEqual(denied.status_code,403)
+                    self.assertEqual(denied.json(),{"error":"local_access_revoked"})
+                    self.assertNotIn("www-authenticate",denied.headers)
+            for invalid in ({},{"Authorization":"Bearer broken"},
+                            {"Authorization":"Bearer "+self.token({"exp":1})}):
+                denied=call(client,"tools/call",args,{"Accept":headers["Accept"],**invalid})
+                self.assertEqual(denied.status_code,401)
+                self.assertIn("www-authenticate",denied.headers)
+            self.assertEqual(client.get("/.well-known/oauth-protected-resource/mcp").status_code,200)
+            with jobs.transaction() as conn:
+                self.assertEqual(conn.execute("SELECT count(*) FROM jobs").fetchone()[0],1)
+            self.flag.touch(mode=0o600)
+            self.assertEqual(call(client,"tools/call",write).json()["result"],first.json()["result"])
+            self.assertEqual(call(client,"tools/call",args).status_code,200)
