@@ -33,13 +33,21 @@ cat > "$work/context/Containerfile" <<'BUILD'
 FROM docker.io/library/python@sha256:a61cbd76a882645de7f91423329fe43a67eed60d7da24f9e5331414bb3618b20
 RUN apk verify /packages/krb5-libs-1.22.3-r0.apk && apk add --no-network --no-cache --repositories-file /dev/null /packages/krb5-libs-1.22.3-r0.apk
 BUILD
-podman build --pull=never --network=none --http-proxy=false --no-cache --timestamp 0 --format oci --volume "$work/packages:/packages:ro" --tag "$tag" "$work/context"
+# A nonzero fixed epoch and fixed hostname avoid build-time metadata variation.
+build_candidate() {
+  podman build --pull=never --network=none --http-proxy=false --no-cache --timestamp 1700000000 --hostname project-os-ci --format oci --volume "$work/packages:/packages:ro" --tag "$1" "$work/context"
+}
+build_candidate "$tag"
+build_candidate localhost/project-os-alpine-ci:repeat
+podman push --format oci --digestfile "$work/repeat-digest" localhost/project-os-alpine-ci:repeat "oci:$work/repeat-oci:candidate"
 podman run --rm --pull=never --network=none --entrypoint /sbin/apk "$tag" --no-network --repositories-file /dev/null info -v | LC_ALL=C sort > "$work/after"
 diff -u "$work/expected" "$work/after"
 echo 'APK_CLOSURE_PASS: only krb5-libs changed'
 # Export to an OCI layout on this runner, not a registry. Audit exactly this digest.
 podman push --format oci --digestfile "$work/digest" "$tag" "oci:$work/oci:candidate"
 digest="$(cat "$work/digest")"
+repeat_digest="$(cat "$work/repeat-digest")"
+python3 "$repo/local-bridge/scripts/oci_repro.py" "$work/oci" "$digest" "$work/repeat-oci" "$repeat_digest"
 [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]
 python3 - "$work/oci" "$digest" <<'PY'
 import hashlib, json, sys
