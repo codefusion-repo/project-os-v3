@@ -24,26 +24,17 @@ jobs:
           /tmp/project-os-ci-venv/bin/python -m unittest discover -s tests -v
 
   probe:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
-          fetch-depth: 1
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - run: |
-          python -m pip --isolated install --only-binary=:all: --require-hashes -r local-bridge/requirements-linux-py312.lock
-      - run: python -m pip --isolated install --no-deps ./local-bridge
-      - run: python -m pip check
-      - run: python -m pip list --format=freeze
-      - run: python -m unittest discover -s local-bridge/tests -v
-      - run: project-os-bridge --help
-      - run: project-os-bridge-http --help
-      - run: project-os-bridge-fixture --help
-      - run: project-os-bridge-init --help
+      - name: Run installer and negative controls in disposable checkout
+        run: bash local-bridge/scripts/ci-install.sh
 
   dependency-evidence:
     runs-on: ubuntu-24.04
@@ -70,7 +61,7 @@ jobs:
           python -m venv "$RUNNER_TEMP/bridge-audit"
           "$RUNNER_TEMP/bridge-audit/bin/python" -m pip --isolated install --index-url https://pypi.org/simple pip-audit==2.10.1
           "$RUNNER_TEMP/bridge-audit/bin/python" -m pip_audit --version
-          "$RUNNER_TEMP/bridge-audit/bin/python" -m pip_audit --require-hashes --no-deps --strict -r "$RUNNER_TEMP/bridge-candidate.lock"
+          "$RUNNER_TEMP/bridge-audit/bin/python" -m pip_audit --require-hashes --no-deps --strict -r local-bridge/requirements-linux-py312.lock
 
   build-backend-evidence:
     runs-on: ubuntu-24.04
@@ -82,32 +73,25 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - name: Resolve build backend candidate
+      - name: Verify committed backend wheel and build offline
         run: |
-          python -m pip --isolated download --index-url https://pypi.org/simple --only-binary=:all: --no-deps setuptools==84.2.1 -d "$RUNNER_TEMP/build-wheels"
-          python - "$RUNNER_TEMP/build-wheels" <<'PY'
-          import sys, zipfile
-          from pathlib import Path
-          from email.parser import BytesParser
-          root=Path(sys.argv[1])
-          wheels=list(root.glob("*.whl"))
-          assert len(wheels)==1
-          with zipfile.ZipFile(wheels[0]) as z:
-              names=[n for n in z.namelist() if n.count("/")==1 and n.endswith(".dist-info/METADATA")]
-              assert len(names)==1
-              msg=BytesParser().parsebytes(z.read(names[0]))
-              assert msg["Name"].lower()=="setuptools"
-          (root/"pins.txt").write_text("setuptools=="+msg["Version"]+"\n")
-          PY
-          python local-bridge/scripts/lock_wheels.py "$RUNNER_TEMP/build-wheels/pins.txt" "$RUNNER_TEMP/build-wheels" > "$RUNNER_TEMP/build-candidate.lock"
-          cat "$RUNNER_TEMP/build-candidate.lock"
-      - name: Build with only the downloaded backend
-        run: |
+          python -m pip --isolated download --index-url https://pypi.org/simple --only-binary=:all: --require-hashes --no-deps -r local-bridge/requirements-build.lock -d "$RUNNER_TEMP/build-wheels"
           python -m venv "$RUNNER_TEMP/build-clean"
-          "$RUNNER_TEMP/build-clean/bin/python" -m pip --isolated install --no-index --find-links "$RUNNER_TEMP/build-wheels" --require-hashes -r "$RUNNER_TEMP/build-candidate.lock"
+          "$RUNNER_TEMP/build-clean/bin/python" -m pip --isolated install --no-index --find-links "$RUNNER_TEMP/build-wheels" --require-hashes -r local-bridge/requirements-build.lock
           "$RUNNER_TEMP/build-clean/bin/python" -m pip --isolated wheel --no-index --no-build-isolation --no-deps ./local-bridge -w "$RUNNER_TEMP/project-wheel"
       - name: Audit build backend
         run: |
           python -m venv "$RUNNER_TEMP/build-audit"
           "$RUNNER_TEMP/build-audit/bin/python" -m pip --isolated install --index-url https://pypi.org/simple pip-audit==2.10.1
-          "$RUNNER_TEMP/build-audit/bin/python" -m pip_audit --require-hashes --no-deps --strict -r "$RUNNER_TEMP/build-candidate.lock"
+          "$RUNNER_TEMP/build-audit/bin/python" -m pip_audit --require-hashes --no-deps --strict -r local-bridge/requirements-build.lock
+
+  powershell-wrapper:
+    runs-on: windows-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Test wrapper argument forwarding and failure propagation
+        shell: pwsh
+        run: ./local-bridge/tests/test_install_wrapper.ps1
