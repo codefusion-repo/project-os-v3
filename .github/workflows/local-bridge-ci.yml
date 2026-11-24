@@ -2,14 +2,8 @@ name: Local Bridge bootstrap
 
 on:
   pull_request:
-    paths:
-      - 'local-bridge/**'
-      - '.github/workflows/local-bridge-ci.yml'
   push:
     branches: [main]
-    paths:
-      - 'local-bridge/**'
-      - '.github/workflows/local-bridge-ci.yml'
 
 permissions:
   contents: read
@@ -22,6 +16,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
+          fetch-depth: 1
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
@@ -61,3 +56,43 @@ jobs:
           "$RUNNER_TEMP/bridge-audit/bin/python" -m pip --isolated install --index-url https://pypi.org/simple pip-audit==2.10.1
           "$RUNNER_TEMP/bridge-audit/bin/python" -m pip_audit --version
           "$RUNNER_TEMP/bridge-audit/bin/python" -m pip_audit --require-hashes --no-deps --strict -r "$RUNNER_TEMP/bridge-candidate.lock"
+
+  build-backend-evidence:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Resolve build backend candidate
+        run: |
+          python -m pip --isolated download --index-url https://pypi.org/simple --only-binary=:all: --no-deps setuptools -d "$RUNNER_TEMP/build-wheels"
+          python - "$RUNNER_TEMP/build-wheels" <<'PY'
+          import sys, zipfile
+          from pathlib import Path
+          from email.parser import BytesParser
+          root=Path(sys.argv[1])
+          wheels=list(root.glob("*.whl"))
+          assert len(wheels)==1
+          with zipfile.ZipFile(wheels[0]) as z:
+              names=[n for n in z.namelist() if n.endswith(".dist-info/METADATA")]
+              assert len(names)==1
+              msg=BytesParser().parsebytes(z.read(names[0]))
+              assert msg["Name"].lower()=="setuptools"
+          (root/"pins.txt").write_text("setuptools=="+msg["Version"]+"\n")
+          PY
+          python local-bridge/scripts/lock_wheels.py "$RUNNER_TEMP/build-wheels/pins.txt" "$RUNNER_TEMP/build-wheels" > "$RUNNER_TEMP/build-candidate.lock"
+          cat "$RUNNER_TEMP/build-candidate.lock"
+      - name: Build with only the downloaded backend
+        run: |
+          python -m venv "$RUNNER_TEMP/build-clean"
+          "$RUNNER_TEMP/build-clean/bin/python" -m pip --isolated install --no-index --find-links "$RUNNER_TEMP/build-wheels" --require-hashes -r "$RUNNER_TEMP/build-candidate.lock"
+          "$RUNNER_TEMP/build-clean/bin/python" -m pip --isolated wheel --no-index --no-build-isolation --no-deps ./local-bridge -w "$RUNNER_TEMP/project-wheel"
+      - name: Audit build backend
+        run: |
+          python -m venv "$RUNNER_TEMP/build-audit"
+          "$RUNNER_TEMP/build-audit/bin/python" -m pip --isolated install --index-url https://pypi.org/simple pip-audit==2.10.1
+          "$RUNNER_TEMP/build-audit/bin/python" -m pip_audit --require-hashes --no-deps --strict -r "$RUNNER_TEMP/build-candidate.lock"
