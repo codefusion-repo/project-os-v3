@@ -102,6 +102,46 @@ def read_metadata(context):
         connection.close()
 
 
+def supervise(bridge_cmd, tunnel_cmd, env, tunnel_env, context, verifier, stop):
+    bridge = tunnel = None
+    # Check the port before starting the child; never reuse an existing listener.
+    import socket
+    with socket.socket() as listener:
+        listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        listener.bind(("127.0.0.1",8765))
+    try:
+        if stop.is_set():
+            return
+        bridge = subprocess.Popen(bridge_cmd, env=env, stdin=subprocess.DEVNULL,
+                                  stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        deadline = time.monotonic()+30
+        while not stop.is_set():
+            if bridge.poll() is not None or time.monotonic()>=deadline:
+                raise RuntimeError("Local TLS readiness failed")
+            try:
+                metadata = read_metadata(context)
+                if metadata["resource"] != verifier.resource or metadata["authorization_servers"] != [verifier.issuer]:
+                    raise RuntimeError("Unexpected protected resource metadata")
+                break
+            except (OSError, ValueError):
+                stop.wait(0.25)
+        if stop.is_set():
+            return
+        if bridge.poll() is not None:
+            raise RuntimeError("Bridge exited before tunnel launch")
+        tunnel = subprocess.Popen(tunnel_cmd,env=tunnel_env,stdin=subprocess.DEVNULL,
+                                  stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+        print("HTTPS_BRIDGE_READY; TUNNEL_STARTED (remote readiness unverified)",flush=True)
+        while not stop.wait(0.5):
+            if bridge.poll() is not None or tunnel.poll() is not None:
+                raise RuntimeError("Child exited; both services stopping")
+    finally:
+        try:
+            stop_child(tunnel,10)
+        finally:
+            stop_child(bridge,90)
+
+
 def run(root):
     if os.getuid() == 0:
         raise PermissionError("Unprivileged account required")
@@ -115,40 +155,7 @@ def run(root):
         stop = threading.Event()
         for sig in (signal.SIGINT, signal.SIGTERM):
             signal.signal(sig, lambda *_:stop.set())
-        bridge = tunnel = None
-        # Check the port before starting the child; never reuse an existing listener.
-        import socket
-        with socket.socket() as listener:
-            listener.bind(("127.0.0.1",8765))
-        try:
-            bridge = subprocess.Popen(bridge_cmd, env=env, stdin=subprocess.DEVNULL,
-                                      stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            deadline = time.monotonic()+30
-            while not stop.is_set():
-                if bridge.poll() is not None or time.monotonic()>=deadline:
-                    raise RuntimeError("Local TLS readiness failed")
-                try:
-                    metadata = read_metadata(context)
-                    if metadata["resource"] != verifier.resource or metadata["authorization_servers"] != [verifier.issuer]:
-                        raise RuntimeError("Unexpected protected resource metadata")
-                    break
-                except (OSError, ValueError):
-                    stop.wait(0.25)
-            if stop.is_set():
-                return
-            if bridge.poll() is not None:
-                raise RuntimeError("Bridge exited before tunnel launch")
-            tunnel = subprocess.Popen(tunnel_cmd,env=tunnel_env,stdin=subprocess.DEVNULL,
-                                      stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
-            print("HTTPS_BRIDGE_READY; TUNNEL_STARTED (remote readiness unverified)",flush=True)
-            while not stop.wait(0.5):
-                if bridge.poll() is not None or tunnel.poll() is not None:
-                    raise RuntimeError("Child exited; both services stopping")
-        finally:
-            try:
-                stop_child(tunnel,10)
-            finally:
-                stop_child(bridge,90)
+        supervise(bridge_cmd, tunnel_cmd, env, tunnel_env, context, verifier, stop)
     finally:
         os.close(fd)
 
