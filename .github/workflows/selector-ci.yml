@@ -120,6 +120,10 @@ jobs:
 
   alpine-remediation:
     runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        replica: [1, 2]
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4

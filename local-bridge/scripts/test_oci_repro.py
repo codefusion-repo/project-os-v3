@@ -8,7 +8,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from oci_repro import compare, load_manifest
+from oci_repro import compare, load_manifest, verify_expected
 
 
 def layout(root, log):
@@ -33,6 +33,15 @@ def layout(root, log):
 
 
 class ReproTests(unittest.TestCase):
+    def test_expected_digest_lock(self):
+        expected = "sha256:" + "a" * 64
+        verify_expected(expected, expected)
+        with self.assertRaisesRegex(ValueError, "Manifest lock mismatch"):
+            verify_expected(expected, "sha256:" + "b" * 64)
+        for bad in ("", "sha256:" + "z" * 64, "a" * 64):
+            with self.subTest(bad=bad), self.assertRaises(ValueError):
+                verify_expected(bad, expected)
+
     def test_equal_independent_layouts(self):
         with tempfile.TemporaryDirectory() as tmp:
             a, b = Path(tmp) / "a", Path(tmp) / "b"

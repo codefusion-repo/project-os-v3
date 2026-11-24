@@ -52,6 +52,14 @@ digest="$(cat "$work/digest")"
 repeat_digest="$(cat "$work/repeat-digest")"
 python3 "$repo/local-bridge/scripts/oci_repro.py" "$work/oci" "$digest" "$work/repeat-oci" "$repeat_digest"
 [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]
+python3 - "$repo/local-bridge/scripts" "$repo/local-bridge/scripts/alpine-manifest.sha256" "$digest" <<'PY'
+import sys
+from pathlib import Path
+sys.path.insert(0, sys.argv[1])
+from oci_repro import verify_expected
+verify_expected(Path(sys.argv[2]).read_text().strip(), sys.argv[3])
+print("OCI_MANIFEST_LOCK_VERIFIED", sys.argv[3])
+PY
 python3 - "$work/oci" "$digest" <<'PY'
 import hashlib, json, sys
 from pathlib import Path
@@ -111,4 +119,16 @@ assert r['steps'][1]['original_unchanged'] is True and v['cleanup_verified'] is 
 assert len(v['checks']) == 10 and v['exit_code'] == 0
 PY
 [ "$audit" = 0 ] && [ "$fixture" = 0 ] && [ -f "$lock" ]
+# New CLI processes must recover exactly the original durable result without rerunning.
+job_id="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["id"])' "$work/evidence.json")"
+PYTHONPATH="$repo/local-bridge/src" "$work/venv/bin/python" -m project_os_bridge.vertical --state-dir "$work/state" --evidence-job-id "$job_id" > "$work/recovered.json"
+PYTHONPATH="$repo/local-bridge/src" "$work/venv/bin/python" -m project_os_bridge.vertical --state-dir "$work/state" --request-key ci-alpine-remediation --image "$image" > "$work/replay.json"
+python3 - "$work/evidence.json" "$work/recovered.json" "$work/replay.json" <<'PY'
+import json, sys
+from pathlib import Path
+a, b, c = (json.loads(Path(p).read_text()) for p in sys.argv[1:])
+assert a == b == c, 'Durable fixture evidence changed on retrieval or replay'
+assert [e['state'] for e in a['events']] == ['QUEUED', 'RUNNING', 'SUCCEEDED']
+print('ALPINE_FIXTURE_REPLAY_PASS')
+PY
 echo 'ALPINE_REMEDIATION_EVIDENCE_PASS'

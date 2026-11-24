@@ -6,6 +6,15 @@ import tarfile
 from pathlib import Path
 
 
+def verify_expected(expected, actual):
+    """Reject equal but unexpected images; a manifest lock is mandatory."""
+    for value in (expected, actual):
+        if len(value) != 71 or not value.startswith("sha256:") or any(c not in "0123456789abcdef" for c in value[7:]):
+            raise ValueError("Invalid manifest lock digest")
+    if expected != actual:
+        raise ValueError("Manifest lock mismatch")
+
+
 def checked_blob(root, digest):
     algorithm, value = digest.split(":", 1)
     if algorithm != "sha256" or len(value) != 64 or any(c not in "0123456789abcdef" for c in value):
