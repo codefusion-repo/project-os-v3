@@ -36,6 +36,8 @@ def initialize(root, issuer, resource, subject):
 def main():
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--root",type=Path,required=True)
+    parser.add_argument("--prepare-service", action="store_true",
+                        help="Prepare a new private HTTPS service for an existing instance")
     args=parser.parse_args()
     os.umask(0o077)
     if args.prepare_service:

@@ -53,3 +53,42 @@ class SetupTests(unittest.TestCase):
             with self.assertRaisesRegex(PermissionError, "unprivileged"):
                 initialize(root, ISSUER, RESOURCE, SUBJECT)
             self.assertFalse(root.exists())
+
+    @unittest.skipIf(os.getuid() == 0, "Requires unprivileged user")
+    def test_cli_both_paths(self):
+        import json
+        import sys
+        from project_os_bridge.setup_instance import main
+        with tempfile.TemporaryDirectory(dir="/tmp") as folder:
+            root = Path(folder).resolve() / "instance"
+            original_umask = os.umask(0o077)
+            try:
+                with patch.object(sys, "argv", ["project-os-bridge-init", "--root", str(root)]), patch(
+                    "builtins.input", side_effect=[ISSUER, RESOURCE, SUBJECT]
+                ):
+                    main()
+                config = (root / "oauth.json").read_bytes()
+                self.assertEqual(json.loads(config)["subject"], SUBJECT)
+                self.assertFalse((root / "state" / "allow-authenticated-probe").exists())
+                tunnel = Path(folder).resolve() / "tunnel-client"
+                tunnel.write_text("#!/bin/sh\nexit 0\n")
+                tunnel.chmod(0o700)
+                with patch.object(sys, "argv", ["project-os-bridge-init", "--root", str(root), "--prepare-service"]), patch(
+                    "builtins.input", side_effect=[str(tunnel), ""]
+                ), patch("sys.stdin.isatty", return_value=True), patch("sys.stderr.isatty", return_value=True), patch(
+                    "getpass.getpass", return_value="synthetic-only-runtime-key"
+                ):
+                    main()
+                self.assertEqual((root / "oauth.json").read_bytes(), config)
+                self.assertTrue((root / "service" / "project-os-bridge.service").is_file())
+                self.assertFalse((root / "state" / "allow-authenticated-probe").exists())
+            finally:
+                os.umask(original_umask)
+
+    def test_cli_help_exposes_service_option(self):
+        import subprocess
+        import sys
+        result = subprocess.run([sys.executable, "-I", "-m", "project_os_bridge.setup_instance", "--help"],
+                                capture_output=True, text=True, timeout=10)
+        self.assertEqual(result.returncode, 0)
+        self.assertIn("--prepare-service", result.stdout)
