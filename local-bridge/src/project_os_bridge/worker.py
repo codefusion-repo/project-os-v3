@@ -27,6 +27,9 @@ def run_pending(jobs: Jobs, *, fixture_image=None, enabled=lambda: True, fixture
             row = jobs.claim()
             if row is None:
                 return
+            if not enabled():
+                jobs.finish(row["id"], "BLOCKED", {"reason": "DISPATCH_DISABLED"})
+                return
             try:
                 if row["resource"] != "disposable":
                     raise ValueError("Unknown resource")

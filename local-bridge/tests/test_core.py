@@ -69,6 +69,18 @@ class CoreTests(unittest.TestCase):
         self.assertEqual(queue.get("local-test",first)["state"],"BLOCKED")
         self.assertEqual(queue.get("other",second)["state"],"SUCCEEDED")
 
+    def test_disabled_after_claim_blocks_without_dispatch(self):
+        from unittest.mock import patch
+        first = self.submit("first")
+        second = self.submit("second")
+        with patch.object(self.jobs.probe, "read", side_effect=AssertionError("must not execute")) as read:
+            checks = iter((True, False))
+            run_pending(self.jobs, enabled=lambda: next(checks))
+            read.assert_not_called()
+        self.assertEqual(self.jobs.get("local-test", first)["state"], "BLOCKED")
+        self.assertEqual(self.jobs.get("local-test", second)["state"], "QUEUED")
+        self.assertEqual(self.jobs.get("local-test", first)["result"], {"reason": "DISPATCH_DISABLED"})
+
     def test_active_quota_and_replay(self):
         from project_os_bridge.core import QueueLimitError
         first=self.submit("first")

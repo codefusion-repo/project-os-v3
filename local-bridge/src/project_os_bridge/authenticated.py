@@ -158,6 +158,41 @@ def tls_options(cert, key):
     return {"ssl_certfile": str(cert), "ssl_keyfile": str(key)}
 
 
+def serve_with_worker(server, jobs, verifier, fixture_image):
+    """Stop HTTP on infrastructure failure; preserve in-flight cleanup on shutdown."""
+    stop = threading.Event()
+    failed = threading.Event()
+
+    def worker():
+        try:
+            while not stop.is_set():
+                try:
+                    if verifier.enabled():
+                        run_pending(jobs, fixture_image=fixture_image,
+                                    enabled=lambda: verifier.enabled() and not stop.is_set(),
+                                    fixture_allowed=lambda: fixture_enabled(verifier, fixture_image))
+                except BlockingIOError:
+                    # Another exclusive worker owns the disposable queue.
+                    pass
+                stop.wait(0.5)
+        except Exception:
+            # Never log exceptions containing local paths or credentials.
+            failed.set()
+            stop.set()
+            server.should_exit = True
+
+    thread = threading.Thread(target=worker, daemon=False)
+    thread.start()
+    try:
+        server.run()
+    finally:
+        stop.set()
+        # Let a registered fixture finish cleanup before exiting.
+        thread.join()
+    if failed.is_set():
+        raise RuntimeError("DISPOSABLE_WORKER_FAILED")
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--config",required=True,type=Path)
@@ -184,29 +219,10 @@ def main():
         bind_image(jobs,args.fixture_image)
     fixture = SyntheticGitHubReader(Policy([(verifier.subject,"github_read","disposable")]),args.state_dir)
     app = build_http_app(verifier,jobs,fixture,fixture_image=args.fixture_image)
-    stop = threading.Event()
-
-    def worker():
-        while not stop.is_set():
-            try:
-                if verifier.enabled():
-                    run_pending(jobs, fixture_image=args.fixture_image,
-                                enabled=lambda: verifier.enabled() and not stop.is_set(),
-                                fixture_allowed=lambda: fixture_enabled(verifier,args.fixture_image))
-            except BlockingIOError:
-                pass
-            stop.wait(0.5)
-
-    thread = threading.Thread(target=worker,daemon=False)
-    thread.start()
-    try:
-        import uvicorn
-        uvicorn.run(app, host="127.0.0.1", port=args.port, access_log=False, **tls)
-    finally:
-        stop.set()
-        # The registered fixture may still be cleaning up its container.
-        # Do not abandon it on normal shutdown; no new claims after stop.
-        thread.join()
+    import uvicorn
+    server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=args.port,
+                                          access_log=False, **tls))
+    serve_with_worker(server, jobs, verifier, args.fixture_image)
 
 
 if __name__ == "__main__":
