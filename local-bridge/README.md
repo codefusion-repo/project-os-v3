@@ -87,3 +87,9 @@ local-bridge/.venv/bin/project-os-bridge-fixture --state-dir "$FIXTURE_STATE" --
 ```
 
 Keep the state directory private. Reusing the same request key retrieves the original job result; a new key creates a new fixture. Interrupted jobs are not replayed automatically. Evidence includes state transitions, Git HEAD, content digests, staged diff and validation outcome. A blocked isolation profile is not a successful validation. Unit tests exercise real Git and mock the container boundary; the actual container must be tested separately. The HTTP worker checks local authorization before each claim; in-flight operations are not cancelled. No adopted repos or real GitHub calls are enabled.
+
+## Independent self-hosted installations
+
+See [SECURITY.md](SECURITY.md) for the threat model, gates, private setup and service account guidance. Each installation has its own identity, tunnel, local credentials and databases. No shared Project OS service or collaborative RBAC. The source repository is public; a redistribution license is a separate maintainer decision.
+
+`project-os-bridge-init --root /absolute/private/new-directory` initializes a new disposable HTTP instance interactively. It never starts a server, grants access, provisions credentials or modifies OS permissions. Keep existing installations unchanged. Install from a reviewed full commit using a dedicated virtual environment, run pip check and the test suite. Direct dependencies are pinned; transitive lock and independently reproduced clean installation are still pending.
