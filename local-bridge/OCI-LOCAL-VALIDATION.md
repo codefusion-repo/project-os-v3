@@ -14,15 +14,20 @@ test "$(uname -m)" = x86_64
 read -rp 'Reviewed full SHA: ' REVIEWED_SHA
 [[ "$REVIEWED_SHA" =~ ^[0-9a-f]{40}$ ]]
 test "$(git rev-parse HEAD)" = "$REVIEWED_SHA"
-test -z "$(git status --porcelain --untracked-files=normal)"
+checkout_status="$(git status --porcelain --untracked-files=normal)"
+test -z "$checkout_status"
 test "$(git config --local --get remote.origin.url)" = https://github.com/codefusion-repo/project-os-v3.git
 repo="$(pwd -P)"
 scripts="$repo/local-bridge/scripts"
 export XDG_RUNTIME_DIR="/run/user/$(id -u)"
 podman --version
+# Reproducibility was demonstrated with 4.9.3 only; refuse a different version.
+test "$(podman --version)" = "podman version 4.9.3"
 podman info --format json | python3 -I -c 'import json,sys; h=json.load(sys.stdin)["host"]; assert h["security"]["rootless"] and h["security"]["seccompEnabled"] and h["cgroupVersion"]=="v2"'
-test -z "$(podman ps --all --quiet)"
-test -z "$(podman images --all --quiet)"
+containers="$(podman ps --all --quiet)"
+images="$(podman images --all --quiet)"
+test -z "$containers"
+test -z "$images"
 work="$(mktemp -d "$HOME/fixture-oci.XXXXXXXX")"
 mkdir "$work/packages" "$work/context" "$work/home" "$work/cache"
 base=docker.io/library/python@sha256:a61cbd76a882645de7f91423329fe43a67eed60d7da24f9e5331414bb3618b20
