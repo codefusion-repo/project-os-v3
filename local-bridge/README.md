@@ -49,4 +49,8 @@ No tool accepts an arbitrary path, command, marker, or authorization flag. The l
 
 ## Follow-on slices
 
-Durable jobs and handlers, read-only scoped GitHub context aggregation, guarded repository operations, isolated validation, then Android QA. These are pending, not exposed by this server.
+B1 adds local-only `core.py`, `worker.py` and `github.py`. These are deliberately NOT registered as MCP tools. The policy accepts a principal supplied by trusted local code; it is not a remote authentication mechanism. The queue persists request keys, states, results and transition events in SQLite. The exclusive Linux worker drains the disposable `probe_check` handler; interrupted jobs are marked INTERRUPTED and never automatically replayed. Cancellation is supported only before claim. No arbitrary commands are accepted.
+
+The GitHub reader accepts a local project-to-repository mapping and explicit grants. It uses a dedicated private gh configuration directory, explicit GET requests to github.com, a bounded response and pagination budget, and batches at most five issue references with two concurrent readers. Returned issue/comment data is untrusted and can include sensitive content; do not expose or publish it without a disclosure policy. Mocked tests do not prove live gh authentication, scope, or performance. Do not reuse personal credentials or enable this remotely before the caller-authentication gate.
+
+Pending: real caller authentication, local policy configuration integration, worker service lifecycle, evidence retrieval and sanitization, real GitHub credentials validation, guarded repository operations, isolated validation, then Android QA. The MCP server still exposes only the four disposable probe tools.
