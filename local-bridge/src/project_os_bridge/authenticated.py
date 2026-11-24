@@ -1,6 +1,7 @@
 """Authenticated disposable MCP tools; no real resources."""
 import argparse
 import os
+import ssl
 import threading
 from pathlib import Path
 
@@ -141,14 +142,36 @@ def build_http_app(verifier, jobs, fixture_reader=None, *, audit=None, limit=120
     return app
 
 
+def tls_options(cert, key):
+    """Validate the optional local TLS pair before starting any worker."""
+    if cert is None and key is None:
+        return {}
+    if cert is None or key is None:
+        raise ValueError("TLS certificate and key must be supplied together")
+    for path in (cert, key):
+        if not path.is_absolute() or path.resolve(strict=True) != path:
+            raise ValueError("Canonical TLS paths required")
+        private_file(path)
+    # Validate the pair before Uvicorn starts. Do not read key material into logs.
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    context.load_cert_chain(str(cert), str(key), password=lambda: "")
+    return {"ssl_certfile": str(cert), "ssl_keyfile": str(key)}
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--config",required=True,type=Path)
     parser.add_argument("--state-dir",required=True,type=Path)
     parser.add_argument("--port",type=int,default=8765)
     parser.add_argument("--fixture-image",help="Explicit local opt-in for fixed disposable fixture, approved digest only")
+    parser.add_argument("--tls-cert", type=Path, help="Private local PEM certificate")
+    parser.add_argument("--tls-key", type=Path, help="Private local PEM key")
     args = parser.parse_args()
     os.umask(0o077)
+    try:
+        tls = tls_options(args.tls_cert, args.tls_key)
+    except (OSError, ValueError):
+        parser.error("Invalid private TLS certificate/key configuration")
     verifier = load_config(args.config, args.state_dir)
     if os.getuid()==0 or os.path.lexists(args.state_dir/"local-fixture-mode"):
         parser.error("Unprivileged dedicated HTTP state required")
@@ -178,7 +201,7 @@ def main():
     thread.start()
     try:
         import uvicorn
-        uvicorn.run(app, host="127.0.0.1", port=args.port, access_log=False)
+        uvicorn.run(app, host="127.0.0.1", port=args.port, access_log=False, **tls)
     finally:
         stop.set()
         # The registered fixture may still be cleaning up its container.
