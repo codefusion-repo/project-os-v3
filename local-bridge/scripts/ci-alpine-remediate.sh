@@ -186,6 +186,9 @@ assert a == b == c, 'Durable fixture evidence changed on retrieval or replay'
 assert [e['state'] for e in a['events']] == ['QUEUED', 'RUNNING', 'SUCCEEDED']
 print('ALPINE_FIXTURE_REPLAY_PASS')
 PY
+if [ "$mode" = fixture-only ]; then
+  "$work/venv/bin/python" -I "$repo/local-bridge/scripts/ci-reconcile-fixture.py" "$image"
+fi
 echo "ALPINE_EVIDENCE_COMPLETE mode=$mode audit=$audit locks=1"
 # A failed command in a non-final AND-list is exempt from errexit. Explicitly fail here.
 if [ "$audit" != 0 ] || [ "$fixture" != 0 ] || [ ! -f "$lock" ] || [ ! -f "$manifest_lock" ]; then
