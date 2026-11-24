@@ -17,6 +17,7 @@ from pydantic import AnyHttpUrl
 from .workos_auth import Verifier, SCOPE, load_config
 from .core import Jobs, Policy
 from .worker import run_pending
+from .security import RequestGate, Audit
 from .github_fixture import SyntheticGitHubReader
 
 
@@ -91,7 +92,7 @@ class LocalAuthorizationMiddleware:
         await self.app(scope, receive, send)
 
 
-def build_http_app(verifier, jobs, fixture_reader=None):
+def build_http_app(verifier, jobs, fixture_reader=None, *, audit=None, limit=120):
     """Use the same authenticated ASGI stack in production and HTTP tests."""
     server = build_server(verifier, jobs, fixture_reader)
     app = server.streamable_http_app(
@@ -106,6 +107,9 @@ def build_http_app(verifier, jobs, fixture_reader=None):
         raise RuntimeError("Expected exactly one authentication middleware")
     app.user_middleware.insert(positions[0] + 1,
                                Middleware(LocalAuthorizationMiddleware, verifier=verifier))
+    # Outer gate limits all HTTP requests, including malformed tokens before JWKS.
+    # No reliance on client-controlled IP headers.
+    app.add_middleware(RequestGate, audit=audit or Audit(jobs.probe.root), limit=limit)
     return app
 
 

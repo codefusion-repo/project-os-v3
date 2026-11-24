@@ -153,3 +153,19 @@ class AuthTests(unittest.TestCase):
             self.flag.touch(mode=0o600)
             self.assertEqual(call(client,"tools/call",write).json()["result"],first.json()["result"])
             self.assertEqual(call(client,"tools/call",args).status_code,200)
+
+    def test_rate_limit_and_sanitized_audit(self):
+        policy=Policy([(SUBJECT,"read","disposable")])
+        jobs=Jobs(self.root,policy)
+        app=build_http_app(self.verifier,jobs,limit=2)
+        with TestClient(app,base_url="http://127.0.0.1:8765") as client:
+            for _ in range(2):
+                self.assertEqual(client.post("/mcp",headers={"Authorization":"Bearer synthetic-secret"}).status_code,401)
+            response=client.post("/mcp")
+            self.assertEqual(response.status_code,429)
+            self.assertIn("retry-after",response.headers)
+        raw=(self.root/"security-audit.jsonl").read_text()
+        self.assertNotIn("synthetic-secret",raw)
+        events=[json.loads(line) for line in raw.splitlines()]
+        self.assertEqual([e["status"] for e in events],[100,401,100,401,429])
+        self.assertTrue(all(set(e)=={"at","event","status"} for e in events))

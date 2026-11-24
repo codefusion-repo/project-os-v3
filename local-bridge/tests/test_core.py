@@ -68,3 +68,14 @@ class CoreTests(unittest.TestCase):
         run_pending(queue)
         self.assertEqual(queue.get("local-test",first)["state"],"BLOCKED")
         self.assertEqual(queue.get("other",second)["state"],"SUCCEEDED")
+
+    def test_active_quota_and_replay(self):
+        from project_os_bridge.core import QueueLimitError
+        first=self.submit("first")
+        for n in range(31):
+            self.submit(str(n))
+        self.assertEqual(first,self.submit("first"))
+        with self.assertRaises(QueueLimitError):
+            self.submit("overflow")
+        self.assertTrue(self.jobs.cancel("local-test",first))
+        self.submit("new")

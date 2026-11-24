@@ -24,6 +24,10 @@ class Policy:
             raise PermissionError("DENIED")
 
 
+class QueueLimitError(RuntimeError):
+    pass
+
+
 class Jobs:
     """Single-host SQLite queue; no automatic retry of interrupted side effects."""
     def __init__(self, root: Path, policy: Policy, *, workflows=("probe_check",)):
@@ -76,6 +80,12 @@ class Jobs:
                 if row["workflow"] != workflow:
                     raise ValueError("Idempotency conflict")
                 return row["id"]
+            # Bound total retained rows and active work; no implicit deletion.
+            if c.execute("SELECT count(*) FROM jobs").fetchone()[0] >= 10000:
+                raise QueueLimitError("JOB_STORAGE_LIMIT")
+            if c.execute("SELECT count(*) FROM jobs WHERE principal=? AND state IN ('QUEUED','RUNNING')",
+                         (principal,)).fetchone()[0] >= 32:
+                raise QueueLimitError("ACTIVE_JOB_LIMIT")
             job_id = uuid.uuid4().hex
             stamp = now()
             c.execute("INSERT INTO jobs VALUES(?,?,?,?,?,?,?,?,?)",
