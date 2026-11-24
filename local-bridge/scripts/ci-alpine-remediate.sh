@@ -17,6 +17,7 @@ tag=localhost/project-os-alpine-ci:candidate
 podman info --format json | python3 -c 'import json,sys; h=json.load(sys.stdin)["host"]; assert h["security"]["rootless"] and h["security"]["seccompEnabled"] and h["cgroupVersion"]=="v2"'
 podman --version
 python3 -m unittest discover -s "$repo/local-bridge/scripts" -p test_oci_repro.py -v
+python3 -m unittest discover -s "$repo/local-bridge/scripts" -p test_alpine_findings.py -v
 podman pull --platform linux/amd64 "$base"
 [ "$(podman image inspect --format '{{.Digest}}' "$base")" = "${base##*@}" ]
 # All package acquisition is HTTPS; signature is verified using keys in the pinned base.
@@ -88,6 +89,11 @@ curl --fail --silent --show-error --location --proto '=https' --proto-redir '=ht
 scan_env=(env -i PATH=/usr/bin:/bin HOME="$work/home" LC_ALL=C)
 "${scan_env[@]}" "$work/trivy" --cache-dir "$work/cache" image --input "$work/oci@$digest" --platform linux/amd64 --scanners vuln --pkg-types os,library --ignorefile /dev/null --list-all-pkgs --no-progress --timeout 8m --format json --output "$work/report.json"
 "${scan_env[@]}" "$work/trivy" --cache-dir "$work/cache" --version
+# Review every finding against the public Alpine v3.24 secdb. Never change the scan gate.
+for section in main community; do
+  curl --fail --silent --show-error --proto '=https' --max-time 120 --max-filesize 10000000 -o "$work/$section.json" "https://secdb.alpinelinux.org/v3.24/$section.json"
+done
+python3 "$repo/local-bridge/scripts/alpine_findings.py" "$work/report.json" "$work/oci@$digest" "$work/main.json" "$work/community.json"
 # Preserve audit result even if the compatibility checks fail, and vice versa.
 audit=0
 python3 - "$repo/local-bridge/scripts" "$work/report.json" "$work/oci@$digest" <<'PY' || audit=$?
