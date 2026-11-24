@@ -24,13 +24,9 @@ chmod 0444 "$work/packages/$package"
 podman run --rm --pull=never --network=none --http-proxy=false --volume "$work/packages:/packages:ro" --entrypoint /sbin/apk "$base" verify "/packages/$package"
 (cd "$work/packages" && sha256sum "$package") > "$work/observed.sha256"
 cat "$work/observed.sha256"
-if [ -f "$lock" ]; then
-  diff -u "$lock" "$work/observed.sha256"
-  echo 'APK_LOCK_VERIFIED'
-else
-  echo 'APK_LOCK_PENDING: discovery build only'
-fi
-podman run --rm --pull=never --network=none --entrypoint /sbin/apk "$base" info -v | LC_ALL=C sort > "$work/before"
+diff -u "$lock" "$work/observed.sha256"
+echo 'APK_LOCK_VERIFIED'
+podman run --rm --pull=never --network=none --entrypoint /sbin/apk "$base" --no-network --repositories-file /dev/null info -v | LC_ALL=C sort > "$work/before"
 grep -Fxq krb5-libs-1.22.2-r1 "$work/before"
 sed 's/^krb5-libs-1\.22\.2-r1$/krb5-libs-1.22.3-r0/' "$work/before" | LC_ALL=C sort > "$work/expected"
 cat > "$work/context/Containerfile" <<'BUILD'
@@ -38,7 +34,7 @@ FROM docker.io/library/python@sha256:a61cbd76a882645de7f91423329fe43a67eed60d7da
 RUN apk verify /packages/krb5-libs-1.22.3-r0.apk && apk add --no-network --no-cache --repositories-file /dev/null /packages/krb5-libs-1.22.3-r0.apk
 BUILD
 podman build --pull=never --network=none --http-proxy=false --no-cache --timestamp 0 --format oci --volume "$work/packages:/packages:ro" --tag "$tag" "$work/context"
-podman run --rm --pull=never --network=none --entrypoint /sbin/apk "$tag" info -v | LC_ALL=C sort > "$work/after"
+podman run --rm --pull=never --network=none --entrypoint /sbin/apk "$tag" --no-network --repositories-file /dev/null info -v | LC_ALL=C sort > "$work/after"
 diff -u "$work/expected" "$work/after"
 echo 'APK_CLOSURE_PASS: only krb5-libs changed'
 # Export to an OCI layout on this runner, not a registry. Audit exactly this digest.
