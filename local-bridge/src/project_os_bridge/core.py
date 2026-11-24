@@ -89,16 +89,17 @@ class Jobs:
 
     def claim(self):
         with self.transaction() as c:
-            row = c.execute("SELECT * FROM jobs WHERE state='QUEUED' ORDER BY created,id LIMIT 1").fetchone()
-            if not row:
-                return None
-            try:
-                self.policy.require(row["principal"], "submit", row["resource"])
-            except PermissionError:
-                self.transition(c,row["id"],"QUEUED","BLOCKED")
-                return None
-            self.transition(c,row["id"],"QUEUED","RUNNING")
-            return dict(row)
+            while True:
+                row = c.execute("SELECT * FROM jobs WHERE state='QUEUED' ORDER BY created,id LIMIT 1").fetchone()
+                if not row:
+                    return None
+                try:
+                    self.policy.require(row["principal"], "submit", row["resource"])
+                except PermissionError:
+                    self.transition(c,row["id"],"QUEUED","BLOCKED")
+                    continue
+                self.transition(c,row["id"],"QUEUED","RUNNING")
+                return dict(row)
 
     def transition(self,c,job_id,old,new,result=None):
         cur = c.execute("UPDATE jobs SET state=?,result=?,updated=? WHERE id=? AND state=?",

@@ -64,7 +64,9 @@ class GitHubReader:
         prefix = f"repos/{repo}/issues/{number}"
         issue = self._request(prefix)
         comments = []
-        complete = issue["complete"]
+        complete = issue["complete"] and isinstance(issue.get("data"), dict)
+        if issue["complete"] and not complete:
+            issue = {"complete": False, "error": "INVALID_RESPONSE"}
         # Bounded pagination; never silently imply exhaustive results.
         error = None
         for page in range(1, 6):
@@ -73,7 +75,12 @@ class GitHubReader:
                 complete = False
                 error = result.get("error","INVALID_RESPONSE")
                 break
-            comments.extend(result["data"])
+            candidate = comments + result["data"]
+            if len(json.dumps(candidate, ensure_ascii=False).encode("utf-8")) > 1_048_576:
+                complete = False
+                error = "AGGREGATE_LIMIT"
+                break
+            comments = candidate
             if len(result["data"]) < 100:
                 break
         else:

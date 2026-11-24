@@ -58,3 +58,13 @@ class CoreTests(unittest.TestCase):
         revoked = Jobs(self.root,Policy([("local-test","read","disposable")]))
         run_pending(revoked)
         self.assertEqual(revoked.get("local-test",job)["state"],"BLOCKED")
+
+    def test_revoked_job_does_not_starve_queue(self):
+        first = self.submit("first")
+        policy = Policy([("other","submit","disposable"),("other","read","disposable"),
+                         ("local-test","read","disposable")])
+        queue = Jobs(self.root,policy)
+        second = queue.submit("other","disposable","probe_check","second")
+        run_pending(queue)
+        self.assertEqual(queue.get("local-test",first)["state"],"BLOCKED")
+        self.assertEqual(queue.get("other",second)["state"],"SUCCEEDED")

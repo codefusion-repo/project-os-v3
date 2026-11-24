@@ -41,3 +41,18 @@ class GitHubTests(unittest.TestCase):
             result = self.reader.issue_context("local","demo",1)
         self.assertFalse(result["complete"])
         self.assertEqual(result["comments_error"],"PAGE_LIMIT")
+
+    def test_invalid_issue_response(self):
+        with patch.object(self.reader,"_request",return_value={"complete":True,"data":[]}):
+            result = self.reader.issue_context("local","demo",1)
+        self.assertFalse(result["complete"])
+        self.assertEqual(result["issue"]["error"],"INVALID_RESPONSE")
+
+    def test_aggregate_limit(self):
+        def fake(endpoint):
+            return {"complete":True,"data":[{"body":"x"*6000}]*100 if "/comments?" in endpoint else {}}
+        with patch.object(self.reader,"_request",side_effect=fake):
+            result = self.reader.issue_context("local","demo",1)
+        self.assertFalse(result["complete"])
+        self.assertEqual(result["comments_error"],"AGGREGATE_LIMIT")
+        self.assertEqual(len(result["comments"]),100)
