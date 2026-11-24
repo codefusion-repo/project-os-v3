@@ -1,5 +1,8 @@
 """Authenticated disposable MCP tools; no real resources."""
 import argparse
+import fcntl
+import stat
+from contextlib import contextmanager
 import os
 import ssl
 import threading
@@ -17,12 +20,12 @@ from pydantic import AnyHttpUrl
 
 from .workos_auth import Verifier, SCOPE, load_config
 from .core import Jobs, Policy
-from .worker import run_pending
+from .worker import run_pending, WorkerBusy
 from .security import RequestGate, Audit
 from .github_fixture import SyntheticGitHubReader
 from .vertical import OPERATIONS, bind_image
 from .isolated import IMAGE
-from .workos_auth import private_file
+from .workos_auth import private_file, private_directory
 
 
 def fixture_enabled(verifier, image):
@@ -158,6 +161,22 @@ def tls_options(cert, key):
     return {"ssl_certfile": str(cert), "ssl_keyfile": str(key)}
 
 
+@contextmanager
+def exclusive_http_service(root):
+    """One HTTP process per private state, across different port numbers."""
+    private_directory(root)
+    fd = os.open(root / "http-service.lock",
+                 os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW | os.O_NONBLOCK, 0o600)
+    try:
+        st = os.fstat(fd)
+        if not stat.S_ISREG(st.st_mode) or st.st_uid != os.getuid() or st.st_nlink != 1 or st.st_mode & 0o077:
+            raise PermissionError("Unsafe HTTP service lock")
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        yield
+    finally:
+        os.close(fd)
+
+
 def serve_with_worker(server, jobs, verifier, fixture_image):
     """Stop HTTP on infrastructure failure; preserve in-flight cleanup on shutdown."""
     stop = threading.Event()
@@ -165,13 +184,17 @@ def serve_with_worker(server, jobs, verifier, fixture_image):
 
     def worker():
         try:
+            # Never execute queued work before Uvicorn has bound its listener.
+            while not server.started:
+                if stop.wait(0.05):
+                    return
             while not stop.is_set():
                 try:
                     if verifier.enabled():
                         run_pending(jobs, fixture_image=fixture_image,
                                     enabled=lambda: verifier.enabled() and not stop.is_set(),
                                     fixture_allowed=lambda: fixture_enabled(verifier, fixture_image))
-                except BlockingIOError:
+                except WorkerBusy:
                     # Another exclusive worker owns the disposable queue.
                     pass
                 stop.wait(0.5)
@@ -191,6 +214,8 @@ def serve_with_worker(server, jobs, verifier, fixture_image):
         thread.join()
     if failed.is_set():
         raise RuntimeError("DISPOSABLE_WORKER_FAILED")
+    if not server.started:
+        raise RuntimeError("HTTP_STARTUP_FAILED")
 
 
 def main():
@@ -212,17 +237,18 @@ def main():
         parser.error("Unprivileged dedicated HTTP state required")
     if args.fixture_image is not None and not IMAGE.fullmatch(args.fixture_image):
         parser.error("Digest-pinned image required")
-    operations = OPERATIONS if args.fixture_image else ("submit","read","cancel")
-    workflows = ("probe_check","git_fixture_check") if args.fixture_image else ("probe_check",)
-    jobs = Jobs(args.state_dir,Policy((verifier.subject,op,"disposable") for op in operations),workflows=workflows)
-    if args.fixture_image:
-        bind_image(jobs,args.fixture_image)
-    fixture = SyntheticGitHubReader(Policy([(verifier.subject,"github_read","disposable")]),args.state_dir)
-    app = build_http_app(verifier,jobs,fixture,fixture_image=args.fixture_image)
-    import uvicorn
-    server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=args.port,
-                                          access_log=False, **tls))
-    serve_with_worker(server, jobs, verifier, args.fixture_image)
+    with exclusive_http_service(args.state_dir):
+        operations = OPERATIONS if args.fixture_image else ("submit","read","cancel")
+        workflows = ("probe_check","git_fixture_check") if args.fixture_image else ("probe_check",)
+        jobs = Jobs(args.state_dir,Policy((verifier.subject,op,"disposable") for op in operations),workflows=workflows)
+        if args.fixture_image:
+            bind_image(jobs,args.fixture_image)
+        fixture = SyntheticGitHubReader(Policy([(verifier.subject,"github_read","disposable")]),args.state_dir)
+        app = build_http_app(verifier,jobs,fixture,fixture_image=args.fixture_image)
+        import uvicorn
+        server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=args.port,
+                                              access_log=False, **tls))
+        serve_with_worker(server, jobs, verifier, args.fixture_image)
 
 
 if __name__ == "__main__":

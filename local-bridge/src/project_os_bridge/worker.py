@@ -6,6 +6,10 @@ from contextlib import contextmanager
 from .core import Jobs
 
 
+class WorkerBusy(BlockingIOError):
+    """Only an occupied worker lock is a recoverable contention event."""
+
+
 @contextmanager
 def exclusive_worker(jobs: Jobs):
     jobs.probe._check_directory()
@@ -13,7 +17,10 @@ def exclusive_worker(jobs: Jobs):
     fd = os.open(path, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
     try:
         jobs.probe._check_file(path)
-        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as exc:
+            raise WorkerBusy("Worker lock occupied") from exc
         yield
     finally:
         os.close(fd)
