@@ -30,16 +30,7 @@ source_dir="$work/source/local-bridge"
 wheel="$work/wheels/pip-26.3-py3-none-any.whl"
 curl --disable --fail --silent --show-error --proto '=https' --noproxy '*' --max-time 120 --max-filesize 5000000 -o "$wheel" 'https://files.pythonhosted.org/packages/07/25/ee8c38ae72d66b844ce8eb9711ba905dba21ca1a8a0c960057c41cd23337/pip-26.3-py3-none-any.whl'
 # Verify bytes before importing ANY code from the downloaded wheel.
-"$VENV/bin/python" -I - "$wheel" "$source_dir/requirements-bootstrap.lock" <<'PY'
-import hashlib, pathlib, sys
-wheel, lock = map(pathlib.Path, sys.argv[1:])
-expected = lock.read_text().strip().split()
-if len(expected) != 2 or expected[0] != 'pip==26.3' or not expected[1].startswith('--hash=sha256:'):
-    raise SystemExit('Invalid bootstrap lock')
-if hashlib.sha256(wheel.read_bytes()).hexdigest() != expected[1].split(':', 1)[1]:
-    raise SystemExit('Bootstrap wheel hash mismatch')
-print('BOOTSTRAP_WHEEL_VERIFIED')
-PY
+"$VENV/bin/python" -I "$source_dir/scripts/bootstrap_verify.py" "$wheel" "$source_dir/requirements-bootstrap.lock"
 clean=(env -i PATH="$VENV/bin:/usr/bin:/bin" HOME="$work/home" LC_ALL=C PIP_CONFIG_FILE=/dev/null)
 "${clean[@]}" "$VENV/bin/python" -I -c 'import runpy,sys; sys.path.insert(0,sys.argv.pop(1)); runpy.run_module("pip",run_name="__main__")' "$wheel" --isolated --disable-pip-version-check --no-input --no-cache-dir install --no-index --find-links "$work/wheels" --only-binary=:all: --require-hashes --no-deps -r "$source_dir/requirements-bootstrap.lock"
 pip_run() {

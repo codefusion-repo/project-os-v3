@@ -74,6 +74,31 @@ class AuthTests(unittest.TestCase):
         with patch("project_os_bridge.workos_auth.jwt.get_unverified_header", side_effect=RecursionError):
             self.assertIsNone(self.verify(self.token()))
 
+    def test_malformed_numeric_date_http_401(self):
+        jobs = Jobs(self.root, Policy([(SUBJECT, "submit", "disposable")]))
+        app = build_http_app(self.verifier, jobs)
+        with TestClient(app, base_url="http://127.0.0.1:8765") as client:
+            result = client.post("/mcp", headers={"Authorization": "Bearer " + self.token({"exp": float("inf")})})
+            self.assertEqual(result.status_code, 401)
+        with jobs.transaction() as conn:
+            self.assertEqual(conn.execute("SELECT count(*) FROM jobs").fetchone()[0], 0)
+
+    def test_jwks_wire_size_and_encoding(self):
+        import httpx
+        client_class = httpx.Client
+        for headers, content, expected in (
+            ({"Content-Encoding": "gzip"}, b"not decompressed", "Compressed JWKS"),
+            ({}, b"x" * 65537, "JWKS too large"),
+        ):
+            with self.subTest(expected=expected):
+                def handle(request):
+                    self.assertEqual(request.headers["accept-encoding"], "identity")
+                    return httpx.Response(200, headers=headers, stream=httpx.ByteStream(content))
+                with patch("project_os_bridge.workos_auth.httpx.Client",
+                           side_effect=lambda **kw: client_class(transport=httpx.MockTransport(handle), **kw)):
+                    with self.assertRaisesRegex(ValueError, expected):
+                        JWKS.fetch(self.jwks)
+
     def test_invalid_signature_header(self):
         self.assertIsNone(self.verify(self.token(key=self.other)))
         self.assertIsNone(self.verify(self.token(headers={"jku":"https://wrong.example"})))

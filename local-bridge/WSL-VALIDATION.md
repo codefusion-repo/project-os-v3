@@ -37,7 +37,7 @@ After explicitly checking the distribution name, terminate only the NEW distribu
 
 ## 2. Independent installation and boundary checks
 
-Run as the new service account. Replace REVIEWED_SHA with the full explicitly reviewed Git commit (not a tag, merge preview or abbreviated SHA). Stop at any failure.
+Run as the new service account. Replace REVIEWED_SHA with the full explicitly reviewed Git commit (not a tag, merge preview or abbreviated SHA). Stop at any failure. Before this step, obtain a reviewed disposition of the strict bootstrap/vendor audit in SECURITY.md; a passing installation does not override a failing security job. Verify host Python 3.12, distribution package provenance, OS/curl CA trust and security updates locally. The installer skips ensurepip, verifies the pinned pip wheel before execution and uses the reviewed Git tree and offline wheel installs. It requires direct HTTPS access to PyPI and files.pythonhosted.org; do not disable TLS or substitute a mirror/wheel on failure.
 
 ```bash
 set -euo pipefail

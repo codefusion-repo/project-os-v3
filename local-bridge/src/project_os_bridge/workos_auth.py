@@ -62,13 +62,15 @@ class JWKS:
 
     def fetch(self):
         with httpx.Client(timeout=5.0, follow_redirects=False, trust_env=False) as client:
-            with client.stream("GET", self.url, headers={"Accept":"application/json"}) as response:
+            with client.stream("GET", self.url, headers={"Accept":"application/json","Accept-Encoding":"identity"}) as response:
                 response.raise_for_status()
+                if response.headers.get("Content-Encoding", "identity").lower() != "identity":
+                    raise ValueError("Compressed JWKS rejected")
                 raw = bytearray()
-                for chunk in response.iter_bytes(chunk_size=8192):
-                    raw.extend(chunk)
-                    if len(raw) > MAX_JWKS:
+                for chunk in response.iter_raw():
+                    if len(raw) + len(chunk) > MAX_JWKS:
                         raise ValueError("JWKS too large")
+                    raw.extend(chunk)
                 return json.loads(raw)
 
     def key(self, kid):
