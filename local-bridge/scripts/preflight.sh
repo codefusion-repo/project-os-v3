@@ -19,6 +19,30 @@ if [ "$(id -u)" -ne 0 ] && [ "$(timeout 10s /usr/bin/podman info --format '{{.Ho
 else
   printf 'podman_rootless: UNAVAILABLE_OR_FAILED\n'
 fi
+# Account checks are inventory, never a real-resource authorization.
+if [ "$(id -u)" -ne 0 ] && ! id -Gn | tr ' ' '\n' | grep -Eq '^(sudo|wheel|docker|lxd|libvirt|disk|root|adm|podman)
+check emulator emulator -version
+# Inventory only; do not print device serials, start an emulator, install
+# packages or issue shell commands to a device. ADB may start its local server.
+if devices="$(timeout 10s adb devices 2>/dev/null)"; then
+  if printf '%s\n' "$devices" | awk '$1 ~ /^emulator-[0-9]+$/ && $2 == "device" { found=1 } END { exit !found }'; then
+    printf 'adb_emulator_attach: CONNECTED\n'
+  else
+    printf 'adb_emulator_attach: NOT_DETECTED\n'
+  fi
+else
+  printf 'adb_emulator_attach: UNAVAILABLE_OR_FAILED\n'
+fi
+check windows_interop cmd.exe /d /c exit 0
+check adb_windows adb.exe version
+check emulator_windows emulator.exe -version
+printf 'Preflight only: no gh authentication, device authorization, boot readiness or isolation proof.\n'
+; then
+  printf 'service_account_groups: PASS\n'
+else
+  printf 'service_account_groups: BLOCKED\n'
+fi
+check systemd_user systemctl --user show-environment
 check adb adb version
 check emulator emulator -version
 # Inventory only; do not print device serials, start an emulator, install

@@ -1021,8 +1021,17 @@ def main(argv=None):
     parser.add_argument('--question', help='pregunta del PM')
     parser.add_argument('--output-dir', help='carpeta de salida explícita')
     parser.add_argument('--prototype', action='store_true', help='implement + rapid-prototype')
+    parser.add_argument('--bridge-setup', help='preparar servicio HTTPS privado existente; no inicia ni habilita servicios')
     args = parser.parse_args(argv)
     try:
+        if args.bridge_setup:
+            if any(value for key, value in vars(args).items() if key != 'bridge_setup'):
+                parser.error('--bridge-setup no se combina con otras opciones')
+            import subprocess
+            python = ROOT / 'local-bridge/.venv/bin/python'
+            if not python.is_file() or (ROOT / 'local-bridge/.venv').is_symlink():
+                parser.error('Instala primero el Local Bridge en su entorno dedicado.')
+            return subprocess.run([str(python), '-I', '-m', 'project_os_bridge.setup_instance', '--root', args.bridge_setup, '--prepare-service']).returncode
         check_sensitive(args.project, args.repo, args.workflow, *args.skill, args.locator, args.objective, args.feedback, args.question, args.output_dir, args.name, args.checkout, args.target_version)
         if args.list:
             operations, skills, templates = discover()
