@@ -189,13 +189,13 @@ class AuthTests(unittest.TestCase):
             headers["MCP-Protocol-Version"]=init["protocolVersion"]
             first=tool(client,"submit_git_fixture",request_key="new-fixture")
             self.assertFalse(first.get("isError",False))
-            job=first["structuredContent"]["job_id"]
+            job=json.loads(first["content"][0]["text"])["job_id"]
             self.assertEqual(first,tool(client,"submit_git_fixture",request_key="new-fixture"))
             (self.root/"fixture-image").unlink()
             self.assertTrue(tool(client,"submit_git_fixture",request_key="denied").get("isError"))
             with patch("project_os_bridge.vertical.run_git_fixture") as run:
                 run_pending(jobs,fixture_image=image,fixture_allowed=lambda:False)
                 run.assert_not_called()
-            evidence=tool(client,"get_job_evidence",job_id=job)["structuredContent"]
+            evidence=json.loads(tool(client,"get_job_evidence",job_id=job)["content"][0]["text"])
             self.assertEqual(evidence["state"],"BLOCKED")
             self.assertEqual([e["state"] for e in evidence["events"]],["QUEUED","RUNNING","BLOCKED"])
