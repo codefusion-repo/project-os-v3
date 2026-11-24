@@ -55,23 +55,9 @@ The GitHub reader accepts a local project-to-repository mapping and explicit gra
 
 Pending: real caller authentication, local policy configuration integration, worker service lifecycle, evidence retrieval and sanitization, real GitHub credentials validation, guarded repository operations, isolated validation, then Android QA. The MCP server still exposes only the four disposable probe tools.
 
-## Experimental authenticated HTTP mode (B1)
+## WorkOS Connect authenticated HTTP mode (disposable only)
 
-The original stdio command remains unchanged. The new `project-os-bridge-http` entrypoint listens on 127.0.0.1 (default 8765) and exposes ONLY authenticated disposable jobs. It requires a private local JSON configuration with exactly these fields:
-
-```json
-{
-  "issuer": "https://issuer.example",
-  "resource": "https://resource.example/mcp",
-  "subject": "owner-subject",
-  "client_id": "registered-oauth-client",
-  "public_key_pem": "PEM RSA public key from the trusted issuer"
-}
-```
-
-These are placeholders, not a working issuer or connector configuration. Use a real compatible authorization server; do not generate a signing private key for the bridge or paste bearer tokens into chat. The verifier accepts only RS256 JWT access tokens of type at+jwt, signed by the pinned RSA public key, exact issuer, audience, subject and client_id, scope bridge:probe, and a maximum one-hour token lifetime. Key rotation requires trusted config replacement and restart. This is a deliberately narrow compatibility profile, not a generic OIDC integration; opaque tokens and other token profiles are unsupported. Revocation before expiry requires stopping the service; no live introspection is implemented.
-
-After a compatible issuer and public resource identifier are verified, run the HTTP server with a private config and existing private state directory, then point tunnel-client to `http://127.0.0.1:8765/mcp` via `--mcp.server-url` rather than stdio. Exact OAuth connector setup depends on the issuer and must be tested before use. Do not configure fake metadata or expose loopback publicly. No actual issuer or ChatGPT OAuth end-to-end flow has been validated. The HTTP mode runs a periodic local worker and accepts only disposable probe jobs; stopping the process stops the worker, and interrupted jobs are reconciled on next exclusive claim cycle.
+The stdio bootstrap remains unchanged. HTTP mode binds only to 127.0.0.1 and requires a private configuration outside Git, with exactly issuer, resource and subject. See [WORKOS.md](WORKOS.md) for setup, negative checks and revocation. The verifier uses the hosted AuthKit JWKS and the stable ChatGPT CIMD client ID; no WorkOS API key or private signing key is needed. Access tokens must have exact issuer, resource, subject, client, consent ID, token ID, expiry, issue time and openid scope. Local opt-in is required on every authenticated request. No real resources are exposed. WorkOS/ChatGPT/tunnel interoperability still requires a live test.
 
 ## B2 preliminary primitives
 
