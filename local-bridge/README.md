@@ -1,6 +1,8 @@
-# Project OS Local Bridge — bootstrap
+# Project OS Local Bridge
 
-Optional component. This slice exposes only a fixed disposable SQLite marker over stdio MCP. It is NOT the completed remote development MVP. No caller identity is verified by this probe; do not expose real repositories, credentials, shell, builds or devices with it. Only use with the PM's dedicated tunnel and restricted caller access. The local opt-in authorizes this fixed probe operation, not arbitrary remote callers or other resources. A process running as the same OS user is outside this probe's trust boundary.
+Optional single-user, self-hosted runtime. Browser Chat executes authorized GitHub operations directly and uses the bridge for registered local jobs. No automatic terminal-agent/Codex delegation. Read [MVP](MVP.md) for the current capability contract, [SECURITY](SECURITY.md) for gates and [WORKOS](WORKOS.md) for private OAuth setup.
+
+Historical B0 bootstrap. Stdio mode exposes only a fixed disposable SQLite marker over stdio MCP. It is NOT the completed remote development MVP. No caller identity is verified by this probe; do not expose real repositories, credentials, shell, builds or devices with it. Only use with the PM's dedicated tunnel and restricted caller access. The local opt-in authorizes this fixed probe operation, not arbitrary remote callers or other resources. A process running as the same OS user is outside this probe's trust boundary.
 
 ## Install in WSL
 
@@ -57,7 +59,7 @@ Pending: real caller authentication, local policy configuration integration, wor
 
 ## WorkOS Connect authenticated HTTP mode (disposable only)
 
-The stdio bootstrap remains unchanged. HTTP mode binds only to 127.0.0.1 and requires a private configuration outside Git, with exactly issuer, resource and subject. See [WORKOS.md](WORKOS.md) for setup, negative checks and revocation. The verifier uses the hosted AuthKit JWKS and the stable ChatGPT CIMD client ID; no WorkOS API key or private signing key is needed. Access tokens must have exact issuer, resource, subject, client, consent ID, token ID, expiry, issue time and openid scope. Local opt-in is required on every authenticated request. No real resources are exposed. WorkOS/ChatGPT/tunnel interoperability still requires a live test.
+The stdio bootstrap remains unchanged. HTTP mode binds only to 127.0.0.1 and requires a private configuration outside Git, with exactly issuer, resource and subject. See [WORKOS.md](WORKOS.md) for setup, negative checks and revocation. The verifier uses the hosted AuthKit JWKS and the stable ChatGPT CIMD client ID; no WorkOS API key or private signing key is needed. Access tokens must have exact issuer, resource, subject, client, consent ID, token ID, expiry, issue time and openid scope. Local opt-in is required on every authenticated request. No real resources are exposed. Live OAuth interoperability was observed in the pilot; revocation and restart require a new live test.
 
 ## B2 preliminary primitives
 
@@ -65,13 +67,13 @@ The stdio bootstrap remains unchanged. HTTP mode binds only to 127.0.0.1 and req
 
 ## Local Git and isolation fixtures
 
-The Git fixture creates its own repository and detached worktree in a fresh private directory. It accepts only a single text-file patch with expected HEAD and content digest; no caller path, remote, push or arbitrary checkout. Tests run actual Git operations. The rootless Podman validation profile exports only fixed fixture data, requires a locally approved digest-pinned Python image already present, disables networking and capabilities, uses a read-only root and mount, and does not fall back to host execution. This profile is not yet validated on WSL and is not a sandbox for arbitrary project code. Rootless Podman and a trusted local image are prerequisites, not automatically installed.
+The Git fixture creates its own repository and detached worktree in a fresh private directory. It accepts only a single text-file patch with expected HEAD and content digest; no caller path, remote, push or arbitrary checkout. Tests run actual Git operations. The rootless Podman validation profile exports only fixed fixture data, requires a locally approved digest-pinned Python image already present, disables networking and capabilities, uses a read-only root and mount, and does not fall back to host execution. The initial profile was validated on WSL; expanded security probes remain unverified locally and is not a sandbox for arbitrary project code. Rootless Podman and a trusted local image are prerequisites, not automatically installed.
 
-Authenticated HTTP mode additionally exposes a synthetic GitHub context tool to test batching without disclosing actual issue/comment content or invoking gh. The real GitHub reader remains local-only. All synthetic data is labelled as such. No Git fixture or container tool is exposed remotely yet.
+Authenticated HTTP mode additionally exposes a synthetic GitHub context tool to test batching without disclosing actual issue/comment content or invoking gh. The real GitHub reader remains local-only. All synthetic data is labelled as such. The authenticated server can optionally register the fixed Git fixture when locally started with an approved image digest. No arbitrary container tools.
 
 ## Local vertical workflow and preflight
 
-The disposable Git workflow is **local CLI only**, with a dedicated state directory; the authenticated MCP server still exposes only the original disposable tools. Use the preflight inventory without starting devices or inspecting credentials:
+The disposable Git workflow can run via a dedicated local CLI state or the authenticated HTTP service with an explicit local fixture-image opt-in; never share those state directories. Use the preflight inventory without starting devices or inspecting credentials:
 
 ```bash
 bash local-bridge/scripts/preflight.sh

@@ -2,6 +2,10 @@
 
 Consulta fuentes vivas con herramientas disponibles. No afirmes shell, filesystem, checkout, tests o push sin evidencia. Aplica [PROJECT_OS.md](../PROJECT_OS.md) y [review_for_close](../workflows/review_for_close.md).
 
+## Implementación directa
+
+Browser Chat interpreta y ejecuta el workflow implement con GitHub Connector y Local Bridge según capacidades efectivas y permisos explícitos. No genera encargos ni delega automáticamente a agentes terminales o Codex. El conector GitHub es independiente del bridge. Si una operación local no está disponible, continúa el trabajo remoto seguro e informa el bloqueo localizado. Los jobs del bridge son handlers registrados, no prompts ni shell. Consulta health, usa una clave de idempotencia estable por operación, recupera el estado y evidencia del mismo job; no repitas efectos ante timeout. El fixture descartable no demuestra acceso a proyectos reales. Ver [MVP](../local-bridge/MVP.md).
+
 ## Capacidades de review
 
 - `review.read`: consultar PR, diff, commits, checks y evidencia accesible; entregar findings, severidad, ubicación, evidencia y límites. Requiere lectura real.
