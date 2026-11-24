@@ -63,6 +63,17 @@ class AuthTests(unittest.TestCase):
             with self.subTest(changes=changes):
                 self.assertIsNone(self.verify(self.token(changes)))
 
+    def test_malformed_numeric_dates_fail_closed(self):
+        for field in ("exp", "iat", "nbf"):
+            for value in (float("inf"), float("-inf"), float("nan"), [], {}, True):
+                with self.subTest(field=field, value=value):
+                    self.assertIsNone(self.verify(self.token({field: value})))
+        self.assertIsNone(self.verify(self.token({"nbf": str(int(time.time()) - 1)})))
+
+    def test_parser_recursion_fails_closed(self):
+        with patch("project_os_bridge.workos_auth.jwt.get_unverified_header", side_effect=RecursionError):
+            self.assertIsNone(self.verify(self.token()))
+
     def test_invalid_signature_header(self):
         self.assertIsNone(self.verify(self.token(key=self.other)))
         self.assertIsNone(self.verify(self.token(headers={"jku":"https://wrong.example"})))

@@ -156,11 +156,11 @@ class Verifier:
             scopes = set(claims["scope"].split())
             if SCOPE not in scopes or not scopes <= SCOPES:
                 return None
-            if type(claims["exp"]) is not int or type(claims["iat"]) is not int or not 0 < claims["exp"]-claims["iat"] <= 3600:
+            if ("nbf" in claims and type(claims["nbf"]) is not int) or type(claims["exp"]) is not int or type(claims["iat"]) is not int or not 0 < claims["exp"]-claims["iat"] <= 3600:
                 return None
             return AccessToken(token=token,client_id=CLIENT_ID,subject=self.subject,
                 scopes=sorted(scopes),expires_at=claims["exp"],resource=self.resource,claims={"iss":self.issuer})
-        except (jwt.PyJWTError,ValueError,TypeError,KeyError,OSError,httpx.HTTPError):
+        except (jwt.PyJWTError,ValueError,TypeError,KeyError,OSError,httpx.HTTPError,OverflowError,RecursionError):
             return None
 
 

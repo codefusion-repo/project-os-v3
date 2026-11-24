@@ -15,14 +15,40 @@ if [ -e "$VENV" ] || [ -L "$VENV" ]; then
   exit 1
 fi
 # Create at final path (venv entrypoints are not relocatable).
-python3 - "$VENV" <<'PY'
+# Do not execute the host's unreviewed bundled pip from ensurepip.
+python3 -I - "$VENV" <<'PY'
 import os, sys
 os.mkdir(sys.argv[1],0o700)
 PY
-python3 -I -m venv "$VENV"
-"$VENV/bin/python" -I -m pip --isolated install --index-url https://pypi.org/simple --only-binary=:all: --require-hashes -r "$KIT/local-bridge/requirements-linux-py312.lock"
-"$VENV/bin/python" -I -m pip --isolated install --index-url https://pypi.org/simple --only-binary=:all: --require-hashes -r "$KIT/local-bridge/requirements-build.lock"
-"$VENV/bin/python" -I -m pip --isolated install --no-index --no-build-isolation --no-deps "$KIT/local-bridge"
-"$VENV/bin/python" -I -m pip check
-"$VENV/bin/python" -I -m unittest discover -s "$KIT/local-bridge/tests" -v
+python3 -I -m venv --without-pip "$VENV"
+work="$(mktemp -d /tmp/project-os-install.XXXXXXXX)"
+trap 'rm -rf -- "$work"' EXIT
+mkdir "$work/wheels" "$work/source" "$work/home"
+# Build and test from the reviewed Git tree, not ignored files in the checkout.
+git -C "$KIT" archive "$1" local-bridge | tar -xf - -C "$work/source"
+source_dir="$work/source/local-bridge"
+wheel="$work/wheels/pip-26.3-py3-none-any.whl"
+curl --disable --fail --silent --show-error --proto '=https' --noproxy '*' --max-time 120 --max-filesize 5000000 -o "$wheel" 'https://files.pythonhosted.org/packages/07/25/ee8c38ae72d66b844ce8eb9711ba905dba21ca1a8a0c960057c41cd23337/pip-26.3-py3-none-any.whl'
+# Verify bytes before importing ANY code from the downloaded wheel.
+"$VENV/bin/python" -I - "$wheel" "$source_dir/requirements-bootstrap.lock" <<'PY'
+import hashlib, pathlib, sys
+wheel, lock = map(pathlib.Path, sys.argv[1:])
+expected = lock.read_text().strip().split()
+if len(expected) != 2 or expected[0] != 'pip==26.3' or not expected[1].startswith('--hash=sha256:'):
+    raise SystemExit('Invalid bootstrap lock')
+if hashlib.sha256(wheel.read_bytes()).hexdigest() != expected[1].split(':', 1)[1]:
+    raise SystemExit('Bootstrap wheel hash mismatch')
+print('BOOTSTRAP_WHEEL_VERIFIED')
+PY
+clean=(env -i PATH="$VENV/bin:/usr/bin:/bin" HOME="$work/home" LC_ALL=C PIP_CONFIG_FILE=/dev/null)
+"${clean[@]}" "$VENV/bin/python" -I -c 'import runpy,sys; sys.path.insert(0,sys.argv.pop(1)); runpy.run_module("pip",run_name="__main__")' "$wheel" --isolated --disable-pip-version-check --no-input --no-cache-dir install --no-index --find-links "$work/wheels" --only-binary=:all: --require-hashes --no-deps -r "$source_dir/requirements-bootstrap.lock"
+pip_run() {
+  "${clean[@]}" "$VENV/bin/python" -I -m pip --isolated --disable-pip-version-check --no-input --no-cache-dir "$@"
+}
+pip_run --version
+pip_run download --index-url https://pypi.org/simple --only-binary=:all: --require-hashes -r "$source_dir/requirements-linux-py312.lock" -r "$source_dir/requirements-build.lock" -d "$work/wheels"
+pip_run install --no-index --find-links "$work/wheels" --only-binary=:all: --require-hashes -r "$source_dir/requirements-linux-py312.lock" -r "$source_dir/requirements-build.lock"
+pip_run install --no-index --no-build-isolation --no-deps "$source_dir"
+pip_run check
+"$VENV/bin/python" -I -m unittest discover -s "$source_dir/tests" -v
 printf '%s\n' 'BRIDGE INSTALL PASS; existing wizard available; no service started.'
