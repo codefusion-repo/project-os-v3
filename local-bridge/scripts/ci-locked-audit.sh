@@ -41,15 +41,23 @@ python3 -I -c 'import platform,ssl,sys; print("HOST_TRUST_INPUTS",sys.version.sp
 git --version
 curl --version
 strict_audit() {
-  local name="$1" pins="$2" report="$RUNNER_TEMP/$1.json" rc=0
-  "${clean[@]}" "$auditor" -I -m pip_audit --no-deps --disable-pip --strict -r "$pins" --format json --output "$report" || rc=$?
+  local name="$1" pins="$2" report="$audit_dir/$1.json" diagnostics="$audit_dir/$1.stderr" rc=0
+  "${clean[@]}" "$auditor" -I -m pip_audit --no-deps --disable-pip --strict -r "$pins" --format json --output "$report" 2>"$diagnostics" || rc=$?
+  cat "$diagnostics" || return 1
+  echo "STRICT_AUDIT_EXIT $name=$rc"
   [ -s "$report" ] || { echo "Missing strict report: $name"; return 1; }
   echo "RAW_AUDIT_BEGIN $name"
   cat "$report" || return 1
   echo
   echo "RAW_AUDIT_END $name"
-  echo "STRICT_AUDIT_EXIT $name=$rc"
   python3 -I local-bridge/scripts/audit_report.py "$pins" "$report" "$rc" || return 1
+  if [ "$name" = bootstrap-vendors ]; then
+    # Separate, explicitly authorized artifact-specific evaluation; never change the raw report.
+    local installed
+    installed="$("$bootstrap_python" -I -c 'import importlib.util,pathlib; print(pathlib.Path(importlib.util.find_spec("pip").origin).parent)')" || return 1
+    python3 -I local-bridge/scripts/bootstrap_applicability.py "$audit_dir/pip-26.3-py3-none-any.whl" local-bridge/requirements-bootstrap.lock "$installed" "$pins" "$report" "$diagnostics" "$rc" || return 1
+    return 0
+  fi
   return "$rc"
 }
 tool_rc=0
