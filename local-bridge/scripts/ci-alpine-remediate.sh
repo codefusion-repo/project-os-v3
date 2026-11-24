@@ -33,9 +33,9 @@ cat > "$work/context/Containerfile" <<'BUILD'
 FROM docker.io/library/python@sha256:a61cbd76a882645de7f91423329fe43a67eed60d7da24f9e5331414bb3618b20
 RUN apk verify /packages/krb5-libs-1.22.3-r0.apk && apk add --no-network --no-cache --repositories-file /dev/null /packages/krb5-libs-1.22.3-r0.apk
 BUILD
-# A nonzero fixed epoch and fixed hostname avoid build-time metadata variation.
+# A nonzero fixed epoch reduces build-time metadata variation.
 build_candidate() {
-  podman build --pull=never --network=none --http-proxy=false --no-cache --timestamp 1700000000 --hostname project-os-ci --format oci --volume "$work/packages:/packages:ro" --tag "$1" "$work/context"
+  podman build --pull=never --network=none --http-proxy=false --no-cache --timestamp 1700000000 --format oci --volume "$work/packages:/packages:ro" --tag "$1" "$work/context"
 }
 build_candidate "$tag"
 build_candidate localhost/project-os-alpine-ci:repeat
