@@ -32,12 +32,9 @@ fi
 # Build and test from the reviewed Git tree, not ignored files in the checkout.
 git -C "$KIT" archive "$1" local-bridge | tar -xf - -C "$work/source"
 source_dir="$work/source/local-bridge"
-wheel="$work/wheels/pip-26.3-py3-none-any.whl"
-env -i PATH=/usr/bin:/bin HOME="$work/home" LC_ALL=C curl --disable --fail --silent --show-error --proto '=https' --noproxy '*' --max-time 120 --max-filesize 5000000 -o "$wheel" 'https://files.pythonhosted.org/packages/07/25/ee8c38ae72d66b844ce8eb9711ba905dba21ca1a8a0c960057c41cd23337/pip-26.3-py3-none-any.whl'
-# Verify bytes before importing ANY code from the downloaded wheel.
-"$VENV/bin/python" -I "$source_dir/scripts/bootstrap_verify.py" "$wheel" "$source_dir/requirements-bootstrap.lock"
+source "$source_dir/scripts/bootstrap.sh"
+bootstrap_install "$VENV/bin/python" "$work/wheels" "$source_dir" "$work/home"
 clean=(env -i PATH="$VENV/bin:/usr/bin:/bin" HOME="$work/home" LC_ALL=C TZ=UTC SOURCE_DATE_EPOCH="$source_epoch" PIP_CONFIG_FILE=/dev/null)
-"${clean[@]}" "$VENV/bin/python" -I -c 'import runpy,sys; sys.path.insert(0,sys.argv.pop(1)); runpy.run_module("pip",run_name="__main__")' "$wheel" --isolated --disable-pip-version-check --no-input --no-cache-dir install --no-index --find-links "$work/wheels" --only-binary=:all: --require-hashes --no-deps -r "$source_dir/requirements-bootstrap.lock"
 pip_run() {
   "${clean[@]}" "$VENV/bin/python" -I -m pip --isolated --disable-pip-version-check --no-input --no-cache-dir "$@"
 }
