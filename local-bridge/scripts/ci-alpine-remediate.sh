@@ -16,6 +16,7 @@ lock="$repo/local-bridge/scripts/alpine-krb5.sha256"
 tag=localhost/project-os-alpine-ci:candidate
 podman info --format json | python3 -c 'import json,sys; h=json.load(sys.stdin)["host"]; assert h["security"]["rootless"] and h["security"]["seccompEnabled"] and h["cgroupVersion"]=="v2"'
 podman --version
+python3 -m unittest discover -s "$repo/local-bridge/scripts" -p test_oci_repro.py -v
 podman pull --platform linux/amd64 "$base"
 [ "$(podman image inspect --format '{{.Digest}}' "$base")" = "${base##*@}" ]
 # All package acquisition is HTTPS; signature is verified using keys in the pinned base.
@@ -31,13 +32,15 @@ grep -Fxq krb5-libs-1.22.2-r1 "$work/before"
 sed 's/^krb5-libs-1\.22\.2-r1$/krb5-libs-1.22.3-r0/' "$work/before" | LC_ALL=C sort > "$work/expected"
 cat > "$work/context/Containerfile" <<'BUILD'
 FROM docker.io/library/python@sha256:a61cbd76a882645de7f91423329fe43a67eed60d7da24f9e5331414bb3618b20
-RUN apk verify /packages/krb5-libs-1.22.3-r0.apk && apk add --no-network --no-cache --repositories-file /dev/null /packages/krb5-libs-1.22.3-r0.apk
+RUN apk verify /packages/krb5-libs-1.22.3-r0.apk && apk add --logfile=no --no-network --no-cache --repositories-file /dev/null /packages/krb5-libs-1.22.3-r0.apk
 BUILD
 # A nonzero fixed epoch reduces build-time metadata variation.
 build_candidate() {
   podman build --pull=never --network=none --http-proxy=false --no-cache --timestamp 1700000000 --format oci --volume "$work/packages:/packages:ro" --tag "$1" "$work/context"
 }
 build_candidate "$tag"
+# Force different wall-clock seconds, so a timestamp regression cannot pass by chance.
+sleep 2
 build_candidate localhost/project-os-alpine-ci:repeat
 podman push --format oci --digestfile "$work/repeat-digest" localhost/project-os-alpine-ci:repeat "oci:$work/repeat-oci:candidate"
 podman run --rm --pull=never --network=none --entrypoint /sbin/apk "$tag" --no-network --repositories-file /dev/null info -v | LC_ALL=C sort > "$work/after"
