@@ -17,8 +17,11 @@ permissions:
 jobs:
   probe:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
@@ -30,3 +33,30 @@ jobs:
       - run: project-os-bridge-http --help
       - run: project-os-bridge-fixture --help
       - run: project-os-bridge-init --help
+
+  dependency-evidence:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Download exact runtime wheels
+        run: |
+          python -m pip --isolated download --index-url https://pypi.org/simple --only-binary=:all: --no-deps -r local-bridge/requirements-linux-py312.txt -d "$RUNNER_TEMP/bridge-wheels"
+          python local-bridge/scripts/lock_wheels.py local-bridge/requirements-linux-py312.txt "$RUNNER_TEMP/bridge-wheels" > "$RUNNER_TEMP/bridge-candidate.lock"
+          cat "$RUNNER_TEMP/bridge-candidate.lock"
+      - name: Verify wheel hashes and dependency closure in fresh venv
+        run: |
+          python -m venv "$RUNNER_TEMP/bridge-clean"
+          "$RUNNER_TEMP/bridge-clean/bin/python" -m pip --isolated install --no-index --find-links "$RUNNER_TEMP/bridge-wheels" --only-binary=:all: --require-hashes -r "$RUNNER_TEMP/bridge-candidate.lock"
+          "$RUNNER_TEMP/bridge-clean/bin/python" -m pip check
+      - name: Audit exact runtime versions using separate tooling
+        run: |
+          python -m venv "$RUNNER_TEMP/bridge-audit"
+          "$RUNNER_TEMP/bridge-audit/bin/python" -m pip --isolated install --index-url https://pypi.org/simple pip-audit
+          "$RUNNER_TEMP/bridge-audit/bin/python" -m pip_audit --version
+          "$RUNNER_TEMP/bridge-audit/bin/python" -m pip_audit --require-hashes --no-deps --strict -r "$RUNNER_TEMP/bridge-candidate.lock"
