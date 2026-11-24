@@ -118,3 +118,9 @@ Enable at login only if desired, after a successful live test, with `systemctl -
 ## Dependency baseline
 
 For Python 3.12 Linux/WSL, the constraints file records exact runtime versions from a successful CI resolver output. Install in a clean dedicated venv using `python -m pip install -c local-bridge/requirements-linux-py312.txt ./local-bridge` followed by `python -m pip check` and the tests. CI uses the same constraints. This is preparation for reproducibility, not a hash-verified lock: build isolation, wheel hashes, alternate platforms and vulnerability review remain outstanding.
+
+## Hash-verified Linux/WSL installation
+
+The committed runtime lock contains the 31 wheel SHA-256 hashes observed in CI job 138606270522 (Linux x86_64 CPython 3.12). That job installed the downloaded wheels in a fresh venv using hash checks and no index, passed pip check, and pip-audit 2.10.1 reported no known vulnerabilities at scan time. This does not audit the OS, OCI image, tunnel binary, build backend or audit tool dependencies. Build isolation still resolves setuptools separately; it is not a fully locked build. CI now enforces the reviewed runtime lock and compares downloaded wheel hashes. No automatic lock regeneration.
+
+In a clean independent checkout of the explicitly reviewed full commit, run `bash local-bridge/scripts/install.sh REVIEWED_FULL_SHA`. Existing venvs are preserved; partial new installation is retained, not automatically removed. From Windows, the matching PowerShell wrapper accepts ReviewedSha, Distribution and the absolute Linux Checkout path and delegates to the same WSL installer. It does not install WSL or modify Windows settings. After successful install, reuse the existing selector's explicit bridge setup flow; no automatic permission or service activation.
