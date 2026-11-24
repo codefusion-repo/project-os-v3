@@ -151,3 +151,20 @@ jobs:
           python-version: '3.12'
       - name: Evaluate residual security fixes in disposable runner
         run: bash local-bridge/scripts/ci-alpine-remediate.sh residual
+
+  alpine-fixture-only:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        replica: [1, 2]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Evaluate minimal fixture-only candidate in disposable runner
+        run: bash local-bridge/scripts/ci-alpine-remediate.sh fixture-only

@@ -15,11 +15,11 @@ url="https://dl-cdn.alpinelinux.org/alpine/v3.24/main/x86_64/$package"
 lock="$repo/local-bridge/scripts/alpine-krb5.sha256"
 tag=localhost/project-os-alpine-ci:candidate
 mode="${1:-baseline}"
-[[ "$#" -le 1 && ( "$mode" = baseline || "$mode" = residual ) ]] || exit 1
+[[ "$#" -le 1 && ( "$mode" = baseline || "$mode" = residual || "$mode" = fixture-only ) ]] || exit 1
 manifest_lock="$repo/local-bridge/scripts/alpine-manifest.sha256"
 locks_complete=1
-if [ "$mode" = residual ]; then
-  manifest_lock="$repo/local-bridge/scripts/alpine-residual-manifest.sha256"
+if [ "$mode" != baseline ]; then
+  manifest_lock="$repo/local-bridge/scripts/alpine-$mode-manifest.sha256"
 fi
 podman info --format json | python3 -c 'import json,sys; h=json.load(sys.stdin)["host"]; assert h["security"]["rootless"] and h["security"]["seccompEnabled"] and h["cgroupVersion"]=="v2"'
 podman --version
@@ -35,7 +35,7 @@ podman run --rm --pull=never --network=none --http-proxy=false --volume "$work/p
 cat "$work/observed.sha256"
 diff -u "$lock" "$work/observed.sha256"
 echo 'APK_LOCK_VERIFIED'
-if [ "$mode" = residual ]; then
+if [ "$mode" != baseline ]; then
   extras=(libcrypto3-3.5.9-r1.apk libssl3-3.5.9-r1.apk zlib-1.4-r0.apk)
   for extra in "${extras[@]}"; do
     curl --fail --silent --show-error --proto '=https' --max-time 120 -o "$work/packages/$extra" "https://dl-cdn.alpinelinux.org/alpine/v3.24/main/x86_64/$extra"
@@ -44,12 +44,10 @@ if [ "$mode" = residual ]; then
   done
   (cd "$work/packages" && sha256sum "${extras[@]}") > "$work/extras.sha256"
   cat "$work/extras.sha256"
-  if [ -f "$repo/local-bridge/scripts/alpine-residual-apks.sha256" ]; then
-    diff -u "$repo/local-bridge/scripts/alpine-residual-apks.sha256" "$work/extras.sha256"
-  else
-    locks_complete=0
-    echo 'RESIDUAL_APK_LOCK_DISCOVERY_ONLY'
-  fi
+  diff -u "$repo/local-bridge/scripts/alpine-residual-apks.sha256" "$work/extras.sha256"
+  echo RESIDUAL_APK_LOCK_VERIFIED
+fi
+if [ "$mode" = residual ]; then
   cp "$repo/local-bridge/scripts/alpine-residual-pip.lock" "$work/packages/pip.lock"
   python3 -m pip --isolated download --index-url https://pypi.org/simple --only-binary=:all: --no-deps --require-hashes -r "$work/packages/pip.lock" -d "$work/packages"
   chmod 0444 "$work/packages/pip.lock" "$work/packages/pip-26.2-py3-none-any.whl"
@@ -57,7 +55,7 @@ fi
 podman run --rm --pull=never --network=none --entrypoint /sbin/apk "$base" --no-network --repositories-file /dev/null info -v | LC_ALL=C sort > "$work/before"
 grep -Fxq krb5-libs-1.22.2-r1 "$work/before"
 sed 's/^krb5-libs-1\.22\.2-r1$/krb5-libs-1.22.3-r0/' "$work/before" | LC_ALL=C sort > "$work/expected"
-if [ "$mode" = residual ]; then
+if [ "$mode" != baseline ]; then
   for version in libcrypto3-3.5.9-r0 libssl3-3.5.9-r0 zlib-1.3.2-r1; do grep -Fxq "$version" "$work/before"; done
   sed -i -e 's/^libcrypto3-3\.5\.9-r0$/libcrypto3-3.5.9-r1/' -e 's/^libssl3-3\.5\.9-r0$/libssl3-3.5.9-r1/' -e 's/^zlib-1\.3\.2-r1$/zlib-1.4-r0/' "$work/expected"
   LC_ALL=C sort -o "$work/expected" "$work/expected"
@@ -66,10 +64,19 @@ cat > "$work/context/Containerfile" <<'BUILD'
 FROM docker.io/library/python@sha256:a61cbd76a882645de7f91423329fe43a67eed60d7da24f9e5331414bb3618b20
 RUN apk verify /packages/krb5-libs-1.22.3-r0.apk && apk add --logfile=no --no-network --no-cache --repositories-file /dev/null /packages/krb5-libs-1.22.3-r0.apk
 BUILD
-if [ "$mode" = residual ]; then
+if [ "$mode" != baseline ]; then
   cat >> "$work/context/Containerfile" <<'BUILD'
 RUN apk verify /packages/libcrypto3-3.5.9-r1.apk /packages/libssl3-3.5.9-r1.apk /packages/zlib-1.4-r0.apk && apk add --logfile=no --no-network --no-cache --repositories-file /dev/null /packages/libcrypto3-3.5.9-r1.apk /packages/libssl3-3.5.9-r1.apk /packages/zlib-1.4-r0.apk
+BUILD
+fi
+if [ "$mode" = residual ]; then
+  cat >> "$work/context/Containerfile" <<'BUILD'
 RUN PYTHONDONTWRITEBYTECODE=1 python -B -m pip --isolated install --no-index --find-links=/packages --no-deps --no-compile --no-cache-dir --disable-pip-version-check --require-hashes -r /packages/pip.lock
+BUILD
+elif [ "$mode" = fixture-only ]; then
+  cat >> "$work/context/Containerfile" <<'BUILD'
+# The fixed fixture only executes stdlib Python. Remove actual package-manager code and bootstrap, not just scanner metadata.
+RUN python -I -B -m pip --isolated uninstall -y setuptools pip && python -I -B -c 'import ensurepip, pathlib, shutil; shutil.rmtree(pathlib.Path(ensurepip.__file__).parent)' && python -I -B -c 'import importlib.util as u; assert all(u.find_spec(n) is None for n in ("pip", "setuptools", "ensurepip"))'
 BUILD
 fi
 # A nonzero fixed epoch reduces build-time metadata variation.
@@ -99,9 +106,9 @@ from oci_repro import verify_expected
 verify_expected(Path(sys.argv[2]).read_text().strip(), sys.argv[3])
 print("OCI_MANIFEST_LOCK_VERIFIED", sys.argv[3])
 PY
-elif [ "$mode" = residual ]; then
+elif [ "$mode" = fixture-only ]; then
   locks_complete=0
-  echo "RESIDUAL_MANIFEST_LOCK_DISCOVERY_ONLY $digest"
+  echo "FIXTURE_ONLY_MANIFEST_LOCK_DISCOVERY_ONLY $digest"
 else
   exit 1
 fi
@@ -152,6 +159,8 @@ PY
 podman run --rm --pull=never --network=none --read-only --cap-drop=ALL --security-opt=no-new-privileges --entrypoint python "$image" -I -B -c 'import ctypes, pathlib, platform, socket, sqlite3, ssl, sys; assert sys.version_info[:2]==(3,12); assert platform.machine()=="x86_64"; assert pathlib.Path("/lib/ld-musl-x86_64.so.1").exists(); ctypes.CDLL("libkrb5.so.3"); assert sqlite3.connect(":memory:").execute("select 1").fetchone()==(1,); assert ssl.OPENSSL_VERSION; assert {n for _,n in socket.if_nameindex()} <= {"lo"}; print("PYTHON_MUSL_PASS", sys.version.split()[0])'
 if [ "$mode" = residual ]; then
   podman run --rm --pull=never --network=none --read-only --cap-drop=ALL --security-opt=no-new-privileges --entrypoint python "$image" -I -B -c 'import importlib.metadata as m, ssl, zlib; assert m.version("pip") == "26.2"; assert zlib.decompress(zlib.compress(b"fixture")) == b"fixture"; assert ssl.create_default_context(); print("RESIDUAL_COMPAT_PASS", ssl.OPENSSL_VERSION, zlib.ZLIB_RUNTIME_VERSION)'
+elif [ "$mode" = fixture-only ]; then
+  podman run --rm --pull=never --network=none --read-only --cap-drop=ALL --security-opt=no-new-privileges --entrypoint python "$image" -I -B -c 'import importlib.util as u, importlib.metadata as m, pathlib, shutil, ssl, sysconfig, zlib; assert all(u.find_spec(n) is None for n in ("pip", "setuptools", "ensurepip")); assert not {d.metadata["Name"].lower() for d in m.distributions()} & {"pip", "setuptools"}; assert not any(shutil.which(n) for n in ("pip","pip3","pip3.12")); assert not list(pathlib.Path(sysconfig.get_path("stdlib")).glob("ensurepip/_bundled/*.whl")); assert ssl.create_default_context(); assert zlib.decompress(zlib.compress(b"fixture")) == b"fixture"; print("FIXTURE_ONLY_COMPAT_PASS", ssl.OPENSSL_VERSION, zlib.ZLIB_RUNTIME_VERSION)'
 fi
 python3 -m venv "$work/venv"
 "$work/venv/bin/python" -m pip --isolated install --index-url https://pypi.org/simple --only-binary=:all: --require-hashes -r "$repo/local-bridge/requirements-linux-py312.lock"
@@ -171,7 +180,7 @@ assert e['state'] == 'SUCCEEDED' and r['image'] == sys.argv[3]
 assert r['steps'][1]['original_unchanged'] is True and v['cleanup_verified'] is True
 assert len(v['checks']) == 10 and v['exit_code'] == 0
 PY
-[ "$audit" = 0 ] && [ "$fixture" = 0 ] && [ -f "$lock" ]
+if [ "$fixture" != 0 ]; then exit 1; fi
 # New CLI processes must recover exactly the original durable result without rerunning.
 job_id="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["id"])' "$work/evidence.json")"
 PYTHONPATH="$repo/local-bridge/src" "$work/venv/bin/python" -m project_os_bridge.vertical --state-dir "$work/state" --evidence-job-id "$job_id" > "$work/recovered.json"
@@ -184,8 +193,9 @@ assert a == b == c, 'Durable fixture evidence changed on retrieval or replay'
 assert [e['state'] for e in a['events']] == ['QUEUED', 'RUNNING', 'SUCCEEDED']
 print('ALPINE_FIXTURE_REPLAY_PASS')
 PY
-if [ "$mode" = residual ]; then
-  echo 'RESIDUAL_DISCOVERY_EVIDENCE_COMPLETE'
-  [ "$locks_complete" = 1 ]
+echo "ALPINE_EVIDENCE_COMPLETE mode=$mode audit=$audit locks=$locks_complete"
+# A failed command in a non-final AND-list is exempt from errexit. Explicitly fail here.
+if [ "$audit" != 0 ] || [ "$fixture" != 0 ] || [ "$locks_complete" != 1 ] || [ ! -f "$lock" ]; then
+  exit 1
 fi
 echo 'ALPINE_REMEDIATION_EVIDENCE_PASS'

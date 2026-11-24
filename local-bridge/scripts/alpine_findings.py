@@ -45,6 +45,7 @@ def inventory(report, image, documents):
                 "class": result.get("Class"), "type": result.get("Type"),
                 "severity": v.get("Severity", "UNKNOWN"),
                 "severity_source": v.get("SeveritySource"),
+                "package_path": package.get("FilePath") if isinstance(package.get("FilePath"), str) and package["FilePath"].lstrip("/").startswith("usr/local/lib/python3.12/") else None,
                 "scanner_fixed": v.get("FixedVersion"), "scanner_status": v.get("Status"),
                 "primary_url": v.get("PrimaryURL"),
                 "alpine_secdb": sorted(fixes, key=lambda x: (x["repository"], x["fixed_version"])),
