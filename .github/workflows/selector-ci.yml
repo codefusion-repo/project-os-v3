@@ -111,6 +111,14 @@ jobs:
           python-version: '3.12'
       - name: Build and audit disposable Alpine candidate
         run: bash local-bridge/scripts/ci-alpine-remediate.sh
+      - name: Preserve public OCI scanner evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: alpine-baseline-${{ matrix.replica }}-evidence
+          path: ${{ runner.temp }}/lb-oci-evidence/
+          if-no-files-found: error
+          retention-days: 90
 
   alpine-residual:
     runs-on: ubuntu-24.04
@@ -128,6 +136,14 @@ jobs:
           python-version: '3.12'
       - name: Evaluate residual security fixes in disposable runner
         run: bash local-bridge/scripts/ci-alpine-remediate.sh residual
+      - name: Preserve public OCI scanner evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: alpine-residual-${{ matrix.replica }}-evidence
+          path: ${{ runner.temp }}/lb-oci-evidence/
+          if-no-files-found: error
+          retention-days: 90
 
   alpine-fixture-only:
     runs-on: ubuntu-24.04
@@ -145,3 +161,11 @@ jobs:
           python-version: '3.12'
       - name: Evaluate minimal fixture-only candidate in disposable runner
         run: bash local-bridge/scripts/ci-alpine-remediate.sh fixture-only
+      - name: Preserve public OCI scanner evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: alpine-fixture-only-${{ matrix.replica }}-evidence
+          path: ${{ runner.temp }}/lb-oci-evidence/
+          if-no-files-found: error
+          retention-days: 90

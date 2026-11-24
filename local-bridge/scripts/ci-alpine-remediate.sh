@@ -9,6 +9,9 @@ repo="$(cd -- "$(dirname -- "$0")/../.." && pwd)"
 work="$(mktemp -d "$RUNNER_TEMP/alpine-remediation.XXXXXXXX")"
 trap 'rm -rf -- "$work"' EXIT
 mkdir "$work/packages" "$work/context" "$work/home" "$work/cache" "$work/state"
+# Only public-image scanner evidence; no container bytes, state or credentials.
+evidence_dir="$RUNNER_TEMP/lb-oci-evidence"
+mkdir "$evidence_dir"
 base=docker.io/library/python@sha256:a61cbd76a882645de7f91423329fe43a67eed60d7da24f9e5331414bb3618b20
 package=krb5-libs-1.22.3-r0.apk
 url="https://dl-cdn.alpinelinux.org/alpine/v3.24/main/x86_64/$package"
@@ -25,6 +28,7 @@ podman info --format json | python3 -c 'import json,sys; h=json.load(sys.stdin)[
 podman --version
 python3 -m unittest discover -s "$repo/local-bridge/scripts" -p test_oci_repro.py -v
 python3 -m unittest discover -s "$repo/local-bridge/scripts" -p test_alpine_findings.py -v
+python3 -m unittest discover -s "$repo/local-bridge/scripts" -p test_oci_control.py -v
 podman pull --platform linux/amd64 "$base"
 [ "$(podman image inspect --format '{{.Digest}}' "$base")" = "${base##*@}" ]
 # All package acquisition is HTTPS; signature is verified using keys in the pinned base.
@@ -131,8 +135,16 @@ archive=trivy_0.76.2_Linux-64bit.tar.gz
 curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' --max-time 180 -o "$work/$archive" "https://github.com/aquasecurity/trivy/releases/download/v0.76.2/$archive"
 (cd "$work" && printf '%s  %s\n' bc0fc726e017b8927a62b2d3531d7a84ee01769daf5c99ed866dced54089fdbf "$archive" | sha256sum -c - && tar -xzf "$archive" trivy)
 scan_env=(env -i PATH=/usr/bin:/bin HOME="$work/home" LC_ALL=C)
-"${scan_env[@]}" "$work/trivy" --cache-dir "$work/cache" image --input "$work/oci@$digest" --platform linux/amd64 --scanners vuln --pkg-types os,library --ignorefile /dev/null --list-all-pkgs --no-progress --timeout 8m --format json --output "$work/report.json"
-"${scan_env[@]}" "$work/trivy" --cache-dir "$work/cache" --version
+scanner_rc=0
+"${scan_env[@]}" "$work/trivy" --cache-dir "$work/cache" image --input "$work/oci@$digest" --platform linux/amd64 --scanners vuln --pkg-types os,library --ignorefile /dev/null --list-all-pkgs --no-progress --timeout 8m --format json --output "$work/report.json" || scanner_rc=$?
+printf '%s\n' "$scanner_rc" > "$evidence_dir/scanner-exit.txt"
+if [ -f "$work/report.json" ]; then
+  cp -- "$work/report.json" "$evidence_dir/report.json"
+  sha256sum "$evidence_dir/report.json"
+fi
+[ "$scanner_rc" = 0 ] || exit 1
+[ -s "$evidence_dir/report.json" ] || exit 1
+"${scan_env[@]}" "$work/trivy" --cache-dir "$work/cache" --version | tee "$evidence_dir/scanner-version.txt"
 # Review every finding against the public Alpine v3.24 secdb. Never change the scan gate.
 for section in main community; do
   curl --fail --silent --show-error --proto '=https' --max-time 120 --max-filesize 10000000 -o "$work/$section.json" "https://secdb.alpinelinux.org/v3.24/$section.json"
@@ -149,6 +161,17 @@ r = summarize(json.loads(Path(sys.argv[2]).read_text()), sys.argv[3])
 print('ALPINE_REMEDIATION_AUDIT', json.dumps(r, sort_keys=True))
 raise SystemExit(r['candidate_gate'] == 'BLOCKED')
 PY
+printf '%s\n' "$audit" > "$evidence_dir/audit-exit.txt"
+printf '%s\n' "$digest" > "$evidence_dir/manifest.txt"
+if [ "$mode" != baseline ]; then
+  python3 "$repo/local-bridge/scripts/oci_control.py" "$work/report.json" "$work/oci@$digest" "$digest" "$mode" "$work/after" "$scanner_rc" | tee "$evidence_dir/control.txt"
+fi
+if [ "$mode" = residual ]; then
+  # Success here is the negative test, not the vulnerable image audit.
+  [ "$audit" = 1 ] || exit 1
+  echo 'RESIDUAL_EXPECTED_REJECTION_PASS; candidate remains BLOCKED; no post-audit execution'
+  exit 0
+fi
 podman run --rm --pull=never --network=none --read-only --cap-drop=ALL --security-opt=no-new-privileges --entrypoint python "$image" -I -B -c 'import ctypes, pathlib, platform, socket, sqlite3, ssl, sys; assert sys.version_info[:2]==(3,12); assert platform.machine()=="x86_64"; assert pathlib.Path("/lib/ld-musl-x86_64.so.1").exists(); ctypes.CDLL("libkrb5.so.3"); assert sqlite3.connect(":memory:").execute("select 1").fetchone()==(1,); assert ssl.OPENSSL_VERSION; assert {n for _,n in socket.if_nameindex()} <= {"lo"}; print("PYTHON_MUSL_PASS", sys.version.split()[0])'
 if [ "$mode" = residual ]; then
   podman run --rm --pull=never --network=none --read-only --cap-drop=ALL --security-opt=no-new-privileges --entrypoint python "$image" -I -B -c 'import importlib.metadata as m, ssl, zlib; assert m.version("pip") == "26.2"; assert zlib.decompress(zlib.compress(b"fixture")) == b"fixture"; assert ssl.create_default_context(); print("RESIDUAL_COMPAT_PASS", ssl.OPENSSL_VERSION, zlib.ZLIB_RUNTIME_VERSION)'
