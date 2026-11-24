@@ -2,6 +2,10 @@
 
 Kit Markdown-first para pasar de una intención a un resultado verificable con la menor fricción útil. Un workflow describe un resultado; una skill aporta una técnica; un template ayuda cuando existe un artefacto; el selector previsualiza y guarda prompts Markdown, sin ejecutar workflows ni autorizar acciones. Aplica las skills base [repo-context](skills/repo-context/SKILL.md) para tareas con repositorio y [github-traceability](skills/github-traceability/SKILL.md) según su contrato, también sin selector; carga solo las skills especializadas útiles. En un experimento local y descartable sin repositorio, no exijas consultas GitHub ni publicación remota. Una skill pedida explícitamente se selecciona, pero no amplía permisos.
 
+## Arquitectura de ejecución adaptativa (decisión aprobada)
+
+Browser Chat es el orquestador y ejecutor directo. Codex será un provider opcional, preferente únicamente en modo auto autorizado y con disponibilidad confirmada. Si su cuota se agota, Browser Chat continúa mediante sus capacidades efectivas, sin duplicar efectos ni perder el estado. El cambio de ejecutor exige recuperar issue, PR, HEAD, diff, jobs y evidencia, comprobar que el ejecutor anterior no sigue trabajando y mantener las mismas autorizaciones y gates. No se ejecutan dos agentes sobre el mismo worktree. La selección no concede permisos. El MVP actual usa ejecución browser directa; Codex y el enrutamiento automático no están implementados ni habilitados. Ver [contrato MVP](local-bridge/MVP.md).
+
 ## Ruta común
 
 1. Con el repositorio identificado, recupera objetivo y estado desde instrucciones, archivos y fuentes GitHub vivas disponibles: issues, PRs, commits, diffs, checks, findings y blockers pertinentes. No dependas del historial del chat: haz un cold start completo solo cuando sea necesario y una comprobación acotada al continuar, sin recorrer todo el repo ni consultar todos los issues/PRs sin justificación. Distingue hechos, inferencias y propuestas; pide como máximo un locator primario solo ante ambigüedad material no resoluble con evidencia y continúa el trabajo seguro.
