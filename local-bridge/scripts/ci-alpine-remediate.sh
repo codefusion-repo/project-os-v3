@@ -17,10 +17,10 @@ tag=localhost/project-os-alpine-ci:candidate
 mode="${1:-baseline}"
 [[ "$#" -le 1 && ( "$mode" = baseline || "$mode" = residual || "$mode" = fixture-only ) ]] || exit 1
 manifest_lock="$repo/local-bridge/scripts/alpine-manifest.sha256"
-locks_complete=1
 if [ "$mode" != baseline ]; then
   manifest_lock="$repo/local-bridge/scripts/alpine-$mode-manifest.sha256"
 fi
+[ -f "$manifest_lock" ] || { echo "Required manifest lock missing" >&2; exit 1; }
 podman info --format json | python3 -c 'import json,sys; h=json.load(sys.stdin)["host"]; assert h["security"]["rootless"] and h["security"]["seccompEnabled"] and h["cgroupVersion"]=="v2"'
 podman --version
 python3 -m unittest discover -s "$repo/local-bridge/scripts" -p test_oci_repro.py -v
@@ -97,7 +97,6 @@ digest="$(cat "$work/digest")"
 repeat_digest="$(cat "$work/repeat-digest")"
 python3 "$repo/local-bridge/scripts/oci_repro.py" "$work/oci" "$digest" "$work/repeat-oci" "$repeat_digest"
 [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]
-if [ -f "$manifest_lock" ]; then
 python3 - "$repo/local-bridge/scripts" "$manifest_lock" "$digest" <<'PY'
 import sys
 from pathlib import Path
@@ -106,12 +105,6 @@ from oci_repro import verify_expected
 verify_expected(Path(sys.argv[2]).read_text().strip(), sys.argv[3])
 print("OCI_MANIFEST_LOCK_VERIFIED", sys.argv[3])
 PY
-elif [ "$mode" = fixture-only ]; then
-  locks_complete=0
-  echo "FIXTURE_ONLY_MANIFEST_LOCK_DISCOVERY_ONLY $digest"
-else
-  exit 1
-fi
 python3 - "$work/oci" "$digest" <<'PY'
 import hashlib, json, sys
 from pathlib import Path
@@ -193,9 +186,9 @@ assert a == b == c, 'Durable fixture evidence changed on retrieval or replay'
 assert [e['state'] for e in a['events']] == ['QUEUED', 'RUNNING', 'SUCCEEDED']
 print('ALPINE_FIXTURE_REPLAY_PASS')
 PY
-echo "ALPINE_EVIDENCE_COMPLETE mode=$mode audit=$audit locks=$locks_complete"
+echo "ALPINE_EVIDENCE_COMPLETE mode=$mode audit=$audit locks=1"
 # A failed command in a non-final AND-list is exempt from errexit. Explicitly fail here.
-if [ "$audit" != 0 ] || [ "$fixture" != 0 ] || [ "$locks_complete" != 1 ] || [ ! -f "$lock" ]; then
+if [ "$audit" != 0 ] || [ "$fixture" != 0 ] || [ ! -f "$lock" ] || [ ! -f "$manifest_lock" ]; then
   exit 1
 fi
 echo 'ALPINE_REMEDIATION_EVIDENCE_PASS'
