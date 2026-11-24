@@ -21,6 +21,7 @@ class BootstrapTests(unittest.TestCase):
     def fixture(self, extra=None):
         with zipfile.ZipFile(self.wheel, "w") as z:
             z.writestr("pip/_vendor/pkg_resources/__init__.py", "synthetic")
+            z.writestr("pip/_vendor/pkg_resources/LICENSE", "synthetic")
             z.writestr("pip/_vendor/vendor.txt", "setuptools==70.3.0")
             if extra:
                 z.writestr(extra, "synthetic")
@@ -28,7 +29,7 @@ class BootstrapTests(unittest.TestCase):
 
     def test_verified_layout(self):
         self.fixture()
-        self.assertEqual(module.verify(self.wheel, self.lock), ["pip/_vendor/pkg_resources/__init__.py"])
+        self.assertEqual(module.verify(self.wheel, self.lock), ["pip/_vendor/pkg_resources/LICENSE", "pip/_vendor/pkg_resources/__init__.py"])
 
     def test_changed_bytes_rejected_before_zip_parsing(self):
         self.fixture()
@@ -43,3 +44,8 @@ class BootstrapTests(unittest.TestCase):
                 self.fixture(path)
                 with self.assertRaisesRegex(ValueError, "Unexpected setuptools implementation"):
                     module.verify(self.wheel, self.lock)
+
+    def test_extra_retained_code_rejected(self):
+        self.fixture("pip/_vendor/pkg_resources/other.py")
+        with self.assertRaisesRegex(ValueError, "Unexpected retained setuptools files"):
+            module.verify(self.wheel, self.lock)

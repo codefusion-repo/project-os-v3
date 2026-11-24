@@ -16,7 +16,10 @@ def verify(wheel, lock):
     if hashlib.sha256(wheel.read_bytes()).hexdigest() != expected[1].split(":", 1)[1]:
         raise ValueError("Bootstrap wheel hash mismatch")
     with zipfile.ZipFile(wheel) as archive:
-        names = set(archive.namelist())
+        entries = archive.namelist()
+        names = set(entries)
+        if len(entries) != len(names):
+            raise ValueError("Duplicate wheel member")
         if "pip/_vendor/pkg_resources/__init__.py" not in names:
             raise ValueError("Unexpected setuptools vendoring layout")
         # The cited advisories affect package_index, sdist/MANIFEST.in and
@@ -31,6 +34,8 @@ def verify(wheel, lock):
         if "pip/_vendor/vendor.txt" not in names:
             raise ValueError("Missing vendor inventory")
         retained = sorted(n for n in names if n.startswith("pip/_vendor/pkg_resources/") and not n.endswith("/"))
+        if set(retained) != {"pip/_vendor/pkg_resources/LICENSE", "pip/_vendor/pkg_resources/__init__.py"}:
+            raise ValueError("Unexpected retained setuptools files")
     return retained
 
 

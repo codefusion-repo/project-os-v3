@@ -68,7 +68,28 @@ pins.insert(0, 'pip==' + m.version('pip'))
 pathlib.Path(sys.argv[1]).write_text('\n'.join(pins)+'\n')
 print('BOOTSTRAP_VENDOR_INVENTORY', ', '.join(pins))
 PY
+# Download exact versions previously observed; no unlocked auditor code executes.
+audit_dir="$(mktemp -d "$RUNNER_TEMP/audit-wheels.XXXXXXXX")"
+audit_pins=local-bridge/requirements-audit.txt
+audit_lock=local-bridge/requirements-audit.lock
+"$venv/bin/python" -I -m pip --isolated --disable-pip-version-check --no-cache-dir download --index-url https://pypi.org/simple --only-binary=:all: --no-deps -r "$audit_pins" -d "$audit_dir"
+python3 -I local-bridge/scripts/lock_wheels.py "$audit_pins" "$audit_dir" > "$RUNNER_TEMP/audit-candidate.lock"
+echo 'AUDITOR_LOCK_CANDIDATE_BEGIN'
+cat "$RUNNER_TEMP/audit-candidate.lock"
+echo 'AUDITOR_LOCK_CANDIDATE_END'
+[ -f "$audit_lock" ] || { echo 'AUDITOR_LOCK_DISCOVERY_ONLY; bootstrap audit remains blocked'; exit 1; }
+diff -u <(grep -v '^#' "$audit_lock") "$RUNNER_TEMP/audit-candidate.lock"
 python3 -I -m venv --without-pip "$RUNNER_TEMP/bootstrap-audit"
-"$venv/bin/python" -I -m pip --isolated --python "$RUNNER_TEMP/bootstrap-audit/bin/python" install --index-url https://pypi.org/simple pip-audit==2.10.1
-"$RUNNER_TEMP/bootstrap-audit/bin/python" -I -m pip_audit --no-deps --disable-pip --strict -r "$RUNNER_TEMP/bootstrap-audit.txt"
+"$venv/bin/python" -I -m pip --isolated --disable-pip-version-check --python "$RUNNER_TEMP/bootstrap-audit/bin/python" install --no-index --find-links "$audit_dir" --only-binary=:all: --require-hashes -r "$audit_lock"
+"$RUNNER_TEMP/bootstrap-audit/bin/python" -I -m pip check
+"$RUNNER_TEMP/bootstrap-audit/bin/python" -I -m pip_audit --version
+audit_rc=0
+"$RUNNER_TEMP/bootstrap-audit/bin/python" -I -m pip_audit --no-deps --disable-pip --strict -r "$RUNNER_TEMP/bootstrap-audit.txt" --format json --output "$RUNNER_TEMP/bootstrap-audit.json" || audit_rc=$?
+[ -s "$RUNNER_TEMP/bootstrap-audit.json" ] || { echo 'Missing strict audit report'; exit 1; }
+echo 'BOOTSTRAP_RAW_AUDIT_BEGIN'
+cat "$RUNNER_TEMP/bootstrap-audit.json"
+echo
+echo 'BOOTSTRAP_RAW_AUDIT_END'
+echo "BOOTSTRAP_STRICT_EXIT=$audit_rc"
+[ "$audit_rc" -eq 0 ] || exit "$audit_rc"
 echo 'BOOTSTRAP_AUDIT_PASS'

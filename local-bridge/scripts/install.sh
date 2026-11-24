@@ -7,7 +7,8 @@ umask 077
 KIT="$(cd -- "$(dirname -- "$0")/../.." && pwd -P)"
 [ "$(git -C "$KIT" rev-parse HEAD)" = "$1" ] || { echo 'HEAD mismatch.' >&2; exit 1; }
 [ "$(git -C "$KIT" config --local --get remote.origin.url)" = https://github.com/codefusion-repo/project-os-v3.git ] || { echo 'Unexpected origin.' >&2; exit 1; }
-[ -z "$(git -C "$KIT" status --porcelain --untracked-files=normal)" ] || { echo 'Dirty checkout; preserved.' >&2; exit 1; }
+checkout_status="$(git -C "$KIT" status --porcelain --untracked-files=normal)"
+[ -z "$checkout_status" ] || { echo 'Dirty checkout; preserved.' >&2; exit 1; }
 python3 -I -c 'import sys,platform; sys.exit(not (sys.version_info[:2]==(3,12) and sys.platform=="linux" and platform.machine()=="x86_64"))'
 VENV="$KIT/local-bridge/.venv"
 if [ -e "$VENV" ] || [ -L "$VENV" ]; then
@@ -23,15 +24,17 @@ PY
 python3 -I -m venv --without-pip "$VENV"
 work="$(mktemp -d /tmp/project-os-install.XXXXXXXX)"
 trap 'rm -rf -- "$work"' EXIT
-mkdir "$work/wheels" "$work/source" "$work/home"
+mkdir "$work/wheels" "$work/source" "$work/source-repeat" "$work/home" "$work/project-wheel" "$work/project-repeat"
+source_epoch="$(git -C "$KIT" show -s --format=%ct "$1")"
+[[ "$source_epoch" =~ ^[0-9]+$ ]] && [ "$source_epoch" -ge 315532800 ]
 # Build and test from the reviewed Git tree, not ignored files in the checkout.
 git -C "$KIT" archive "$1" local-bridge | tar -xf - -C "$work/source"
 source_dir="$work/source/local-bridge"
 wheel="$work/wheels/pip-26.3-py3-none-any.whl"
-curl --disable --fail --silent --show-error --proto '=https' --noproxy '*' --max-time 120 --max-filesize 5000000 -o "$wheel" 'https://files.pythonhosted.org/packages/07/25/ee8c38ae72d66b844ce8eb9711ba905dba21ca1a8a0c960057c41cd23337/pip-26.3-py3-none-any.whl'
+env -i PATH=/usr/bin:/bin HOME="$work/home" LC_ALL=C curl --disable --fail --silent --show-error --proto '=https' --noproxy '*' --max-time 120 --max-filesize 5000000 -o "$wheel" 'https://files.pythonhosted.org/packages/07/25/ee8c38ae72d66b844ce8eb9711ba905dba21ca1a8a0c960057c41cd23337/pip-26.3-py3-none-any.whl'
 # Verify bytes before importing ANY code from the downloaded wheel.
 "$VENV/bin/python" -I "$source_dir/scripts/bootstrap_verify.py" "$wheel" "$source_dir/requirements-bootstrap.lock"
-clean=(env -i PATH="$VENV/bin:/usr/bin:/bin" HOME="$work/home" LC_ALL=C PIP_CONFIG_FILE=/dev/null)
+clean=(env -i PATH="$VENV/bin:/usr/bin:/bin" HOME="$work/home" LC_ALL=C TZ=UTC SOURCE_DATE_EPOCH="$source_epoch" PIP_CONFIG_FILE=/dev/null)
 "${clean[@]}" "$VENV/bin/python" -I -c 'import runpy,sys; sys.path.insert(0,sys.argv.pop(1)); runpy.run_module("pip",run_name="__main__")' "$wheel" --isolated --disable-pip-version-check --no-input --no-cache-dir install --no-index --find-links "$work/wheels" --only-binary=:all: --require-hashes --no-deps -r "$source_dir/requirements-bootstrap.lock"
 pip_run() {
   "${clean[@]}" "$VENV/bin/python" -I -m pip --isolated --disable-pip-version-check --no-input --no-cache-dir "$@"
@@ -39,7 +42,14 @@ pip_run() {
 pip_run --version
 pip_run download --index-url https://pypi.org/simple --only-binary=:all: --require-hashes -r "$source_dir/requirements-linux-py312.lock" -r "$source_dir/requirements-build.lock" -d "$work/wheels"
 pip_run install --no-index --find-links "$work/wheels" --only-binary=:all: --require-hashes -r "$source_dir/requirements-linux-py312.lock" -r "$source_dir/requirements-build.lock"
-pip_run install --no-index --no-build-isolation --no-deps "$source_dir"
+# Independent source trees, same reviewed commit and deterministic build inputs.
+git -C "$KIT" archive "$1" local-bridge | tar -xf - -C "$work/source-repeat"
+pip_run wheel --no-index --no-build-isolation --no-deps "$source_dir" -w "$work/project-wheel"
+pip_run wheel --no-index --no-build-isolation --no-deps "$work/source-repeat/local-bridge" -w "$work/project-repeat"
+"$VENV/bin/python" -I "$source_dir/scripts/wheel_identity.py" "$work/project-wheel" "$work/project-repeat"
+project_wheels=("$work/project-wheel/"*.whl)
+[ "${#project_wheels[@]}" = 1 ]
+pip_run install --no-index --no-deps "${project_wheels[0]}"
 pip_run check
 "$VENV/bin/python" -I -m unittest discover -s "$source_dir/tests" -v
 printf '%s\n' 'BRIDGE INSTALL PASS; existing wizard available; no service started.'
