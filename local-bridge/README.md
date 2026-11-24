@@ -118,3 +118,7 @@ In a clean independent checkout of the explicitly reviewed full commit, run `bas
 ## Independent WSL validation
 
 Follow [WSL-VALIDATION.md](WSL-VALIDATION.md) for the grouped operator procedure. Keep the current pilot intact. The reference OCI gate remains blocked; do not run a replacement without separate review and authorization.
+
+
+### Production installation evidence (LB-01)
+The installer builds two wheels from independently extracted copies of the reviewed Git tree with the commit timestamp as SOURCE_DATE_EPOCH and identical locked dependencies, and compares filenames and SHA-256 before installing either. A mismatch stops installation. This proves reproducibility only for the observed host/toolchain, not an entire venv or a different OS. CI uses the exact observed 29-package auditor closure in requirements-audit.lock, verifies wheel bytes and installed versions, and retains raw JSON and strict exit codes; a missing or inconsistent report is a failure. The strict vendor audit remains blocking until remediated or an explicitly reviewed disposition is authorized. Host Python/OS/CA/Git/curl/tar remain prerequisites. For update/rollback keep the existing installation intact, use a separate clean checkout at a reviewed SHA, stop at any failure, and retain the old environment; do not overwrite, activate services, migrate private state or change grants automatically.

@@ -26,7 +26,9 @@ work="$(mktemp -d /tmp/project-os-install.XXXXXXXX)"
 trap 'rm -rf -- "$work"' EXIT
 mkdir "$work/wheels" "$work/source" "$work/source-repeat" "$work/home" "$work/project-wheel" "$work/project-repeat"
 source_epoch="$(git -C "$KIT" show -s --format=%ct "$1")"
-[[ "$source_epoch" =~ ^[0-9]+$ ]] && [ "$source_epoch" -ge 315532800 ]
+if ! [[ "$source_epoch" =~ ^[0-9]+$ ]] || [ "$source_epoch" -lt 315532800 ]; then
+  echo "Invalid source timestamp" >&2; exit 1
+fi
 # Build and test from the reviewed Git tree, not ignored files in the checkout.
 git -C "$KIT" archive "$1" local-bridge | tar -xf - -C "$work/source"
 source_dir="$work/source/local-bridge"
