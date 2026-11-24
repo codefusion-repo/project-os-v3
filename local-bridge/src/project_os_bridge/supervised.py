@@ -10,7 +10,7 @@ import subprocess
 import sys
 import threading
 import time
-import urllib.request
+import http.client
 from pathlib import Path
 
 from .workos_auth import load_config, private_directory, private_file
@@ -83,14 +83,35 @@ def stop_child(child, timeout):
         raise RuntimeError("Forced child termination; inspect local state")
 
 
+def read_metadata(context):
+    # No redirect following, proxy inheritance or external destinations.
+    connection = http.client.HTTPSConnection("127.0.0.1",8765,timeout=2,context=context)
+    try:
+        connection.request("GET","/.well-known/oauth-protected-resource/mcp")
+        response = connection.getresponse()
+        if response.status != 200:
+            raise RuntimeError("Unexpected readiness HTTP status")
+        data = response.read(16385)
+        if len(data)>16384:
+            raise RuntimeError("Oversized readiness metadata")
+        result = json.loads(data)
+        if not isinstance(result,dict):
+            raise RuntimeError("Invalid readiness metadata")
+        return result
+    finally:
+        connection.close()
+
+
 def run(root):
     if os.getuid() == 0:
         raise PermissionError("Unprivileged account required")
-    bridge_cmd, tunnel_cmd, env, tunnel_env, context, verifier = commands(root)
-    fd = os.open(root/"service"/"supervisor.lock",os.O_CREAT|os.O_RDWR|os.O_NOFOLLOW,0o600)
+    checked_path(root)
+    private_directory(root / "service")
+    fd = os.open(root/"service"/"supervisor.lock",os.O_CREAT|os.O_RDWR|os.O_NOFOLLOW|os.O_NONBLOCK,0o600)
     try:
         private_file(root/"service"/"supervisor.lock")
         fcntl.flock(fd,fcntl.LOCK_EX|fcntl.LOCK_NB)
+        bridge_cmd, tunnel_cmd, env, tunnel_env, context, verifier = commands(root)
         stop = threading.Event()
         for sig in (signal.SIGINT, signal.SIGTERM):
             signal.signal(sig, lambda *_:stop.set())
@@ -102,15 +123,12 @@ def run(root):
         try:
             bridge = subprocess.Popen(bridge_cmd, env=env, stdin=subprocess.DEVNULL,
                                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            opener = urllib.request.build_opener(urllib.request.ProxyHandler({}),
-                                                 urllib.request.HTTPSHandler(context=context))
             deadline = time.monotonic()+30
             while not stop.is_set():
                 if bridge.poll() is not None or time.monotonic()>=deadline:
                     raise RuntimeError("Local TLS readiness failed")
                 try:
-                    with opener.open("https://127.0.0.1:8765/.well-known/oauth-protected-resource/mcp",timeout=2) as response:
-                        metadata=json.loads(response.read(16384))
+                    metadata = read_metadata(context)
                     if metadata["resource"] != verifier.resource or metadata["authorization_servers"] != [verifier.issuer]:
                         raise RuntimeError("Unexpected protected resource metadata")
                     break
@@ -118,6 +136,8 @@ def run(root):
                     stop.wait(0.25)
             if stop.is_set():
                 return
+            if bridge.poll() is not None:
+                raise RuntimeError("Bridge exited before tunnel launch")
             tunnel = subprocess.Popen(tunnel_cmd,env=tunnel_env,stdin=subprocess.DEVNULL,
                                       stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
             print("HTTPS_BRIDGE_READY; TUNNEL_STARTED (remote readiness unverified)",flush=True)

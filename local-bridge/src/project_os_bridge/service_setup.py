@@ -4,6 +4,7 @@ import json
 import os
 import re
 import sys
+import warnings
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from ipaddress import ip_address
@@ -94,7 +95,6 @@ def prepare_service(root, tunnel, runtime_key, image=None):
     # Never replace existing credentials or certificates, even after failure.
     service.mkdir(mode=0o700)
     generate_tls(service)
-    write_new(service / "runtime-key", runtime_key.encode("ascii"))
     write_new(service / "runtime.json", json.dumps({
         "tunnel":str(tunnel), "tunnel_id":verifier.resource.rsplit("/",1)[-1], "image":image
     }).encode())
@@ -117,6 +117,7 @@ Delegate=yes
 [Install]
 WantedBy=default.target
 """
+    write_new(service / "runtime-key", runtime_key.encode("ascii"))
     write_new(service / "project-os-bridge.service", unit.encode())
     return service
 
@@ -128,6 +129,8 @@ def interactive_prepare(root):
         raise FileExistsError("Existing service preparation preserved")
     tunnel = Path(input("Verified tunnel-client executable (absolute path): ").strip())
     image = input("Previously validated fixture image digest (blank disables fixture): ").strip() or None
-    key = getpass.getpass("Runtime API key (Read + Use only): ")
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", getpass.GetPassWarning)
+        key = getpass.getpass("Runtime API key (Read + Use only): ")
     prepare_service(root, tunnel, key, image)
     print("Private service prepared; not linked, enabled, started or authorized.")
