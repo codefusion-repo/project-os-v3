@@ -21,7 +21,18 @@ else
 fi
 check adb adb version
 check emulator emulator -version
+# Inventory only; do not print device serials, start an emulator, install
+# packages or issue shell commands to a device. ADB may start its local server.
+if devices="$(timeout 10s adb devices 2>/dev/null)"; then
+  if printf '%s\n' "$devices" | awk '$1 ~ /^emulator-[0-9]+$/ && $2 == "device" { found=1 } END { exit !found }'; then
+    printf 'adb_emulator_attach: CONNECTED\n'
+  else
+    printf 'adb_emulator_attach: NOT_DETECTED\n'
+  fi
+else
+  printf 'adb_emulator_attach: UNAVAILABLE_OR_FAILED\n'
+fi
 check windows_interop cmd.exe /d /c exit 0
 check adb_windows adb.exe version
 check emulator_windows emulator.exe -version
-printf 'Preflight only: no gh authentication, device access or isolation proof.\n'
+printf 'Preflight only: no gh authentication, device authorization, boot readiness or isolation proof.\n'
