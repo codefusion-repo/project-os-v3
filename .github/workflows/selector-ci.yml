@@ -84,7 +84,7 @@ jobs:
           python-version: '3.12'
       - name: Resolve build backend candidate
         run: |
-          python -m pip --isolated download --index-url https://pypi.org/simple --only-binary=:all: --no-deps setuptools -d "$RUNNER_TEMP/build-wheels"
+          python -m pip --isolated download --index-url https://pypi.org/simple --only-binary=:all: --no-deps setuptools==84.2.1 -d "$RUNNER_TEMP/build-wheels"
           python - "$RUNNER_TEMP/build-wheels" <<'PY'
           import sys, zipfile
           from pathlib import Path
@@ -93,7 +93,7 @@ jobs:
           wheels=list(root.glob("*.whl"))
           assert len(wheels)==1
           with zipfile.ZipFile(wheels[0]) as z:
-              names=[n for n in z.namelist() if n.endswith(".dist-info/METADATA")]
+              names=[n for n in z.namelist() if n.count("/")==1 and n.endswith(".dist-info/METADATA")]
               assert len(names)==1
               msg=BytesParser().parsebytes(z.read(names[0]))
               assert msg["Name"].lower()=="setuptools"

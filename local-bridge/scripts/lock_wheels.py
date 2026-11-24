@@ -31,7 +31,7 @@ def generate(pins, wheels):
     actual = {}
     for wheel in sorted(wheels.glob("*.whl")):
         with zipfile.ZipFile(wheel) as z:
-            metadata = [n for n in z.namelist() if n.endswith(".dist-info/METADATA")]
+            metadata = [n for n in z.namelist() if n.count("/")==1 and n.endswith(".dist-info/METADATA")]
             if len(metadata) != 1:
                 raise ValueError("Invalid wheel metadata")
             with z.open(metadata[0]) as stream:
