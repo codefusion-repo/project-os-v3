@@ -95,3 +95,7 @@ Keep the state directory private. Reusing the same request key retrieves the ori
 See [SECURITY.md](SECURITY.md) for the threat model, gates, private setup and service account guidance. Each installation has its own identity, tunnel, local credentials and databases. No shared Project OS service or collaborative RBAC. The source repository is public; a redistribution license is a separate maintainer decision.
 
 `project-os-bridge-init --root /absolute/private/new-directory` initializes a new disposable HTTP instance interactively. It never starts a server, grants access, provisions credentials or modifies OS permissions. Keep existing installations unchanged. Install from a reviewed full commit using a dedicated virtual environment, run pip check and the test suite. Direct dependencies are pinned; transitive lock and independently reproduced clean installation are still pending.
+
+## Current pilot status and production follow-up
+
+The disposable authenticated Git/Podman lifecycle passed live, including replay, restart and local deny/restore, at the SHA and evidence recorded in SECURITY.md. Earlier pending statements above describe historical milestones. Private loopback TLS is available through the paired certificate/key flags; follow WORKOS.md and validate the new transport before use. Preflight now separately reports `adb_emulator_attach` without printing serials. Android device operations, real repository access, supervised startup and reproducible installation are not yet certified or enabled.
