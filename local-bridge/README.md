@@ -6,15 +6,9 @@ Historical B0 bootstrap. Stdio mode exposes only a fixed disposable SQLite marke
 
 ## Install in WSL
 
-From the repository root, using a clean checkout of the reviewed implementation commit:
+Use the [hash-verified installer](#hash-verified-linuxwsl-installation) in a new clean checkout of the explicitly reviewed full SHA; do not use the old unlocked pip install procedure or overwrite an existing venv. For independent readiness follow [WSL-VALIDATION.md](WSL-VALIDATION.md). Do not use sudo for the bridge.
 
-```bash
-python3 -m venv local-bridge/.venv
-local-bridge/.venv/bin/python -m pip install ./local-bridge
-PYTHONPATH=local-bridge/src local-bridge/.venv/bin/python -m unittest discover -s local-bridge/tests -v
-```
-
-The SDK version is pinned; transitive dependencies are not yet locked. Do not use sudo for the bridge.
+The remaining B0 commands below are historical disposable stdio instructions, not the recommended authenticated startup path. For a new instance use the initializer and the independent HTTPS runbook.
 
 Create a dedicated disposable state directory outside Git:
 
@@ -117,7 +111,7 @@ Enable at login only if desired, after a successful live test, with `systemctl -
 
 ## Hash-verified Linux/WSL installation
 
-The committed runtime lock contains the 31 wheel SHA-256 hashes observed in CI job 138606270522 (Linux x86_64 CPython 3.12). That job installed the downloaded wheels in a fresh venv using hash checks and no index, passed pip check, and pip-audit 2.10.1 reported no known vulnerabilities at scan time. The build backend lock records setuptools 84.2.1, whose wheel hash, offline build and audit passed in CI job 138626336009. The installer verifies both locks and builds without index access or build isolation. CI runtime hash checks remain enforced. This is dependency reproducibility, not a guarantee of byte-identical project wheels or a pinned Python/OS toolchain. OS, OCI image, tunnel binary and audit-tool dependencies remain outside this evidence. No automatic lock regeneration.
+The committed runtime lock contains the 31 wheel SHA-256 hashes observed in CI job 138606270522 (Linux x86_64 CPython 3.12). That job installed the downloaded wheels in a fresh venv using hash checks and no index, passed pip check, and pip-audit 2.10.1 reported no known vulnerabilities at scan time. The build backend lock records setuptools 84.2.1, whose wheel hash, offline build and audit passed in CI job 138626336009. The installer verifies both locks and builds without index access or build isolation. CI runtime hash checks remain enforced. This is dependency reproducibility, not a guarantee of byte-identical project wheels or a pinned Python/OS toolchain. The host Python/ensurepip bootstrap and pip itself are not in the runtime/build locks; OS, OCI image, tunnel binary and audit-tool dependencies remain outside this dependency-audit evidence. No automatic lock regeneration.
 
 In a clean independent checkout of the explicitly reviewed full commit, run `bash local-bridge/scripts/install.sh REVIEWED_FULL_SHA`. Existing venvs are preserved; partial new installation is retained, not automatically removed. From Windows, the matching PowerShell wrapper accepts ReviewedSha, Distribution and the absolute Linux Checkout path and delegates to the same WSL installer. It does not install WSL or modify Windows settings. After successful install, reuse the existing selector's explicit bridge setup flow; no automatic permission or service activation.
 

@@ -107,3 +107,47 @@ class WorkerLifecycleTests(unittest.TestCase):
                 with exclusive_http_service(root):
                     self.fail("Symlink accepted")
             self.assertEqual(target.read_text(), "unchanged")
+
+    def test_real_uvicorn_port_conflict_preserves_queue(self):
+        import socket
+        import uvicorn
+        from starlette.applications import Starlette
+        from project_os_bridge.core import Jobs, Policy
+        with tempfile.TemporaryDirectory() as folder, socket.socket() as listener:
+            root = Path(folder).resolve()
+            jobs = Jobs(root, Policy(("test", op, "disposable") for op in ("submit", "read")))
+            job = jobs.submit("test", "disposable", "probe_check", "port-conflict")
+            listener.bind(("127.0.0.1", 0))
+            listener.listen()
+            server = uvicorn.Server(uvicorn.Config(Starlette(), host="127.0.0.1",
+                                    port=listener.getsockname()[1], lifespan="off", log_config=None))
+            verifier = Mock()
+            verifier.enabled.return_value = True
+            with patch("project_os_bridge.authenticated.run_pending") as drain:
+                with self.assertRaises((SystemExit, RuntimeError)):
+                    serve_with_worker(server, jobs, verifier, None)
+                drain.assert_not_called()
+            self.assertFalse(server.started)
+            self.assertEqual(jobs.get("test", job)["state"], "QUEUED")
+
+    def test_real_uvicorn_worker_failure_requests_shutdown(self):
+        import uvicorn
+        from starlette.applications import Starlette
+        server = uvicorn.Server(uvicorn.Config(Starlette(), host="127.0.0.1",
+                                port=0, lifespan="off", log_config=None))
+        verifier = Mock()
+        verifier.enabled.return_value = True
+        # Bound this loopback-only regression test even if shutdown propagation breaks.
+        watchdog = threading.Timer(5, lambda: setattr(server, "should_exit", True))
+        watchdog.start()
+        try:
+            with patch("project_os_bridge.authenticated.run_pending",
+                       side_effect=OSError("synthetic failure")) as drain:
+                with self.assertRaisesRegex(RuntimeError, "DISPOSABLE_WORKER_FAILED"):
+                    serve_with_worker(server, Mock(), verifier, None)
+                drain.assert_called_once()
+            self.assertTrue(server.started)
+            self.assertTrue(server.should_exit)
+        finally:
+            watchdog.cancel()
+            watchdog.join()

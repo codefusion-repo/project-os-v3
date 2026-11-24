@@ -8,7 +8,7 @@ The PM approved this direction on 2026-11-24. Browser Chat remains the orchestra
 
 ## User experience
 
-Keep the existing selector and central installation. Two entrypoints (Linux/WSL shell and Windows PowerShell via WSL2) use one runtime. No new permanent menu or command family. First-run setup asks how the operator works (terminal, ChatGPT or both), reuses dependencies, and offers optional components with explicit approval. Existing installations are preserved. External OAuth consent and system changes remain operator-controlled. PowerShell and fully automated setup are deferred until the pilot; do not claim they exist.
+Keep the existing selector and central installation. Two entrypoints (Linux/WSL shell and Windows PowerShell via WSL2) use one runtime. No new permanent menu or command family. First-run setup asks how the operator works (terminal, ChatGPT or both), reuses dependencies, and offers optional components with explicit approval. Existing installations are preserved. External OAuth consent and system changes remain operator-controlled. The PowerShell wrapper and optional private HTTPS service preparation are implemented; CI covers the wrapper using a mock WSL executable. Independent Windows/WSL installation and supervised service operation still require live validation; no automatic activation.
 
 ## Capability boundary
 
@@ -19,9 +19,9 @@ Keep the existing selector and central installation. Two entrypoints (Linux/WSL 
 
 ## Pilot sequence
 
-1. Verify reviewed full SHA and both CI checks; stop existing bridge/tunnel before updating. Install in existing dedicated venv and run pip check and tests.
+1. Verify the reviewed full SHA and applicable CI jobs; keep the original failing OCI gate visible and do not treat an experimental candidate as approved. Follow WSL-VALIDATION.md for a fresh independent checkout and hash-verified installation. The installer refuses an existing venv; preserve the pilot and do not overwrite or migrate it.
 2. Run fixed local fixture against the already approved digest in a new private state; require SUCCEEDED, negative checks and cleanup evidence. Replay and retrieve evidence.
-3. Restart authenticated HTTP using existing private state and the same approved digest only after local success. Reconnect existing tunnel, refresh tools; verify health, submit fixture, retrieve status/evidence, replay and restart persistence. Revoke local opt-in, verify authenticated 403 and no new job, restore explicitly. No tokens in logs.
+3. For the earlier pilot, restart authenticated HTTP using its existing private state and same approved digest only after local success; for independent validation use new private state and the HTTPS runbook. Reconnect existing tunnel, refresh tools; verify health, submit fixture, retrieve status/evidence, replay and restart persistence. Revoke local opt-in, verify authenticated 403 and no new job, restore explicitly. No tokens in logs.
 4. Dogfood a bounded real issue through GitHub Connector directly. Local real resources stay disabled until all gates in SECURITY.md pass. Report unavailable local tests, do not route work to another agent automatically.
 
 ## Frozen scope
