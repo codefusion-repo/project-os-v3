@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "project-os-local-bridge"
 version = "0.1.0"
 requires-python = ">=3.12"
-dependencies = ["mcp==2.3.0", "PyJWT[crypto]==2.15.1"]
+dependencies = ["mcp==2.3.0", "PyJWT[crypto]==2.15.1", "httpx==0.28.1"]
 
 [project.scripts]
 project-os-bridge = "project_os_bridge.server:main"
