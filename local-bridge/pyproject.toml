@@ -11,6 +11,7 @@ dependencies = ["mcp==2.3.0", "PyJWT[crypto]==2.15.1", "httpx==0.28.1"]
 [project.scripts]
 project-os-bridge = "project_os_bridge.server:main"
 project-os-bridge-http = "project_os_bridge.authenticated:main"
+project-os-bridge-fixture = "project_os_bridge.vertical:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

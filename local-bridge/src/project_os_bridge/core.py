@@ -26,9 +26,12 @@ class Policy:
 
 class Jobs:
     """Single-host SQLite queue; no automatic retry of interrupted side effects."""
-    def __init__(self, root: Path, policy: Policy):
+    def __init__(self, root: Path, policy: Policy, *, workflows=("probe_check",)):
         self.probe = Probe(root)
         self.policy = policy
+        self.workflows = frozenset(workflows)
+        if not self.workflows <= {"probe_check", "git_fixture_check"}:
+            raise ValueError("Unknown workflow configuration")
         self.db = root / "jobs.sqlite3"
         import os
         try:
@@ -60,9 +63,11 @@ class Jobs:
 
     def submit(self, principal, resource, workflow, request_key):
         self.policy.require(principal, "submit", resource)
-        if resource != "disposable" or workflow != "probe_check":
+        if resource != "disposable" or workflow not in self.workflows:
             raise ValueError("Unknown workflow or resource")
-        if not re.fullmatch(r"[A-Za-z0-9_-]{1,80}", request_key):
+        if workflow == "git_fixture_check":
+            self.policy.require(principal, "git_workflow", resource)
+        if not isinstance(request_key, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,80}", request_key):
             raise ValueError("Invalid request key")
         with self.transaction() as c:
             row = c.execute("SELECT * FROM jobs WHERE principal=? AND resource=? AND request_key=?",
@@ -87,6 +92,18 @@ class Jobs:
             return {"id": row["id"], "state": row["state"],
                     "result": json.loads(row["result"]) if row["result"] else None}
 
+    def evidence(self, principal, job_id):
+        with self.transaction() as c:
+            row = c.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone()
+            if not row or row["principal"] != principal:
+                raise PermissionError("DENIED")
+            self.policy.require(principal, "read", row["resource"])
+            events = c.execute("SELECT state,at FROM events WHERE job_id=? ORDER BY id",
+                               (job_id,)).fetchall()
+            return {"id":row["id"], "workflow":row["workflow"], "state":row["state"],
+                    "result":json.loads(row["result"]) if row["result"] else None,
+                    "events":[dict(event) for event in events]}
+
     def claim(self):
         with self.transaction() as c:
             while True:
@@ -95,6 +112,10 @@ class Jobs:
                     return None
                 try:
                     self.policy.require(row["principal"], "submit", row["resource"])
+                    if row["workflow"] not in self.workflows:
+                        raise PermissionError("Workflow disabled")
+                    if row["workflow"] == "git_fixture_check":
+                        self.policy.require(row["principal"], "git_workflow", row["resource"])
                 except PermissionError:
                     self.transition(c,row["id"],"QUEUED","BLOCKED")
                     continue
@@ -109,7 +130,7 @@ class Jobs:
         self.event(c,job_id,new)
 
     def finish(self,job_id,state,result):
-        if state not in {"SUCCEEDED","FAILED"}:
+        if state not in {"SUCCEEDED","FAILED","BLOCKED"}:
             raise ValueError("Invalid terminal state")
         with self.transaction() as c:
             self.transition(c,job_id,"RUNNING",state,result)

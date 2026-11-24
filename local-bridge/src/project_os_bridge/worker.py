@@ -19,19 +19,26 @@ def exclusive_worker(jobs: Jobs):
         os.close(fd)
 
 
-def run_pending(jobs: Jobs):
+def run_pending(jobs: Jobs, *, fixture_image=None, enabled=lambda: True):
     """Drain queued disposable jobs, no shell, no repo access."""
     with exclusive_worker(jobs):
         jobs.recover_interrupted()
-        while True:
+        while enabled():
             row = jobs.claim()
             if row is None:
                 return
             try:
-                if row["workflow"] != "probe_check" or row["resource"] != "disposable":
+                if row["resource"] != "disposable":
+                    raise ValueError("Unknown resource")
+                if row["workflow"] == "probe_check":
+                    result = jobs.probe.read()
+                    state = "SUCCEEDED"
+                elif row["workflow"] == "git_fixture_check":
+                    from .vertical import run_git_fixture
+                    state, result = run_git_fixture(jobs, row, fixture_image)
+                else:
                     raise ValueError("Unknown handler")
-                result = jobs.probe.read()
             except Exception:
                 jobs.finish(row["id"], "FAILED", {"error": "HANDLER_FAILED"})
             else:
-                jobs.finish(row["id"], "SUCCEEDED", result)
+                jobs.finish(row["id"], state, result)
