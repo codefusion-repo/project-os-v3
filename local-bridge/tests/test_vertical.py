@@ -5,6 +5,7 @@ from unittest.mock import patch
 from project_os_bridge.core import Jobs, Policy
 from project_os_bridge.vertical import local_jobs, bind_image, main
 from project_os_bridge.worker import run_pending
+from project_os_bridge.isolated import CHECKS
 
 IMAGE="example/python@sha256:"+"a"*64
 
@@ -38,7 +39,8 @@ class VerticalTests(unittest.TestCase):
     def test_success_evidence_contract(self):
         job=self.submit()
         def fixture_result(repo,principal,revision,image):
-            return {"status":"SUCCEEDED","revision":revision,"exit_code":0}
+            return {"status":"SUCCEEDED","revision":revision,"exit_code":0,
+                    "profile":"fixture-python","cleanup_verified":True,"checks":CHECKS}
         with patch("project_os_bridge.vertical.validate_in_container",side_effect=fixture_result):
             run_pending(self.jobs,fixture_image=IMAGE)
         self.assertEqual(self.jobs.evidence("local-fixture",job)["state"],"SUCCEEDED")
@@ -96,3 +98,13 @@ class VerticalTests(unittest.TestCase):
         self.assertEqual(first,self.submit("first"))
         with self.assertRaises(QueueLimitError):
             self.submit("ninth")
+
+    def test_incomplete_isolation_evidence_blocks_success(self):
+        job=self.submit()
+        def incomplete(repo,principal,revision,image):
+            return {"status":"SUCCEEDED","revision":revision,"exit_code":0}
+        with patch("project_os_bridge.vertical.validate_in_container",side_effect=incomplete):
+            run_pending(self.jobs,fixture_image=IMAGE)
+        evidence=self.jobs.evidence("local-fixture",job)
+        self.assertEqual(evidence["state"],"BLOCKED")
+        self.assertEqual(evidence["result"]["error"],"INCOMPLETE_ISOLATION_EVIDENCE")

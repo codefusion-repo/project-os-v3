@@ -174,14 +174,16 @@ def main():
                 pass
             stop.wait(0.5)
 
-    thread = threading.Thread(target=worker,daemon=True)
+    thread = threading.Thread(target=worker,daemon=False)
     thread.start()
     try:
         import uvicorn
         uvicorn.run(app, host="127.0.0.1", port=args.port, access_log=False)
     finally:
         stop.set()
-        thread.join(timeout=6)
+        # The registered fixture may still be cleaning up its container.
+        # Do not abandon it on normal shutdown; no new claims after stop.
+        thread.join()
 
 
 if __name__ == "__main__":

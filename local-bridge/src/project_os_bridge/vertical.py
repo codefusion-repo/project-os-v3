@@ -7,7 +7,7 @@ from pathlib import Path
 
 from .core import Jobs, Policy
 from .git_fixture import GitFixture
-from .isolated import IMAGE, validate_in_container
+from .isolated import IMAGE, CHECKS, validate_in_container
 from .workos_auth import private_directory, private_file
 from .worker import run_pending, exclusive_worker
 
@@ -43,8 +43,13 @@ def run_git_fixture(jobs, row, image):
         result = validate_in_container(repo, principal, after["revision"], image)
         evidence["steps"].append({"step":"validate", **result})
         state = result["status"]
-        if state == "SUCCEEDED" and (result.get("revision") != after["revision"] or result.get("exit_code") != 0):
-            raise RuntimeError("Invalid validation evidence")
+        if state == "SUCCEEDED" and (result.get("revision") != after["revision"]
+                or type(result.get("exit_code")) is not int or result["exit_code"] != 0
+                or result.get("cleanup_verified") is not True
+                or result.get("checks") != CHECKS
+                or result.get("profile") != "fixture-python"):
+            evidence["error"] = "INCOMPLETE_ISOLATION_EVIDENCE"
+            return "BLOCKED", evidence
         return state, evidence
     except Exception:
         evidence["error"] = "FIXTURE_WORKFLOW_FAILED"
