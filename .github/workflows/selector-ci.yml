@@ -105,3 +105,15 @@ jobs:
           persist-credentials: false
       - name: Audit pinned public fixture without running it
         run: bash local-bridge/scripts/ci-oci-audit.sh
+
+  oci-comparison:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Test official manifest resolver and audit summaries
+        run: python3 -m unittest discover -s local-bridge/scripts -p test_oci_compare.py -v
+      - name: Compare official Python variants by platform digest (evidence only)
+        run: python3 local-bridge/scripts/oci_compare.py
