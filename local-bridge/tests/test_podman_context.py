@@ -81,6 +81,10 @@ class PodmanContextTests(unittest.TestCase):
             self.context.require_import(self.identity, image.replace("a" * 64, "c" * 64))
         podman.assert_not_called()
 
+    def test_empty_engine_home_directories_do_not_supply_host_data(self):
+        (self.context.root / "home/.config/containers").mkdir(parents=True)
+        self.assertEqual(self.context.identity(), self.identity)
+
     def test_host_data_and_context_layout_drift_fail_closed(self):
         (self.context.root / "home/foreign").touch()
         with patch.object(self.context, "_run") as run, self.assertRaises(PermissionError):

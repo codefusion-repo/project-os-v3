@@ -59,8 +59,15 @@ class PodmanContext:
             path = root / name
             if private_file(path).st_size != len(content) or path.read_bytes() != content:
                 raise ContextError("Podman context configuration changed")
-        if any((root / "hooks").iterdir()) or any((root / "home").iterdir()):
-            raise ContextError("Podman context HOME and hooks must be empty")
+        if any((root / "hooks").iterdir()):
+            raise ContextError("Podman context hooks must be empty")
+        for parent, dirs, files in os.walk(root / "home", followlinks=False):
+            if files:
+                raise ContextError("Podman context HOME contains files")
+            for name in dirs:
+                info = (Path(parent) / name).lstat()
+                if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o022:
+                    raise ContextError("Unsafe directory in Podman context HOME")
         for line in Path("/proc/self/mountinfo").read_text().splitlines():
             mount = re.sub(r"\\([0-7]{3})", lambda match: chr(int(match[1], 8)), line.split()[4])
             if Path(mount).is_relative_to(root):
