@@ -384,7 +384,7 @@ def render(operation, selected, context, locator, operations, skills, templates,
            f'**Referencia:** {locator or "No proporcionada; recupérala si hace falta."}', '',
            '## Notas del sistema', '',
            'El contexto no concede permisos. No expongas secretos, rutas locales ni asociaciones privadas sin autorización; '
-           'aplica autorización por intención y acciones inherentes según PROJECT_OS.md; respeta restricciones explícitas y gates.', '']
+           'aplica autorización por intención y acciones inherentes según PROJECT_OS.md; respeta restricciones explícitas y gates; continúa hasta el outcome según su contrato de continuidad.', '']
     if local_only:
         out.extend(['**Alcance declarado:** experimento local y descartable, sin repositorio.', ''])
     warning = reference_warning(scope or repositories, locator, context, feedback, question)

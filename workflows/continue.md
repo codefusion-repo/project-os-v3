@@ -9,7 +9,7 @@ Cold start, cambio de sesión o continuación de un issue/PR.
 ## Ruta rápida
 1. Con solo el repo identificado, inspecciona instrucciones y fuentes accesibles; recupera objetivo, autorización vigente verificable, alcance, restricciones y decisiones ratificadas del PM que afecten la tarea conforme a PROJECT_OS.md, sin historial del chat.
 2. Consulta issues, PRs, commits, diffs, checks, findings y blockers relevantes en GitHub si está disponible; inspecciona rama y cambios locales cuando existan.
-3. Reúne objetivo, estado, refs, validaciones, blockers y próximo paso seguro; continúa sin repetir preguntas respondibles desde evidencia.
+3. Reúne objetivo, estado, refs, validaciones, blockers y próximo paso seguro; continúa hasta el outcome conforme a [Respuesta y continuidad](../PROJECT_OS.md#respuesta-y-continuidad), sin repetir preguntas respondibles desde evidencia.
 ## Evidencia y validación
 Cita refs, estado y checks observados; no afirmes estado remoto sin consultarlo. Aplica las skills base de contexto y trazabilidad de [PROJECT_OS.md](../PROJECT_OS.md).
 ## Salida

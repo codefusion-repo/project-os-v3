@@ -65,6 +65,13 @@ class BrowserCloseoutContract(unittest.TestCase):
         self.assertIn('solo si la intención autorizada comprende implementación o corrección', self.shared)
         self.assertIn('BLOCKED: informa la corrección requerida', self.shared)
 
+    def test_checkpoint_is_not_an_approval_gate(self):
+        for phrase in ('La unidad de ejecución es el outcome autorizado',
+                       'Los checkpoints internos no son gates de aprobación',
+                       'bloqueo material no resoluble', 'límite técnico efectivo',
+                       'una interrupción no equivale a finalización'):
+            self.assertIn(phrase, self.shared)
+
     def test_branch_cleanup_safe_command_is_distinct_from_prohibition(self):
         # Do not case-fold: git branch -D is force deletion, not git branch -d.
         prohibition = self.shared.split('No uses `git reset --hard`', 1)[1].split('por defecto.', 1)[0]

@@ -1,6 +1,6 @@
 # Ejecución — {{outcome}}
 
-Resumir cambios, comandos ejecutados y resultados observados.
+Resumir cambios, comandos ejecutados y resultados observados. Identificar si es checkpoint material, interrupción técnica o resultado final; indicar outcome pendiente y estado recuperable cuando corresponda. Aplicar [Respuesta y continuidad](../PROJECT_OS.md#respuesta-y-continuidad).
 
 **Unidad viva:** {{issue_pr_commit_si_existen}}
 

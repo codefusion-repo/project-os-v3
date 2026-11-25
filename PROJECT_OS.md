@@ -71,6 +71,8 @@ Aplica [github-traceability](skills/github-traceability/SKILL.md): por ejecució
 
 ## Respuesta y continuidad
 
+La unidad de ejecución es el outcome autorizado, no cada herramienta, commit, validación o checkpoint. Continúa autónomamente hasta completar el outcome, alcanzar un bloqueo material no resoluble o un límite técnico efectivo. Los checkpoints internos no son gates de aprobación ni requieren confirmación humana; registra solo los avances materiales según trazabilidad. Ante CI pendiente o bloqueo parcial, continúa trabajo independiente seguro y consulta resultados cuando corresponda. Conserva autorización vigente y evidencia; no repitas acciones verificadas. Distingue resultado final, checkpoint e interrupción técnica: una interrupción no equivale a finalización ni a falta de autorización. Si no puedes continuar, explica el límite real, estado recuperable y siguiente acción; no prometas ejecución en segundo plano sin capacidad. No introduzcas nuevos artefactos obligatorios ni escalaciones por cada paso.
+
 Entrega formato breve según resultado: [execution](templates/execution.md) para entregables, comandos/checks y límites; [review](templates/review.md) para findings con evidencia y decisión; [decision](templates/decision.md) para decisiones materiales pendientes o ratificadas, con evidencia, alcance y próximo trabajo seguro; incluye opciones cuando corresponda. Para handoff usa [handoff](templates/handoff.md) con objetivo, estado, referencias vivas, validaciones, blockers y siguiente acción. En closeout aplica la salida y fallback del adapter, no bundles. Nunca declares ejecutado lo meramente preparado; distingue evidencia local, remota, simulada y no disponible.
 
 ## Instalación, adopción y versión del proyecto
