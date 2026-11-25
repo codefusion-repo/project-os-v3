@@ -1022,7 +1022,7 @@ def main(argv=None):
     parser.add_argument('--output-dir', help='carpeta de salida explícita')
     parser.add_argument('--prototype', action='store_true', help='implement + rapid-prototype')
     parser.add_argument('--bridge-setup', help='preparar servicio HTTPS privado existente; no inicia ni habilita servicios')
-    parser.add_argument('--providers', choices=('terminal', 'chatgpt', 'both'), help='guía de configuración y comprobación de proveedores sin cambios')
+    parser.add_argument('--providers', choices=('terminal', 'chatgpt', 'both'), help='guía de configuración y comprobación de proveedores con consentimiento')
     args = parser.parse_args(argv)
     try:
         if args.providers:
@@ -1031,7 +1031,7 @@ def main(argv=None):
             spec = importlib.util.spec_from_file_location('provider_setup', ROOT / 'tools/provider_setup.py')
             provider_setup = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(provider_setup)
-            return provider_setup.guide(args.providers)
+            return provider_setup.guide(args.providers, ROOT, interactive=sys.stdin.isatty() and sys.stdout.isatty())
         if args.bridge_setup:
             if any(value for key, value in vars(args).items() if key != 'bridge_setup'):
                 parser.error('--bridge-setup no se combina con otras opciones')

@@ -228,3 +228,20 @@ class Installer(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+class ReviewedInstaller(unittest.TestCase):
+    def test_sha_mismatch_and_exact_install(self):
+        with tempfile.TemporaryDirectory(prefix="project os ") as tmp:
+            root = Path(tmp)
+            kit = install_fixture(root)
+            sha = subprocess.check_output(["git", "-C", str(kit), "rev-parse", "HEAD"], text=True).strip()
+            env = dict(os.environ, HOME=str(root), **transport(root))
+            run = lambda *args: subprocess.run([str(kit / "install.sh"), *args], env=env, capture_output=True, text=True)
+            rejected = run("0"*40)
+            self.assertNotEqual(rejected.returncode, 0)
+            self.assertFalse((root / ".local/bin/project-os-v3").exists())
+            accepted = run(sha)
+            self.assertEqual(accepted.returncode, 0, accepted.stderr)
+            self.assertFalse((kit / ".venv").exists())
+            self.assertTrue((root / ".local/bin/project-os-v3").is_file())
+            self.assertEqual(run(sha).returncode, 0)

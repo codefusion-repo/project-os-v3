@@ -33,7 +33,25 @@ project-os-v3 --list
 
 ### Conectar proveedores
 
-El selector existente ofrece una guía local de solo lectura: `project-os-v3 --providers terminal`, `project-os-v3 --providers chatgpt` o `project-os-v3 --providers both`. No instala ni autentica automáticamente. La presencia en PATH no acredita versiones, credenciales, aislamiento ni permisos. Para ChatGPT, conecta GitHub Connector independientemente del Local Bridge opcional; sigue [instalación revisada](local-bridge/README.md), [WorkOS y túnel](local-bridge/WORKOS.md) y [validación independiente](local-bridge/WSL-VALIDATION.md). PowerShell utiliza WSL para ejecutar el mismo selector instalado. Conserva instalaciones y configuración privadas; no copies secretos al chat. La certificación real de Windows/WSL, instalación integral y rollback permanece pendiente.
+El selector existente ofrece una guía local de proveedores: `project-os-v3 --providers terminal`, `project-os-v3 --providers chatgpt` o `project-os-v3 --providers both`. Sin TTY solo ejecuta comprobaciones de versión; con TTY ofrece comprobación de autenticación GitHub CLI e instalación opcional del Bridge por SHA con consentimiento separado. Los resultados de comandos no acreditan permisos, aislamiento ni conexión del conector. No imprime tokens ni automatiza OAuth. Para ChatGPT, conecta GitHub Connector independientemente del Local Bridge opcional; sigue [instalación revisada](local-bridge/README.md), [WorkOS y túnel](local-bridge/WORKOS.md) y [validación independiente](local-bridge/WSL-VALIDATION.md). PowerShell utiliza WSL para ejecutar el mismo selector instalado. Conserva instalaciones y configuración privadas; no copies secretos al chat. La certificación real de Windows/WSL y el rollback operativo permanecen pendientes.
+
+Para una instalación o actualización revisada, comprueba el SHA completo autorizado y ejecuta:
+
+```bash
+./install.sh "$REVIEWED_SHA" both
+```
+
+Define REVIEWED_SHA con el SHA de main aprobado previamente; si main cambia, el instalador se detiene antes del avance rápido. Este camino utiliza Python estándar y no descarga prompt_toolkit; conserva entornos existentes. El argumento de modo es opcional; sin modo no se abre la guía. El camino histórico sin SHA sigue disponible pero no garantiza versión revisada.
+
+Desde PowerShell, usando una distribución WSL existente y el checkout Linux revisado:
+
+```powershell
+.\local-bridge\scripts\install.ps1 -ReviewedSha $ReviewedSha -Distribution 'Ubuntu-24.04' -Checkout '/home/operator/my kit' -Mode both
+```
+
+Sin Mode el wrapper conserva su comportamiento Bridge-only. El checkout debe existir y pertenecer al operador; las rutas con espacios se pasan como argumento individual. No instala WSL ni inicia servicios.
+
+Si se interrumpe la instalación, verifica HEAD, git status, launcher y entornos; conserva la configuración privada, no borres ni reutilices un entorno Bridge parcial. El instalador rechaza un entorno existente; para recuperación independiente usa el runbook y una nueva ubicación revisada, sin reemplazar el piloto. Para volver a una versión anterior del kit no fuerces main ni elimines datos: conserva el checkout y solicita una recuperación revisada con launcher separado. Desinstalación no destructiva: deja de usar el launcher y retíralo manualmente solo tras comprobar identidad y ownership; conserva checkout, preferencias, instancias y entornos. No se certifica rollback ejecutado ni prueba real Windows/WSL mediante el mock.
 
 ### Actualización posterior
 
