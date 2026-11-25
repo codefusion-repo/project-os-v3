@@ -131,6 +131,101 @@ class AuthTests(unittest.TestCase):
         self.assertIsNotNone(self.verify(self.token()))
         self.assertIsNone(self.verify(self.token({"exp":1})))
 
+    def test_resource_discovery_excludes_refresh_scope(self):
+        jobs = Jobs(self.root, Policy([(SUBJECT, "read", "disposable")]))
+        app = build_http_app(self.verifier, jobs)
+        prefix = "/.well-known/oauth-protected-resource"
+        canonical = prefix + "/v1/mcp/tunnel_fixture"
+        with TestClient(app, base_url="http://127.0.0.1:8765") as client:
+            # Metadata must remain public when the local opt-in is revoked.
+            self.flag.unlink()
+            documents = []
+            cache_headers = []
+            for path in (canonical, prefix, prefix + "/mcp"):
+                response = client.get(path, headers={"Origin": "https://chatgpt.com"})
+                self.assertEqual(response.status_code, 200)
+                self.assertEqual(response.headers.get("access-control-allow-origin"), "*")
+                documents.append(response.json())
+                cache_headers.append(response.headers.get("cache-control"))
+                preflight = client.options(path, headers={
+                    "Origin": "https://chatgpt.com",
+                    "Access-Control-Request-Method": "GET",
+                    "Access-Control-Request-Headers": "MCP-Protocol-Version",
+                })
+                self.assertEqual(preflight.status_code, 200)
+                self.assertEqual(client.post(path).status_code, 405)
+            self.assertEqual(documents, [documents[0]] * 3)
+            self.assertTrue(cache_headers[0])
+            self.assertEqual(cache_headers, [cache_headers[0]] * 3)
+            self.assertEqual(documents[0], {
+                "resource": RESOURCE,
+                "authorization_servers": [ISSUER],
+                "scopes_supported": ["openid"],
+                "bearer_methods_supported": ["header"],
+            })
+            accept = {"Accept": "application/json, text/event-stream"}
+            init = {"jsonrpc": "2.0", "id": 1, "method": "initialize",
+                    "params": {"protocolVersion": "2025-11-25", "capabilities": {},
+                               "clientInfo": {"name": "test", "version": "1"}}}
+            denied = client.post("/mcp", headers=accept, json=init)
+            self.assertEqual(denied.status_code, 401)
+            self.assertIn("https://api.openai.com" + canonical,
+                          denied.headers["www-authenticate"])
+            self.assertNotIn("offline_access", denied.headers["www-authenticate"])
+            valid = {**accept, "Authorization": "Bearer " + self.token({"scope": "openid"})}
+            revoked = client.post("/mcp", headers=valid, json=init)
+            self.assertEqual(revoked.status_code, 403)
+            self.assertNotIn("www-authenticate", revoked.headers)
+            self.flag.touch(mode=0o600)
+            for scope in ("openid", "openid offline_access"):
+                response = client.post("/mcp", json=init, headers={
+                    **accept, "Authorization": "Bearer " + self.token({"scope": scope}),
+                })
+                self.assertEqual(response.status_code, 200)
+                self.assertIn("result", response.json())
+            no_access = client.post("/mcp", json=init, headers={
+                **accept, "Authorization": "Bearer " + self.token({"scope": "offline_access"}),
+            })
+            self.assertEqual(no_access.status_code, 401)
+            self.assertNotIn("offline_access", no_access.headers["www-authenticate"])
+        with jobs.transaction() as conn:
+            self.assertEqual(conn.execute("SELECT count(*) FROM jobs").fetchone()[0], 0)
+
+    def test_expired_and_replacement_tokens_across_app_restart(self):
+        policy = Policy((SUBJECT, op, "disposable") for op in ("read", "submit"))
+        now = int(time.time())
+        expired = self.token({"iat": now - 600, "exp": now - 300, "jti": "expired_fixture"})
+        tokens = [self.token({"jti": "replacement_fixture_" + str(i)}) for i in range(2)]
+        init = {"jsonrpc": "2.0", "id": 1, "method": "initialize",
+                "params": {"protocolVersion": "2025-11-25", "capabilities": {},
+                           "clientInfo": {"name": "test", "version": "1"}}}
+        request = {"jsonrpc": "2.0", "id": 2, "method": "tools/call",
+                   "params": {"name": "submit_probe_job", "arguments": {"request_key": "refresh-replay"}}}
+        first_result = None
+        for token in tokens:
+            jobs = Jobs(self.root, policy)
+            app = build_http_app(self.verifier, jobs)
+            with TestClient(app, base_url="http://127.0.0.1:8765") as client:
+                headers = {"Accept": "application/json, text/event-stream",
+                           "Authorization": "Bearer " + expired}
+                response = client.post("/mcp", headers=headers, json=init)
+                self.assertEqual(response.status_code, 401)
+                self.assertIn("www-authenticate", response.headers)
+                headers["Authorization"] = "Bearer " + token
+                response = client.post("/mcp", headers=headers, json=init)
+                self.assertEqual(response.status_code, 200)
+                headers["MCP-Protocol-Version"] = response.json()["result"]["protocolVersion"]
+                response = client.post("/mcp", headers=headers, json=request)
+                self.assertEqual(response.status_code, 200)
+                result = response.json()["result"]
+                self.assertFalse(result.get("isError", False))
+                if first_result is None:
+                    first_result = result
+                else:
+                    self.assertEqual(result, first_result)
+            with jobs.transaction() as conn:
+                self.assertEqual(conn.execute("SELECT count(*) FROM jobs").fetchone()[0], 1)
+
     def test_http_transport(self):
         policy=Policy((SUBJECT,op,"disposable") for op in ("submit","read","cancel","github_read"))
         jobs=Jobs(self.root,policy)

@@ -18,7 +18,9 @@ from mcp.server.auth.middleware.bearer_auth import AuthenticatedUser
 from starlette.middleware import Middleware
 from starlette.middleware.authentication import AuthenticationMiddleware
 from starlette.responses import JSONResponse
-from pydantic import AnyHttpUrl
+from starlette.routing import Route
+from starlette.middleware.cors import CORSMiddleware
+from mcp.server.auth.routes import build_resource_metadata_url
 
 from .workos_auth import Verifier, SCOPE, load_config
 from .core import Jobs, Policy
@@ -45,9 +47,13 @@ def fixture_enabled(verifier, image):
 def build_server(verifier, jobs, fixture_reader=None, *, fixture_image=None, diagnostics=None):
     mcp = MCPServer("Project OS authenticated disposable jobs",
                     token_verifier=verifier,
-                    auth=AuthSettings(issuer_url=AnyHttpUrl(verifier.issuer),
-                                      resource_server_url=AnyHttpUrl(verifier.resource),
-                                      required_scopes=[SCOPE],validate_token_resource=True))
+                    # Let AuthSettings preserve the exact path-less issuer string.
+                    auth=AuthSettings.model_validate({
+                        "issuer_url": verifier.issuer,
+                        "resource_server_url": verifier.resource,
+                        "required_scopes": [SCOPE],
+                        "validate_token_resource": True,
+                    }))
     read = ToolAnnotations(read_only_hint=True,open_world_hint=False)
     write = ToolAnnotations(read_only_hint=False,destructive_hint=False,idempotent_hint=True,open_world_hint=False)
 
@@ -114,16 +120,6 @@ def build_server(verifier, jobs, fixture_reader=None, *, fixture_image=None, dia
             """Aggregate synthetic issue fixtures only; never contacts GitHub."""
             return fixture_reader.batch_issues(principal(), "disposable", numbers)
 
-    # Tunnel discovery may request the local endpoint path rather than the public path.
-    from starlette.responses import JSONResponse
-    from urllib.parse import urlsplit
-    public_path = "/.well-known/oauth-protected-resource" + urlsplit(verifier.resource).path
-    for route in ("/.well-known/oauth-protected-resource", "/.well-known/oauth-protected-resource/mcp"):
-        if route != public_path:
-            async def metadata(request):
-                return JSONResponse({"resource": verifier.resource, "authorization_servers": [verifier.issuer],
-                                     "scopes_supported": [SCOPE, "offline_access"], "bearer_methods_supported": ["header"]})
-            mcp.custom_route(route, methods=["GET"])(metadata)
     return mcp
 
 
@@ -150,6 +146,27 @@ def build_http_app(verifier, jobs, fixture_reader=None, *, audit=None, limit=120
         stateless_http=True, json_response=True, max_request_body_size=65536,
         host="127.0.0.1",
     )
+    # MCP authorization (SEP-2207): offline_access is negotiated with the
+    # authorization server, not advertised as a protected-resource scope.
+    # Preserve the SDK's canonical metadata handler (including CORS/cache)
+    # and reuse its exact ASGI endpoint for the fixed tunnel aliases.
+    prefix = "/.well-known/oauth-protected-resource"
+    canonical = build_resource_metadata_url(server.settings.auth.resource_server_url).path
+    routes = app.router.routes
+    matches = [route for route in routes if getattr(route, "path", None) == canonical]
+    if (len(matches) != 1 or not isinstance(matches[0], Route)
+            or not isinstance(matches[0].endpoint, CORSMiddleware)
+            or matches[0].methods != {"GET", "HEAD", "OPTIONS"}):
+        raise RuntimeError("Unexpected SDK protected resource metadata route")
+    metadata_route = matches[0]
+    for path in (prefix, prefix + "/mcp"):
+        if path == canonical:
+            continue
+        if any(getattr(route, "path", None) == path for route in routes):
+            raise RuntimeError("Unexpected protected resource metadata alias")
+        routes.append(Route(path, endpoint=metadata_route.endpoint,
+                            methods=list(metadata_route.methods)))
+
     # SDK v2.3.0 authenticates before routing. Insert the local policy gate
     # immediately after that middleware; fail closed if the stack changes.
     positions = [i for i, m in enumerate(app.user_middleware)
