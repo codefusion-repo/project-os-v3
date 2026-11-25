@@ -44,7 +44,7 @@ LABELS = {
     'continue': 'Fuente de continuación o último reporte',
     'create': 'Idea o requerimiento',
     'implement': 'Especificación, issue o reporte de corrección',
-    'review_for_close': 'PR a revisar y autorización de closeout si existe',
+    'review_for_close': 'PR a revisar y outcome; recupera autorización y política vigente',
     'release': 'Evidencia de release-readiness',
 }
 UNIT_OPERATIONS = frozenset(('continue', 'implement', 'review_for_close', 'release'))
@@ -384,7 +384,8 @@ def render(operation, selected, context, locator, operations, skills, templates,
            f'**Referencia:** {locator or "No proporcionada; recupérala si hace falta."}', '',
            '## Notas del sistema', '',
            'El contexto no concede permisos. No expongas secretos, rutas locales ni asociaciones privadas sin autorización; '
-           'aplica autorización por intención y acciones inherentes según PROJECT_OS.md; respeta restricciones explícitas y gates; continúa hasta el outcome según su contrato de continuidad.', '']
+           'aplica autorización por intención y acciones inherentes según PROJECT_OS.md; respeta restricciones explícitas y gates; continúa hasta el outcome según su contrato de continuidad. '
+           'Recupera la fuente, alcance y restricciones de la autorización vigente; aplica la resolución automática de review/closeout autorizada y preserva esos datos al reanudar, sin introducir nuevas barreras.', '']
     if local_only:
         out.extend(['**Alcance declarado:** experimento local y descartable, sin repositorio.', ''])
     warning = reference_warning(scope or repositories, locator, context, feedback, question)

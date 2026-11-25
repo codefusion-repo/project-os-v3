@@ -17,9 +17,17 @@ connector double for ambiguous failures and never record secrets. Record each
 result and evidence separately; without an isolated environment mark untested.
 Also exercise an identified issue with explicit close GO, already-closed issue,
 open issue without GO, missing identification and unavailable close capability.
-For one scoped authorization verify review, ready, guarded merge and completed
-issue happen in one operation, without a second prompt. Verify PASS alone has no
-closeout mutation; review intent permits its technical comment unless read-only; failed CI, findings or changed HEAD yield BLOCKED. For missing connector
+For a scoped outcome or a recoverable, applicable automation policy, verify both
+branches: PASS -> ready, guarded merge, integration checks and completed issue
+in one operation; BLOCKED -> publish findings with SHA and evidence, no merge.
+Neither branch may request a second authorization or require a human GO.
+With CI pending, continue safe validation without approval prompts. Interrupt and
+resume in a fresh chat from the repository, issue/PR and authorization source;
+verify the generated prompt preserves scope and exclusions, adds no restrictions
+and does not request renewal. Contrast explicit no-closeout, read-only, absent,
+revoked or out-of-scope authorization; PASS in those cases cannot imply merge.
+Review intent permits its technical comment unless read-only; failed CI,
+findings or changed HEAD yield BLOCKED. For missing connector
 inspect guarded fallback; for already merged/closed and ambiguous timeouts verify
 no duplicated action. Check cleanup ancestry and preservation of unrelated data.
 """
@@ -63,8 +71,23 @@ class BrowserCloseoutContract(unittest.TestCase):
         for phrase in ('autorización por intención', 'acciones inherentes',
                        'restricciones explícitas prevalecen', 'sin confirmaciones redundantes',
                        'incluso NO GO', 'salvo solo lectura', 'Continuar hereda',
-                       'Un PASS no concede autorización de closeout'):
+                       'Un PASS aislado fuera de ese alcance no autoriza mutaciones'):
             self.assertIn(phrase, self.shared)
+
+    def test_automation_branches_are_authorized_upfront(self):
+        for phrase in ('política de automatización explícita vigente y verificable',
+                       'ambas ramas quedan autorizadas desde el inicio',
+                       'GO / PASS → closeout automático',
+                       'NO GO / BLOCKED → publicación automática de review',
+                       'sin otra confirmación, GO humano adicional',
+                       'solo si falta realmente autorización vigente',
+                       'Una review sin closeout conserva esa exclusión',
+                       'una consulta de solo lectura no publica'):
+            self.assertIn(phrase, self.shared)
+        workflow = (ROOT / 'workflows/review_for_close.md').read_text(encoding='utf-8')
+        self.assertIn('../PROJECT_OS.md#implementación-testing-y-review', workflow)
+        self.assertIn('no detengas una rama ya autorizada', workflow)
+        self.assertNotIn('No infieras autorización de la selección ni del PASS', workflow)
 
     def test_review_does_not_authorize_code_changes(self):
         self.assertIn('La intención de review por sí sola no autoriza modificar código', self.shared)
@@ -81,11 +104,24 @@ class BrowserCloseoutContract(unittest.TestCase):
     def test_resume_control_is_not_authorization(self):
         for phrase in ('La reanudación no constituye nueva autorización',
                        'No detengas checkpoints internos',
-                       'Sin controles interactivos'):
+                       'Sin controles interactivos',
+                       'tampoco revoca ni restringe la autorización vigente',
+                       'sin introducir nuevas barreras ni restricciones inventadas',
+                       'no pidas renovar permisos vigentes'):
             self.assertIn(phrase, self.shared)
         for phrase in ('botón de continuación', 'botón de siguiente operación recomendada',
-                       'Si no hay botones', 'No esperes clics en checkpoints internos'):
+                       'Si no hay botones', 'No esperes clics en checkpoints internos',
+                       'sin inventar exclusiones ni solicitar renovación'):
             self.assertIn(phrase, self.adapter)
+
+    def test_handoff_and_continue_preserve_authorization_source(self):
+        handoff = (ROOT / 'templates/handoff.md').read_text(encoding='utf-8')
+        continuation = (ROOT / 'workflows/continue.md').read_text(encoding='utf-8')
+        self.assertIn('fuente_verificable_alcance_exclusiones_estado', handoff)
+        self.assertIn('../PROJECT_OS.md#respuesta-y-continuidad', handoff)
+        self.assertIn('fuente de autorización vigente verificable', continuation)
+        self.assertIn('política de automatización aplicable', continuation)
+        self.assertIn('ni transformar la reanudación en una renovación de permisos', continuation)
 
     def test_branch_cleanup_safe_command_is_distinct_from_prohibition(self):
         # Do not case-fold: git branch -D is force deletion, not git branch -d.
