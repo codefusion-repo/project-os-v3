@@ -141,3 +141,22 @@ class OriginalControlTests(unittest.TestCase):
             self.check(changed)
         with self.assertRaises(ValueError):
             self.check(self.report)
+
+    def test_r49_snapshot_retains_inventory_and_rejection(self):
+        path = Path(__file__).parent
+        previous = json.loads((path / "oci-original-rejection-r37.json").read_text())
+        current = json.loads((path / "oci-original-rejection-r49.json").read_text())
+        for key in ("image", "inventory_count", "inventory_sha256", "high_critical"):
+            self.assertEqual(current[key], previous[key])
+        self.assertEqual(current["counts"], {**previous["counts"], "LOW": 78})
+        self.assertEqual(current["findings_count"], 230)
+        self.assertEqual(current["findings_sha256"], "9cdc0dbc330c52ab4fc78c2d8b2641db02afdecf23e336ed9b5cf7471b5f62da")
+        self.assertEqual(current["previous_report_sha256"], previous["source_report_sha256"])
+        self.assertEqual(current["source_artifact"], 14985316709)
+        self.assertEqual(current["source_report_sha256"], "b0402ce99b6607328e74f8b17ce43adbf5097d479d2e2ae23eb52efb9911647d")
+        self.assertEqual(len(current["removed_findings"]), 5)
+        self.assertEqual(len(current["added_findings"]), 3)
+        self.assertEqual({v["Severity"] for v in current["removed_findings"]}, {"LOW", "UNKNOWN"})
+        self.assertEqual({v["Severity"] for v in current["added_findings"]}, {"UNKNOWN"})
+        self.assertEqual(current["findings_count"],
+                         previous["findings_count"] - len(current["removed_findings"]) + len(current["added_findings"]))
