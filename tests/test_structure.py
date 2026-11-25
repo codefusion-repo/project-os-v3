@@ -159,12 +159,7 @@ class Structure(unittest.TestCase):
                         headings = re.sub(r'```.*?```', '', resolved.read_text(), flags=re.S)
                         # ATX headings used by this kit; preserve Unicode letters and hyphens.
                         anchors = set()
-                        for heading in re.findall(r'^#{1,6}\s+(.+?)\s*#*
-
-
-if __name__ == '__main__':
-    unittest.main()
-, headings, re.M):
+                        for heading in re.findall(r'^#{1,6}[ \t]+(.+?)[ \t]*#*[ \t]*$', headings, re.M):
                             heading = unicodedata.normalize('NFC', heading.lower())
                             slug = re.sub(r'[^\w\s-]', '', heading).replace(' ', '-')
                             candidate = slug
