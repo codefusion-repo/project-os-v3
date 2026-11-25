@@ -236,7 +236,13 @@ class AuthTests(unittest.TestCase):
                 response = client.post("/mcp", headers=headers, json=health)
                 self.assertEqual(response.status_code, 200)
                 self.assertFalse(response.json()["result"].get("isError", False))
-                self.assertTrue(response.json()["result"]["structuredContent"]["caller_identity_verified"])
+                result = response.json()["result"]
+                self.assertEqual(len(result["content"]), 1)
+                self.assertEqual(result["content"][0]["type"], "text")
+                payload = json.loads(result["content"][0]["text"])
+                self.assertEqual(payload, {"status": "ready",
+                    "caller_identity_verified": True, "repository_access": False,
+                    "mode": "authenticated-disposable", "git_fixture_available": False})
         self.assertEqual(trace, [
             ("int", 100, None, "recorded"),
             ("HTTPStatus", 200, AuthOutcome.TOKEN_ACCEPTED, "recorded"),
