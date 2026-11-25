@@ -26,16 +26,19 @@ def exclusive_worker(jobs: Jobs):
         os.close(fd)
 
 
-def run_pending(jobs: Jobs, *, fixture_image=None, enabled=lambda: True, fixture_allowed=lambda: True):
+def run_pending(jobs: Jobs, *, fixture_image=None, podman_context=None, enabled=lambda: True, fixture_allowed=lambda: True):
     """Drain queued disposable jobs, no shell, no repo access."""
     with exclusive_worker(jobs):
         jobs.recover_interrupted()
+        if jobs.pending_effects():
+            return
+        context_id = podman_context.identity() if podman_context is not None else None
         while enabled():
-            row = jobs.claim()
+            row = jobs.claim(fixture_context=context_id)
             if row is None:
                 return
             if not enabled():
-                jobs.finish(row["id"], "BLOCKED", {"reason": "DISPATCH_DISABLED"}, fixture_absent=True)
+                jobs.finish(row["id"], "BLOCKED", {"reason": "DISPATCH_DISABLED"}, fixture_absent=True, fixture_context=context_id)
                 return
             fixture_absent = False
             try:
@@ -50,11 +53,11 @@ def run_pending(jobs: Jobs, *, fixture_image=None, enabled=lambda: True, fixture
                         fixture_absent = True
                     else:
                         from .vertical import run_git_fixture
-                        state, result = run_git_fixture(jobs, row, fixture_image)
+                        state, result = run_git_fixture(jobs, row, fixture_image, podman_context)
                         fixture_absent = result.get("container_absent") is True
                 else:
                     raise ValueError("Unknown handler")
             except Exception:
                 jobs.finish(row["id"], "FAILED", {"error": "HANDLER_FAILED"})
             else:
-                jobs.finish(row["id"], state, result, fixture_absent=fixture_absent)
+                jobs.finish(row["id"], state, result, fixture_absent=fixture_absent, fixture_context=context_id)

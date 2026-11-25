@@ -6,6 +6,7 @@ import stat
 from contextlib import contextmanager
 import os
 import ssl
+import subprocess
 import threading
 import time
 from pathlib import Path
@@ -29,22 +30,28 @@ from .security import RequestGate, Audit
 from .github_fixture import SyntheticGitHubReader
 from .vertical import OPERATIONS, bind_image
 from .isolated import IMAGE
+from .podman_context import CONTEXT_ID, PodmanContext
 from .workos_auth import private_file, private_directory
 from .readiness import read_metadata, verify_metadata
 from .diagnostics import Diagnostics, Section
 
 
-def fixture_enabled(verifier, image):
+def fixture_enabled(verifier, image, context_id=None):
     if not image or not verifier.enabled():
         return False
     try:
         path = verifier.state_dir / "fixture-image"
-        return private_file(path).st_size <= 1024 and path.read_text(encoding="utf-8") == image + "\n"
+        binding = verifier.state_dir / "fixture-context"
+        if private_file(binding).st_size != 65:
+            return False
+        identity = binding.read_text(encoding="utf-8").rstrip("\n")
+        return (bool(CONTEXT_ID.fullmatch(identity)) and (context_id is None or identity == context_id)
+                and private_file(path).st_size <= 1024 and path.read_text(encoding="utf-8") == image + "\n")
     except (OSError, ValueError):
         return False
 
 
-def build_server(verifier, jobs, fixture_reader=None, *, fixture_image=None, diagnostics=None):
+def build_server(verifier, jobs, fixture_reader=None, *, fixture_image=None, diagnostics=None, context_id=None):
     mcp = MCPServer("Project OS authenticated disposable jobs",
                     token_verifier=verifier,
                     # Let AuthSettings preserve the exact path-less issuer string.
@@ -68,7 +75,7 @@ def build_server(verifier, jobs, fixture_reader=None, *, fixture_image=None, dia
         """Report authenticated disposable service status."""
         principal()
         return {"status":"ready","caller_identity_verified":True,"repository_access":False,"mode":"authenticated-disposable",
-                "git_fixture_available":fixture_enabled(verifier, fixture_image)}
+                "git_fixture_available":fixture_enabled(verifier, fixture_image, context_id)}
 
     if diagnostics is not None and fixture_image is None:
         @mcp.tool(annotations=read)
@@ -95,7 +102,7 @@ def build_server(verifier, jobs, fixture_reader=None, *, fixture_image=None, dia
         def submit_git_fixture(request_key: str) -> dict:
             """Run only the registered disposable Git/Podman fixture; no paths, code or image arguments."""
             actor = principal()
-            if not fixture_enabled(verifier, fixture_image):
+            if not fixture_enabled(verifier, fixture_image, context_id):
                 raise PermissionError("DENIED")
             return {"job_id":jobs.submit(actor,"disposable","git_fixture_check",request_key)}
 
@@ -139,9 +146,9 @@ class LocalAuthorizationMiddleware:
         await self.app(scope, receive, send)
 
 
-def build_http_app(verifier, jobs, fixture_reader=None, *, audit=None, limit=120, fixture_image=None, diagnostics=None):
+def build_http_app(verifier, jobs, fixture_reader=None, *, audit=None, limit=120, fixture_image=None, diagnostics=None, context_id=None):
     """Use the same authenticated ASGI stack in production and HTTP tests."""
-    server = build_server(verifier, jobs, fixture_reader, fixture_image=fixture_image, diagnostics=diagnostics)
+    server = build_server(verifier, jobs, fixture_reader, fixture_image=fixture_image, diagnostics=diagnostics, context_id=context_id)
     app = server.streamable_http_app(
         stateless_http=True, json_response=True, max_request_body_size=65536,
         host="127.0.0.1",
@@ -213,8 +220,9 @@ def exclusive_http_service(root):
         os.close(fd)
 
 
-def serve_with_worker(server, jobs, verifier, fixture_image, *, readiness=None):
+def serve_with_worker(server, jobs, verifier, fixture_image, *, readiness=None, podman_context=None):
     """Stop HTTP on infrastructure failure; preserve in-flight cleanup on shutdown."""
+    context_id = podman_context.identity() if podman_context is not None else None
     stop = threading.Event()
     failed = threading.Event()
 
@@ -240,9 +248,9 @@ def serve_with_worker(server, jobs, verifier, fixture_image, *, readiness=None):
             while not stopping():
                 try:
                     if verifier.enabled():
-                        run_pending(jobs, fixture_image=fixture_image,
+                        run_pending(jobs, fixture_image=fixture_image, podman_context=podman_context,
                                     enabled=lambda: verifier.enabled() and not stopping(),
-                                    fixture_allowed=lambda: fixture_enabled(verifier, fixture_image))
+                                    fixture_allowed=lambda: fixture_enabled(verifier, fixture_image, context_id))
                     if jobs.pending_effects():
                         raise RuntimeError("RECONCILIATION_REQUIRED")
                 except WorkerBusy:
@@ -274,6 +282,7 @@ def main():
     parser.add_argument("--config",required=True,type=Path)
     parser.add_argument("--state-dir",required=True,type=Path)
     parser.add_argument("--port",type=int,default=8765)
+    parser.add_argument("--podman-context", type=Path, help="Explicit private Podman context for a locally approved fixture")
     parser.add_argument("--fixture-image",help="Explicit local opt-in for fixed disposable fixture, approved digest only")
     parser.add_argument("--tls-cert", type=Path, help="Private local PEM certificate")
     parser.add_argument("--tls-key", type=Path, help="Private local PEM key")
@@ -305,6 +314,16 @@ def main():
         parser.error("Unprivileged dedicated HTTP state required")
     if args.fixture_image is not None and not IMAGE.fullmatch(args.fixture_image):
         parser.error("Digest-pinned image required")
+    if (args.fixture_image is None) != (args.podman_context is None):
+        parser.error("Fixture image and Podman context must be supplied together")
+    podman_context = context_id = None
+    if args.podman_context is not None:
+        try:
+            podman_context = PodmanContext(args.podman_context)
+            context_id = podman_context.identity()
+            podman_context.require_import(context_id, args.fixture_image)
+        except (OSError, ValueError, subprocess.SubprocessError):
+            parser.error("Verified private Podman context required")
     with exclusive_http_service(args.state_dir):
         operations = OPERATIONS if args.fixture_image else ("submit","read","cancel")
         workflows = ("probe_check","git_fixture_check") if args.fixture_image else ("probe_check",)
@@ -315,13 +334,13 @@ def main():
         if jobs.pending_effects():
             parser.error("RECONCILIATION_REQUIRED; stop and use local reconciliation")
         if args.fixture_image:
-            bind_image(jobs,args.fixture_image)
+            bind_image(jobs, args.fixture_image, context_id)
         fixture = SyntheticGitHubReader(Policy([(verifier.subject,"github_read","disposable")]),args.state_dir)
-        app = build_http_app(verifier,jobs,fixture,fixture_image=args.fixture_image,diagnostics=diagnostics)
+        app = build_http_app(verifier,jobs,fixture,fixture_image=args.fixture_image,diagnostics=diagnostics,context_id=context_id)
         import uvicorn
         server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=args.port,
                                               access_log=False, **tls))
-        serve_with_worker(server, jobs, verifier, args.fixture_image, readiness=readiness)
+        serve_with_worker(server, jobs, verifier, args.fixture_image, readiness=readiness, podman_context=podman_context)
 
 
 if __name__ == "__main__":

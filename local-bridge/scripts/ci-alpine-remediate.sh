@@ -125,11 +125,8 @@ for d in [data['config'], *data['layers']]:
     assert len(raw) == d['size'] and hashlib.sha256(raw).hexdigest() == value
 print('OCI_LAYOUT_VERIFIED', digest)
 PY
-# Re-import exact audited manifest; reject any local identity mismatch.
-loaded="$(podman pull --quiet "oci:$work/oci:candidate")"
-podman tag "$loaded" "$tag"
+# The positive fixture imports the audited layout into its execution context after the scan.
 image="${tag%:*}@$digest"
-[ "$(podman image inspect --format '{{.Digest}}' "$image")" = "$digest" ]
 echo "CANDIDATE_MANIFEST $digest"
 archive=trivy_0.76.2_Linux-64bit.tar.gz
 curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' --max-time 180 -o "$work/$archive" "https://github.com/aquasecurity/trivy/releases/download/v0.76.2/$archive"
@@ -173,17 +170,18 @@ if [ "$mode" = residual ]; then
   echo 'RESIDUAL_EXPECTED_REJECTION_PASS; candidate remains BLOCKED; no post-audit execution'
   exit 0
 fi
-podman run --rm --pull=never --network=none --read-only --cap-drop=ALL --security-opt=no-new-privileges --entrypoint python "$image" -I -B -c 'import ctypes, pathlib, platform, socket, sqlite3, ssl, sys; assert sys.version_info[:2]==(3,12); assert platform.machine()=="x86_64"; assert pathlib.Path("/lib/ld-musl-x86_64.so.1").exists(); ctypes.CDLL("libkrb5.so.3"); assert sqlite3.connect(":memory:").execute("select 1").fetchone()==(1,); assert ssl.OPENSSL_VERSION; assert {n for _,n in socket.if_nameindex()} <= {"lo"}; print("PYTHON_MUSL_PASS", sys.version.split()[0])'
-if [ "$mode" = residual ]; then
-  podman run --rm --pull=never --network=none --read-only --cap-drop=ALL --security-opt=no-new-privileges --entrypoint python "$image" -I -B -c 'import importlib.metadata as m, ssl, zlib; assert m.version("pip") == "26.2"; assert zlib.decompress(zlib.compress(b"fixture")) == b"fixture"; assert ssl.create_default_context(); print("RESIDUAL_COMPAT_PASS", ssl.OPENSSL_VERSION, zlib.ZLIB_RUNTIME_VERSION)'
-elif [ "$mode" = fixture-only ]; then
-  podman run --rm --pull=never --network=none --read-only --cap-drop=ALL --security-opt=no-new-privileges --entrypoint python "$image" -I -B -c 'import importlib.util as u, importlib.metadata as m, pathlib, shutil, ssl, sysconfig, zlib; assert all(u.find_spec(n) is None for n in ("pip", "setuptools", "ensurepip")); assert not {d.metadata["Name"].lower() for d in m.distributions()} & {"pip", "setuptools"}; assert not any(shutil.which(n) for n in ("pip","pip3","pip3.12")); assert not list(pathlib.Path(sysconfig.get_path("stdlib")).glob("ensurepip/_bundled/*.whl")); assert ssl.create_default_context(); assert zlib.decompress(zlib.compress(b"fixture")) == b"fixture"; print("FIXTURE_ONLY_COMPAT_PASS", ssl.OPENSSL_VERSION, zlib.ZLIB_RUNTIME_VERSION)'
-fi
 python3 -m venv "$work/venv"
 "$work/venv/bin/python" -m pip --isolated install --index-url https://pypi.org/simple --only-binary=:all: --require-hashes -r "$repo/local-bridge/requirements-linux-py312.lock"
 "$work/venv/bin/python" -m pip check
+context="$work/execution-context"
+runtime=(env "PYTHONPATH=$repo/local-bridge/src" "$work/venv/bin/python" -B)
+"${runtime[@]}" -m project_os_bridge.podman_context --context "$context" prepare
+[ "$("${runtime[@]}" -m project_os_bridge.podman_context --context "$context" import-layout "$work/oci" "$digest")" = "$image" ]
+if [ "$mode" = fixture-only ]; then
+  "${runtime[@]}" -m project_os_bridge.podman_context --context "$context" smoke "$image"
+fi
 fixture=0
-PYTHONPATH="$repo/local-bridge/src" "$work/venv/bin/python" -m project_os_bridge.vertical --state-dir "$work/state" --request-key ci-alpine-remediation --image "$image" > "$work/evidence.json" || fixture=$?
+PYTHONPATH="$repo/local-bridge/src" "$work/venv/bin/python" -m project_os_bridge.vertical --state-dir "$work/state" --request-key ci-alpine-remediation --image "$image" --podman-context "$context" > "$work/evidence.json" || fixture=$?
 python3 - "$repo/local-bridge/src" "$work/evidence.json" "$image" <<'PY' || fixture=1
 import json, sys
 from pathlib import Path
@@ -195,13 +193,14 @@ v = r['steps'][-1]
 print('ALPINE_FIXTURE', json.dumps({'state':e['state'], 'image':r.get('image'), 'validation':v, 'events':[x['state'] for x in e['events']]}, sort_keys=True))
 assert e['state'] == 'SUCCEEDED' and r['image'] == sys.argv[3]
 assert r['steps'][1]['original_unchanged'] is True and v['cleanup_verified'] is True
-assert len(v['checks']) == 10 and v['exit_code'] == 0
+from project_os_bridge.isolated import CHECKS, ISOLATION_CHECKS
+assert v['checks'] == CHECKS and v['isolation_checks'] == ISOLATION_CHECKS and v['exit_code'] == 0
 PY
 if [ "$fixture" != 0 ]; then exit 1; fi
 # New CLI processes must recover exactly the original durable result without rerunning.
 job_id="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["id"])' "$work/evidence.json")"
 PYTHONPATH="$repo/local-bridge/src" "$work/venv/bin/python" -m project_os_bridge.vertical --state-dir "$work/state" --evidence-job-id "$job_id" > "$work/recovered.json"
-PYTHONPATH="$repo/local-bridge/src" "$work/venv/bin/python" -m project_os_bridge.vertical --state-dir "$work/state" --request-key ci-alpine-remediation --image "$image" > "$work/replay.json"
+PYTHONPATH="$repo/local-bridge/src" "$work/venv/bin/python" -m project_os_bridge.vertical --state-dir "$work/state" --request-key ci-alpine-remediation --image "$image" --podman-context "$context" > "$work/replay.json"
 python3 - "$work/evidence.json" "$work/recovered.json" "$work/replay.json" <<'PY'
 import json, sys
 from pathlib import Path
@@ -211,7 +210,7 @@ assert [e['state'] for e in a['events']] == ['QUEUED', 'RUNNING', 'SUCCEEDED']
 print('ALPINE_FIXTURE_REPLAY_PASS')
 PY
 if [ "$mode" = fixture-only ]; then
-  "$work/venv/bin/python" -I "$repo/local-bridge/scripts/ci-reconcile-fixture.py" "$image"
+  "$work/venv/bin/python" -I "$repo/local-bridge/scripts/ci-reconcile-fixture.py" "$image" "$context"
 fi
 echo "ALPINE_EVIDENCE_COMPLETE mode=$mode audit=$audit locks=1"
 # A failed command in a non-final AND-list is exempt from errexit. Explicitly fail here.

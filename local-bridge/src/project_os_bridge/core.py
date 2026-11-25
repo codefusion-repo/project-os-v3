@@ -57,24 +57,29 @@ class Jobs:
             # Do not infer absence or silently migrate their external effects.
             exists = c.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='fixture_effects'").fetchone()
             c.execute("""CREATE TABLE IF NOT EXISTS fixture_effects (
-                job_id TEXT PRIMARY KEY, token TEXT, resolved_at TEXT)""")
+                job_id TEXT PRIMARY KEY, token TEXT, resolved_at TEXT,
+                context_id TEXT)""")
+            if "context_id" not in {column["name"] for column in c.execute("PRAGMA table_info(fixture_effects)")}:
+                c.execute("ALTER TABLE fixture_effects ADD COLUMN context_id TEXT")
             if not exists:
                 for row in c.execute("SELECT id,state,result FROM jobs WHERE workflow='git_fixture_check' AND state NOT IN ('QUEUED','CANCELLED')").fetchall():
                     result = json.loads(row["result"] or "{}")
                     steps = result.get("steps", [])
                     if row["state"] == "SUCCEEDED" and steps and steps[-1].get("cleanup_verified") is True:
                         continue
-                    c.execute("INSERT INTO fixture_effects VALUES(?,NULL,NULL)", (row["id"],))
+                    c.execute("INSERT INTO fixture_effects(job_id) VALUES(?)", (row["id"],))
 
     def pending_effects(self):
         with self.transaction() as c:
-            return [dict(row) for row in c.execute("SELECT job_id,token FROM fixture_effects WHERE resolved_at IS NULL ORDER BY job_id")]
+            return [dict(row) for row in c.execute("SELECT job_id,token,context_id FROM fixture_effects WHERE resolved_at IS NULL ORDER BY job_id")]
 
-    def resolve_effect(self, job_id, token):
+    def resolve_effect(self, job_id, token, context_id):
         """Local reconciliation caller must hold exclusive worker lock and prove absence."""
+        if not isinstance(context_id, str) or not re.fullmatch(r"[0-9a-f]{64}", context_id):
+            raise PermissionError("Unknown fixture context")
         with self.transaction() as c:
-            cur = c.execute("UPDATE fixture_effects SET resolved_at=? WHERE job_id=? AND token=? AND resolved_at IS NULL",
-                            (now(),job_id,token))
+            cur = c.execute("UPDATE fixture_effects SET resolved_at=? WHERE job_id=? AND token=? "
+                            "AND context_id=? AND resolved_at IS NULL", (now(),job_id,token,context_id))
             if cur.rowcount != 1:
                 raise RuntimeError("Reconciliation identity conflict")
 
@@ -144,7 +149,10 @@ class Jobs:
                     "result":json.loads(row["result"]) if row["result"] else None,
                     "events":[dict(event) for event in events]}
 
-    def claim(self):
+    def claim(self, *, fixture_context=None):
+        if fixture_context is not None and (not isinstance(fixture_context, str)
+                or not re.fullmatch(r"[0-9a-f]{64}", fixture_context)):
+            raise ValueError("Invalid fixture context")
         with self.transaction() as c:
             if c.execute("SELECT 1 FROM fixture_effects WHERE resolved_at IS NULL LIMIT 1").fetchone():
                 return None
@@ -158,6 +166,9 @@ class Jobs:
                         raise PermissionError("Workflow disabled")
                     if row["workflow"] == "git_fixture_check":
                         self.policy.require(row["principal"], "git_workflow", row["resource"])
+                        if fixture_context is None:
+                            self.transition(c,row["id"],"QUEUED","BLOCKED",{"reason":"PODMAN_CONTEXT_REQUIRED"})
+                            continue
                 except PermissionError:
                     self.transition(c,row["id"],"QUEUED","BLOCKED")
                     continue
@@ -165,8 +176,9 @@ class Jobs:
                 claimed = dict(row)
                 if row["workflow"] == "git_fixture_check":
                     token = uuid.uuid4().hex
-                    c.execute("INSERT INTO fixture_effects VALUES(?,?,NULL)", (row["id"],token))
-                    claimed["effect_token"] = token
+                    c.execute("INSERT INTO fixture_effects(job_id,token,context_id) VALUES(?,?,?)",
+                              (row["id"],token,fixture_context))
+                    claimed.update(effect_token=token, effect_context=fixture_context)
                 return claimed
 
     def transition(self,c,job_id,old,new,result=None):
@@ -176,13 +188,14 @@ class Jobs:
             raise RuntimeError("State conflict")
         self.event(c,job_id,new)
 
-    def finish(self,job_id,state,result, *, fixture_absent=False):
+    def finish(self,job_id,state,result, *, fixture_absent=False, fixture_context=None):
         if state not in {"SUCCEEDED","FAILED","BLOCKED"}:
             raise ValueError("Invalid terminal state")
         with self.transaction() as c:
             self.transition(c,job_id,"RUNNING",state,result)
             if fixture_absent is True:
-                c.execute("UPDATE fixture_effects SET resolved_at=? WHERE job_id=? AND resolved_at IS NULL", (now(),job_id))
+                c.execute("UPDATE fixture_effects SET resolved_at=? WHERE job_id=? AND context_id=? AND resolved_at IS NULL",
+                          (now(),job_id,fixture_context))
 
     def cancel(self,principal,job_id):
         with self.transaction() as c:

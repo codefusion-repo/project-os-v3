@@ -67,19 +67,19 @@ Authenticated HTTP mode additionally exposes a synthetic GitHub context tool to 
 
 ## Local vertical workflow and preflight
 
-The disposable Git workflow can run via a dedicated local CLI state or the authenticated HTTP service with an explicit local fixture-image opt-in; never share those state directories. Use the preflight inventory without starting devices or inspecting credentials:
+The disposable Git workflow can run via a dedicated local CLI state or the authenticated HTTP service with an explicit local fixture-image and Podman context opt-in. Keep those state directories separate. Use the preflight inventory without starting devices or inspecting credentials:
 
 ```bash
 bash local-bridge/scripts/preflight.sh
 ```
 
-Availability is not authorization or isolation evidence. The local fixture runner requires a trusted Python image already installed in rootless Podman, with its exact repository digest. No automatic pulls, no host execution fallback. Choose and verify the image locally before running.
+Availability is not authorization or isolation evidence. Prepare a private context and import the exact audited local OCI layout using [section 4](OCI-LOCAL-VALIDATION.md#4-import-audited-bytes-and-execute-only-the-fixed-fixture-separate-permission) after its separate authorization. The worker accepts the pinned image in that context and has no automatic pull or host execution fallback.
 
 ```bash
 umask 077
 FIXTURE_STATE="$(mktemp -d "$HOME/.project-os-fixture.XXXXXXXX")"
 read -rp "Approved local Python image with digest: " IMAGE
-local-bridge/.venv/bin/project-os-bridge-fixture --state-dir "$FIXTURE_STATE" --request-key first --image "$IMAGE"
+local-bridge/.venv/bin/project-os-bridge-fixture --state-dir "$FIXTURE_STATE" --request-key first --image "$IMAGE" --podman-context "$PODMAN_CONTEXT"
 ```
 
 Keep the state directory private. Reusing the same request key retrieves the original job result; a new key creates a new fixture. Interrupted jobs are not replayed automatically. Evidence includes state transitions, Git HEAD, content digests, staged diff and validation outcome. A blocked isolation profile is not a successful validation. Unit tests exercise real Git and mock the container boundary; the actual container must be tested separately. The HTTP worker checks local authorization before each claim and again before dispatch; a claimed job denied at that boundary is BLOCKED and remaining queued jobs are preserved. In-flight operations are not cancelled. An exclusive per-state HTTP service lock prevents concurrent HTTP instances even on different ports. The worker waits for successful listener startup before claiming jobs. Only contention on the worker lock is recoverable; an unexpected worker infrastructure failure requests HTTP shutdown and exits unsuccessfully rather than leaving a ready server with a dead worker. The supervisor then stops the tunnel; interrupted work is not automatically retried. No adopted repos or real GitHub calls are enabled.

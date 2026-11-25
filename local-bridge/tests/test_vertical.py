@@ -1,13 +1,14 @@
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 from project_os_bridge.core import Jobs, Policy
 from project_os_bridge.vertical import local_jobs, bind_image, main
 from project_os_bridge.worker import run_pending
-from project_os_bridge.isolated import CHECKS
+from project_os_bridge.isolated import CHECKS, ISOLATION_CHECKS
 
 IMAGE="example/python@sha256:"+"a"*64
+CONTEXT_ID="1"*64
 
 
 class VerticalTests(unittest.TestCase):
@@ -16,6 +17,7 @@ class VerticalTests(unittest.TestCase):
         self.addCleanup(temp.cleanup)
         self.root=Path(temp.name).resolve()
         self.jobs=local_jobs(self.root)
+        self.context=Mock(identity=Mock(return_value=CONTEXT_ID))
 
     def submit(self,key="one"):
         return self.jobs.submit("local-fixture","disposable","git_fixture_check",key)
@@ -24,7 +26,7 @@ class VerticalTests(unittest.TestCase):
         job=self.submit()
         with patch("project_os_bridge.vertical.validate_in_container",
                    return_value={"status":"BLOCKED","reason":"ROOTLESS_UNAVAILABLE","container_absent":True}) as validate:
-            run_pending(self.jobs,fixture_image=IMAGE)
+            run_pending(self.jobs,fixture_image=IMAGE,podman_context=self.context)
         validate.assert_called_once()
         result=local_jobs(self.root).evidence("local-fixture",job)
         self.assertEqual(result["state"],"BLOCKED")
@@ -33,16 +35,16 @@ class VerticalTests(unittest.TestCase):
         self.assertTrue(result["result"]["steps"][1]["original_unchanged"])
         self.assertEqual(job,self.submit())
         with patch("project_os_bridge.vertical.validate_in_container") as validate:
-            run_pending(self.jobs,fixture_image=IMAGE)
+            run_pending(self.jobs,fixture_image=IMAGE,podman_context=self.context)
             validate.assert_not_called()
 
     def test_success_evidence_contract(self):
         job=self.submit()
-        def fixture_result(repo,principal,revision,image,*,token):
+        def fixture_result(repo,principal,revision,image,*,token,context,identity):
             return {"status":"SUCCEEDED","revision":revision,"exit_code":0,
-                    "profile":"fixture-python","cleanup_verified":True,"checks":CHECKS}
+                    "profile":"fixture-python","cleanup_verified":True,"checks":CHECKS,"isolation_checks":ISOLATION_CHECKS}
         with patch("project_os_bridge.vertical.validate_in_container",side_effect=fixture_result):
-            run_pending(self.jobs,fixture_image=IMAGE)
+            run_pending(self.jobs,fixture_image=IMAGE,podman_context=self.context)
         self.assertEqual(self.jobs.evidence("local-fixture",job)["state"],"SUCCEEDED")
 
     def test_no_image_no_git(self):
@@ -62,19 +64,24 @@ class VerticalTests(unittest.TestCase):
 
     def test_pause_between_claims(self):
         job=self.submit()
-        run_pending(self.jobs,fixture_image=IMAGE,enabled=lambda:False)
+        run_pending(self.jobs,fixture_image=IMAGE,podman_context=self.context,enabled=lambda:False)
         self.assertEqual(self.jobs.get("local-fixture",job)["state"],"QUEUED")
 
     def test_bound_image_conflict(self):
-        bind_image(self.jobs,IMAGE)
-        bind_image(self.jobs,IMAGE)
+        bind_image(self.jobs,IMAGE,CONTEXT_ID)
+        bind_image(self.jobs,IMAGE,CONTEXT_ID)
         with self.assertRaises(PermissionError):
-            bind_image(self.jobs,"example/python@sha256:"+"b"*64)
+            bind_image(self.jobs,"example/python@sha256:"+"b"*64,CONTEXT_ID)
+
+    def test_same_image_cannot_switch_context(self):
+        bind_image(self.jobs, IMAGE, CONTEXT_ID)
+        with self.assertRaises(PermissionError):
+            bind_image(self.jobs, IMAGE, "2"*64)
 
     def test_legacy_state_cannot_bind_image(self):
         self.submit()
         with self.assertRaises(PermissionError):
-            bind_image(self.jobs,IMAGE)
+            bind_image(self.jobs,IMAGE,CONTEXT_ID)
 
     def test_evidence_cli_does_not_run_worker(self):
         job=self.submit()
@@ -101,10 +108,10 @@ class VerticalTests(unittest.TestCase):
 
     def test_incomplete_isolation_evidence_blocks_success(self):
         job=self.submit()
-        def incomplete(repo,principal,revision,image,*,token):
+        def incomplete(repo,principal,revision,image,*,token,context,identity):
             return {"status":"SUCCEEDED","revision":revision,"exit_code":0}
         with patch("project_os_bridge.vertical.validate_in_container",side_effect=incomplete):
-            run_pending(self.jobs,fixture_image=IMAGE)
+            run_pending(self.jobs,fixture_image=IMAGE,podman_context=self.context)
         evidence=self.jobs.evidence("local-fixture",job)
         self.assertEqual(evidence["state"],"BLOCKED")
         self.assertEqual(evidence["result"]["error"],"INCOMPLETE_ISOLATION_EVIDENCE")

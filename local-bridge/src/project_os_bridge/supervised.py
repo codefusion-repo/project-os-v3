@@ -16,6 +16,7 @@ from pathlib import Path
 from .workos_auth import load_config, private_directory, private_file
 from .authenticated import tls_options
 from .isolated import IMAGE
+from .podman_context import PodmanContext
 from .service_setup import checked_path
 from .readiness import read_metadata, verify_metadata
 
@@ -33,7 +34,8 @@ def commands(root):
     service = root / "service"
     private_directory(service)
     config = json.loads(read_private(service / "runtime.json", 4096))
-    if not isinstance(config, dict) or set(config) != {"tunnel", "tunnel_id", "image"}:
+    if not isinstance(config, dict) or set(config) not in ({"tunnel", "tunnel_id", "image"},
+                                                          {"tunnel", "tunnel_id", "image", "podman_context"}):
         raise ValueError("Invalid service configuration")
     tunnel = checked_path(Path(config["tunnel"]))
     info = tunnel.stat()
@@ -42,7 +44,11 @@ def commands(root):
     if config["tunnel_id"] != verifier.resource.rsplit("/", 1)[-1]:
         raise ValueError("Tunnel identity mismatch")
     image = config["image"]
+    context_path = config.get("podman_context")
+    if (image is None) != (context_path is None):
+        raise PermissionError("Fixture image and Podman context must be supplied together")
     if image is not None:
+        PodmanContext(Path(context_path)).identity()
         if not isinstance(image, str) or not IMAGE.fullmatch(image):
             raise ValueError("Invalid fixture image")
         if read_private(root / "state" / "fixture-image", 1024) != image + "\n":
@@ -65,7 +71,7 @@ def commands(root):
               "--port","8765","--tls-cert",str(cert),"--tls-key",str(cert_key),
               "--supervised-ca",str(ca)]
     if image:
-        bridge += ["--fixture-image", image]
+        bridge += ["--fixture-image", image, "--podman-context", context_path]
     tunnel_cmd = [str(tunnel),"run","--config",str(service/"tunnel.yaml"),
                   "--mcp.server-url","https://127.0.0.1:8765/mcp",
                   "--ca-bundle",str(ca),"--mcp.oauth-trusted-origin",verifier.issuer]

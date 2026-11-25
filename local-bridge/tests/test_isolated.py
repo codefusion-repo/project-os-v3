@@ -1,81 +1,107 @@
 import json
+import subprocess
+from pathlib import Path
 import unittest
 from unittest.mock import Mock, patch
-from project_os_bridge.isolated import validate_in_container, SCRIPT, CHECKS
 
-IMAGE="python@sha256:"+"a"*64
+from project_os_bridge.isolated import validate_in_container, SCRIPT, CHECKS, ISOLATION_CHECKS
+from project_os_bridge.isolation_profile import MOUNT_CHECK
+
+IMAGE = "python@sha256:" + "a" * 64
+IDENTITY = "b" * 64
+TOKEN = "c" * 32
+
 
 class IsolationTests(unittest.TestCase):
     def setUp(self):
-        self.repo=Mock()
-        self.repo.snapshot.return_value={"revision":"expected","text":"after\n"}
+        self.repo = Mock()
+        self.repo.snapshot.return_value = {"revision": "expected", "text": "after\n"}
+        self.context = Mock(root=Path("/unused-test-context"))
+        self.context.host.return_value = {"security": {"rootless": True, "seccompEnabled": True}}
+        patcher = patch("project_os_bridge.isolated.challenge", return_value='{"forbidden": []}')
+        patcher.start()
+        self.addCleanup(patcher.stop)
 
-    def invoke(self):
-        return validate_in_container(self.repo,"local","expected",IMAGE,token="b"*32)
-
-    def info(self,**kwargs):
-        security={"rootless":True,"seccompEnabled":True,**kwargs}
-        return Mock(returncode=0,stdout=json.dumps({"host":{"security":security,"cgroupVersion":"v2"}}).encode())
+    def invoke(self, image=IMAGE):
+        return validate_in_container(self.repo, "local", "expected", image, token=TOKEN,
+                                     context=self.context, identity=IDENTITY)
 
     def test_revision_conflict(self):
-        self.repo.snapshot.return_value={"revision":"other"}
-        with patch("project_os_bridge.isolated.subprocess.run") as run:
-            self.assertEqual(self.invoke()["reason"],"REVISION_CONFLICT")
-            run.assert_not_called()
+        self.repo.snapshot.return_value = {"revision": "other"}
+        self.assertEqual(self.invoke()["reason"], "REVISION_CONFLICT")
+        self.context.host.assert_not_called()
 
     def test_no_root_execution(self):
-        with patch("project_os_bridge.isolated.os.getuid",return_value=0), patch("project_os_bridge.isolated.subprocess.run") as run:
-            self.assertEqual(self.invoke()["reason"],"ROOTLESS_REQUIRED")
-            run.assert_not_called()
+        with patch("project_os_bridge.isolated.os.getuid", return_value=0):
+            self.assertEqual(self.invoke()["reason"], "ROOTLESS_REQUIRED")
+        self.context.host.assert_not_called()
 
     def test_no_unpinned_image(self):
-        for image in ("python:latest","--evil@sha256:"+"a"*64):
+        for image in ("python:latest", "--evil@sha256:" + "a" * 64):
             with self.assertRaises(ValueError):
-                validate_in_container(self.repo,"local","expected",image,token="b"*32)
+                self.invoke(image)
 
     def test_validation_command_and_exact_bytes(self):
-        compile(SCRIPT,"<fixture>","exec")
-        self.assertIn("== b'after\\n'",SCRIPT)
-        with patch("project_os_bridge.isolated.os.getuid",return_value=1000), patch("project_os_bridge.isolated.subprocess.run") as run:
-            run.side_effect=[self.info(),Mock(returncode=0),Mock(returncode=1),Mock(returncode=0,stdout=b"")]
-            result=self.invoke()
-        self.assertEqual(result["status"],"SUCCEEDED")
-        self.assertEqual(result["checks"],CHECKS)
+        compile(SCRIPT, "<fixture>", "exec")
+        self.assertIn("== b'after\\n'", SCRIPT)
+        self.context.run.side_effect = [Mock(returncode=0), Mock(returncode=1), Mock(returncode=0, stdout=b"")]
+        with patch("project_os_bridge.isolated.os.getuid", return_value=1000):
+            result = self.invoke()
+        self.assertEqual(result["status"], "SUCCEEDED")
+        self.assertEqual(result["checks"], CHECKS)
+        self.assertEqual(result["isolation_checks"], ISOLATION_CHECKS)
         self.assertTrue(result["cleanup_verified"])
-        args=run.call_args_list[1].args[0]
-        for flag in ("--pull=never","--network=none","--read-only","--read-only-tmpfs=false","--cap-drop=ALL","--http-proxy=false","--image-volume=ignore","--pid=private","--ipc=private","--cgroupns=private"):
-            self.assertIn(flag,args)
+        self.context.host.assert_called_once_with(IDENTITY)
+        self.context.require_import.assert_called_once_with(IDENTITY, IMAGE)
+        args = self.context.run.call_args_list[0].args
+        for flag in ("--pull=never", "--network=none", "--read-only", "--read-only-tmpfs=false", "--cap-drop=ALL",
+                     "--http-proxy=false", "--image-volume=ignore", "--pid=private", "--ipc=private", "--cgroupns=private"):
+            self.assertIn(flag, args)
+        denied = json.loads(args[-1])["forbidden"]
+        self.assertTrue(any(path.endswith("/exchange/synthetic-marker") for path in denied))
+        self.assertTrue(any(path.endswith("/credentials/synthetic-marker") for path in denied))
+        self.assertTrue(all(call.args[0] == IDENTITY for call in self.context.run.call_args_list))
 
-    def test_preflight_denies_without_seccomp(self):
-        with patch("project_os_bridge.isolated.os.getuid",return_value=1000), patch("project_os_bridge.isolated.subprocess.run",return_value=self.info(seccompEnabled=False)) as run:
-            self.assertEqual(self.invoke()["reason"],"SECURITY_PREFLIGHT_FAILED")
-            self.assertEqual(run.call_count,1)
+    def test_preflight_blocks_before_run(self):
+        self.context.host.side_effect = PermissionError("wrong context or disabled Seccomp")
+        with patch("project_os_bridge.isolated.os.getuid", return_value=1000):
+            self.assertEqual(self.invoke()["status"], "BLOCKED")
+        self.context.run.assert_not_called()
 
     def test_cleanup_is_required(self):
-        with patch("project_os_bridge.isolated.os.getuid",return_value=1000), patch("project_os_bridge.isolated.subprocess.run") as run:
-            run.side_effect=[self.info(),Mock(returncode=0),Mock(returncode=0),Mock(returncode=0,stdout=b"")]
-            self.assertEqual(self.invoke()["reason"],"CLEANUP_UNVERIFIED")
+        self.context.run.side_effect = [Mock(returncode=0), Mock(returncode=0), Mock(returncode=0, stdout=b"")]
+        with patch("project_os_bridge.isolated.os.getuid", return_value=1000):
+            self.assertEqual(self.invoke()["reason"], "CLEANUP_UNVERIFIED")
 
     def test_negative_probe_failure(self):
-        with patch("project_os_bridge.isolated.os.getuid",return_value=1000), patch("project_os_bridge.isolated.subprocess.run") as run:
-            run.side_effect=[self.info(),Mock(returncode=14),Mock(returncode=1),Mock(returncode=0,stdout=b"")]
-            result=self.invoke()
-            self.assertEqual(result["status"],"FAILED")
-            self.assertEqual(result["checks"],[])
+        self.context.run.side_effect = [Mock(returncode=18), Mock(returncode=1), Mock(returncode=0, stdout=b"")]
+        with patch("project_os_bridge.isolated.os.getuid", return_value=1000):
+            result = self.invoke()
+        self.assertEqual((result["status"], result["exit_code"]), ("FAILED", 18))
+        self.assertFalse(result["checks"] or result["isolation_checks"])
 
-    def test_run_timeout_requires_reconciliation(self):
-        import subprocess
-        with patch("project_os_bridge.isolated.os.getuid",return_value=1000), patch("project_os_bridge.isolated.subprocess.run") as run:
-            run.side_effect=[self.info(),subprocess.TimeoutExpired("podman",30)]
-            result=self.invoke()
-        self.assertEqual(result["reason"],"CLEANUP_UNVERIFIED")
-        self.assertFalse(result["container_absent"])
-        self.assertEqual(run.call_count,2)
+    def test_timeouts_and_context_drift_after_dispatch_require_reconciliation(self):
+        cases = ([subprocess.TimeoutExpired("podman", 30)],
+                 [Mock(returncode=0), subprocess.TimeoutExpired("podman", 10)],
+                 [Mock(returncode=0), PermissionError("context changed")])
+        for responses in cases:
+            with self.subTest(responses=responses):
+                self.context.run.side_effect = responses
+                with patch("project_os_bridge.isolated.os.getuid", return_value=1000):
+                    result = self.invoke()
+                self.assertEqual(result["reason"], "CLEANUP_UNVERIFIED")
+                self.assertFalse(result["container_absent"])
 
-    def test_cleanup_query_timeout_requires_reconciliation(self):
-        import subprocess
-        with patch("project_os_bridge.isolated.os.getuid",return_value=1000), patch("project_os_bridge.isolated.subprocess.run") as run:
-            run.side_effect=[self.info(),Mock(returncode=0),subprocess.TimeoutExpired("podman",10)]
-            result=self.invoke()
-        self.assertEqual(result["reason"],"CLEANUP_UNVERIFIED")
-        self.assertFalse(result["container_absent"])
+    def test_mount_allowlist_rejects_relabelled_and_unexpected_mounts(self):
+        import re
+        methods = {"Path": Path, "re": re}
+        exec(MOUNT_CHECK, methods)
+        mounts = [("0:1", "/", "/", ["ro"], "overlay"), ("0:2", "/", "/proc", ["rw"], "proc"),
+                  ("0:3", "/", "/sys/fs/cgroup", ["ro"], "cgroup2"),
+                  ("8:1", "/synthetic/export", "/fixture", ["ro"], "ext4")]
+        settings = {"host_filesystems": ["9p"], "fixture": ["8:1", "/synthetic/export", "ext4"], "generated": []}
+        verify = methods["allowed_mounts"]
+        self.assertTrue(verify(mounts, settings))
+        self.assertFalse(verify(mounts + [("8:1", "/synthetic/credentials", "/elsewhere", ["ro"], "ext4")], settings))
+        self.assertFalse(verify(mounts + [("0:4", "/", "/dev/shm", ["ro"], "9p")], settings))
+        self.assertFalse(verify(mounts[:-1] + [("8:1", "/synthetic/alias", "/fixture", ["ro"], "ext4")], settings))

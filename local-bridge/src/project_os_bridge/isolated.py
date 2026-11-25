@@ -2,17 +2,20 @@
 import json
 import os
 import re
+import socket
 import subprocess
 import tempfile
 from pathlib import Path
 
 from .git_fixture import GitFixture
+from .isolation_profile import ISOLATION_CHECKS, MOUNT_CHECK, challenge
 
 IMAGE = re.compile(r"[A-Za-z0-9][A-Za-z0-9./:_-]{0,511}@sha256:[0-9a-f]{64}")
 # Fixed trusted program. No repository code, external network probes or actual secrets.
 SCRIPT = r"""
-import errno, os, socket, sys
+import errno, json, os, re, socket, sys
 from pathlib import Path
+""" + MOUNT_CHECK + r"""
 
 def require(condition, code):
     if not condition:
@@ -43,6 +46,11 @@ require(int((cg/'memory.max').read_text()) <= 134217728, 16)
 require(int((cg/'pids.max').read_text()) <= 64, 16)
 quota, period = (cg/'cpu.max').read_text().split()
 require(int(quota) <= int(period), 16)
+spec = json.loads(sys.argv[3])
+require(all(os.readlink('/proc/self/ns/' + name) != identity
+            for name, identity in spec['namespaces'].items()), 17)
+require(allowed_mounts([parse_mount(line) for line in Path('/proc/self/mountinfo').read_text().splitlines()], spec), 18)
+require(all(not os.path.lexists(path) for path in spec['forbidden']), 19)
 """
 CHECKS = ["exact_content","fixture_write_denied","synthetic_host_path_absent",
           "standard_sockets_absent","loopback_only","no_new_privileges",
@@ -55,37 +63,16 @@ def container_name(token):
     return "project-os-fixture-" + token
 
 
-def podman_run(*args, timeout=10, capture=False):
-    env = {"PATH":"/usr/bin:/bin","HOME":os.environ.get("HOME",""),
-           "XDG_RUNTIME_DIR":f"/run/user/{os.getuid()}","LC_ALL":"C"}
-    return subprocess.run(["/usr/bin/podman",*args],env=env,stdin=subprocess.DEVNULL,
-                          stdout=subprocess.PIPE if capture else subprocess.DEVNULL,
-                          stderr=subprocess.DEVNULL,timeout=timeout)
-
-
-def rootless_host():
-    if os.getuid() == 0:
-        raise PermissionError("Rootless required")
-    info = podman_run("info","--format","json",capture=True)
-    if info.returncode or len(info.stdout)>262144:
-        raise ValueError("Podman info failed")
-    host = json.loads(info.stdout)["host"]
-    if host["security"].get("rootless") is not True:
-        raise PermissionError("Rootless required")
-    return host
-
-
-def container_absent(token):
-    # Check both the exact name and the unique ownership label (including renamed
-    # containers). Never remove a container by name or accept a failed query.
+def container_absent(context, identity, token):
+    # Exact name AND unique ownership label, including renamed containers.
     name = container_name(token)
-    exists = podman_run("container","exists",name)
-    owned = podman_run("ps","--all","--filter","label=io.project-os.fixture="+token,
-                       "--format","{{.ID}}",capture=True)
+    exists = context.run(identity, "container", "exists", name)
+    owned = context.run(identity, "ps", "--all", "--filter", "label=io.project-os.fixture=" + token,
+                        "--format", "{{.ID}}", capture=True)
     return exists.returncode == 1 and owned.returncode == 0 and owned.stdout == b""
 
 
-def validate_in_container(repo: GitFixture, principal, expected_revision, image, *, token):
+def validate_in_container(repo: GitFixture, principal, expected_revision, image, *, token, context, identity):
     repo.policy.require(principal,"fixture_validate","disposable")
     if not isinstance(image,str) or not IMAGE.fullmatch(image):
         raise ValueError("Locally approved digest-pinned image required")
@@ -97,38 +84,41 @@ def validate_in_container(repo: GitFixture, principal, expected_revision, image,
     name=container_name(token)
     attempted=False
     try:
-        info=podman_run("info","--format","json",capture=True)
-        if info.returncode or len(info.stdout)>262144:
-            return {"status":"BLOCKED","reason":"PODMAN_INFO_FAILED","container_absent":True}
-        host=json.loads(info.stdout)["host"]
-        security=host["security"]
-        if security.get("rootless") is not True:
-            return {"status":"BLOCKED","reason":"ROOTLESS_UNAVAILABLE","container_absent":True}
-        if security.get("seccompEnabled") is not True or host.get("cgroupVersion")!="v2":
-            return {"status":"BLOCKED","reason":"SECURITY_PREFLIGHT_FAILED","container_absent":True}
-        with tempfile.TemporaryDirectory() as folder:
-            path=Path(folder)
-            mount=path/"export"
+        host = context.host(identity)
+        security = host["security"]
+        context.require_import(identity, image)
+        with tempfile.TemporaryDirectory() as folder, socket.socket(socket.AF_UNIX) as fake_socket:
+            path = Path(folder)
+            mount = path / "export"
             mount.mkdir(mode=0o700)
-            (mount/"fixture.txt").write_text(snapshot["text"],encoding="utf-8")
-            sentinel=path/"private-synthetic-marker"
-            sentinel.write_text("synthetic only",encoding="utf-8")
-            args=["run","--rm","--name",name,"--label","io.project-os.fixture="+token,"--pull=never",
-                  "--network=none","--read-only","--read-only-tmpfs=false",
-                  "--cap-drop=ALL","--security-opt=no-new-privileges",
-                  "--http-proxy=false","--image-volume=ignore","--pid=private",
-                  "--ipc=private","--cgroupns=private",
-                  "--pids-limit=64","--memory=128m","--cpus=1","--userns=keep-id",
-                  "--volume",f"{mount}:/fixture:ro","--entrypoint","python",image,"-I","-B","-c",SCRIPT,
-                  str(sentinel),f"/run/user/{os.getuid()}/podman/podman.sock"]
+            (mount / "fixture.txt").write_text(snapshot["text"], encoding="utf-8")
+            sentinel = path / "private-synthetic-marker"
+            sentinel.write_text("synthetic only", encoding="utf-8")
+            for category in ("exchange", "credentials"):
+                directory = path / category
+                directory.mkdir(mode=0o700)
+                (directory / "synthetic-marker").write_text("synthetic only", encoding="utf-8")
+            socket_path = path / "synthetic.sock"
+            fake_socket.bind(str(socket_path))
+            probes = json.loads(challenge(mount, context.root, sentinel, socket_path))
+            for category in ("exchange", "credentials"):
+                probes["forbidden"].append(str(path / category / "synthetic-marker"))
+            args = ["run", "--rm", "--name", name, "--label", "io.project-os.fixture=" + token, "--pull=never",
+                    "--network=none", "--read-only", "--read-only-tmpfs=false",
+                    "--cap-drop=ALL", "--security-opt=no-new-privileges", "--http-proxy=false",
+                    "--image-volume=ignore", "--pid=private", "--ipc=private", "--cgroupns=private", "--uts=private",
+                    "--pids-limit=64", "--memory=128m", "--cpus=1", "--userns=keep-id",
+                    "--volume", f"{mount}:/fixture:ro", "--entrypoint", "python", image, "-I", "-B", "-c", SCRIPT,
+                    str(sentinel), f"/run/user/{os.getuid()}/podman/podman.sock", json.dumps(probes)]
             attempted=True
-            result=podman_run(*args,timeout=30)
-            if not container_absent(token):
+            result = context.run(identity, *args, timeout=30)
+            if not container_absent(context, identity, token):
                 return {"status":"BLOCKED","reason":"CLEANUP_UNVERIFIED"}
             return {"status":"SUCCEEDED" if result.returncode==0 else "FAILED",
                     "exit_code":result.returncode,"revision":expected_revision,
                     "profile":"fixture-python","cleanup_verified":True,
                     "checks":CHECKS if result.returncode==0 else [],
+                    "isolation_checks":ISOLATION_CHECKS if result.returncode==0 else [],
                     "host_lsm":{"apparmor":security.get("apparmorEnabled") is True,
                                 "selinux":security.get("selinuxEnabled") is True}}
     except (OSError,subprocess.TimeoutExpired,ValueError,KeyError,TypeError,AttributeError):
