@@ -92,12 +92,16 @@ class PodmanContext:
     def _host(self):
         info = self._run("info", "--format", "json", capture=True)
         if info.returncode:
-            error = (info.stderr or b"").lower()
-            categories = ((b"permission denied", "permission"), (b"operation not permitted", "permission"),
-                          (b"database", "database"), (b"cgroup", "cgroup"), (b"namespace", "namespace"),
-                          (b"invalid argument", "invalid argument"), (b"no such file", "missing file"))
-            reason = next((name for needle, name in categories if needle in error), "unclassified")
-            raise ContextError(f"Podman info exit {info.returncode} ({reason})")
+            lines = (info.stderr or b"").decode("utf-8", "replace").splitlines()
+            error = next((line.removeprefix("Error: ") for line in reversed(lines)
+                          if line.startswith("Error: ")), "no error detail")
+            # Podman receives a closed environment and an empty registry auth file.
+            # Keep the first error bounded, and redact paths, URLs and opaque IDs.
+            error = error.replace(str(self.root), "[context]")
+            error = re.sub(r"(?:https?://|/)[^\s\"']+", "[path]", error)
+            error = re.sub(r"[A-Za-z0-9_-]{24,}", "[redacted]", error)
+            error = re.sub(r"[^ A-Za-z0-9:.,_()\[\]=-]", "?", error)[:160]
+            raise ContextError(f"Podman info exit {info.returncode}: {error}")
         if len(info.stdout) > 262144:
             raise ContextError("Podman info exceeds bound")
         data = json.loads(info.stdout)
