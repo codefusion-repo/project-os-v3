@@ -392,7 +392,7 @@ class PasteInTerminal(unittest.TestCase):
                 send(b'org/repo\n')
                 until(b'Skills [Enter')
                 send(b'code-review\n')
-                until('PR a revisar y autorización de closeout si existe [Enter'.encode())
+                until('PR a revisar y outcome; recupera autorización y política vigente [Enter'.encode())
                 send(b'\x1b[200~' + report.encode() + b'\x1b[201~')
                 time.sleep(0.2)
                 while select.select([master], [], [], 0)[0]:
@@ -414,7 +414,7 @@ class PasteInTerminal(unittest.TestCase):
                 send(b'\n')
                 until(b'Skills [Enter')
                 send(b'\n')
-                until('PR a revisar y autorización de closeout si existe [Enter'.encode())
+                until('PR a revisar y outcome; recupera autorización y política vigente [Enter'.encode())
                 send(b'\n')
                 until(b'Issue/PR opcional')
                 send(b'\n')
