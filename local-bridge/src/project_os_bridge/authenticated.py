@@ -6,6 +6,7 @@ from contextlib import contextmanager
 import os
 import ssl
 import threading
+import time
 from pathlib import Path
 
 from mcp.server import MCPServer
@@ -26,6 +27,7 @@ from .github_fixture import SyntheticGitHubReader
 from .vertical import OPERATIONS, bind_image
 from .isolated import IMAGE
 from .workos_auth import private_file, private_directory
+from .readiness import read_metadata, verify_metadata
 
 
 def fixture_enabled(verifier, image):
@@ -177,22 +179,35 @@ def exclusive_http_service(root):
         os.close(fd)
 
 
-def serve_with_worker(server, jobs, verifier, fixture_image):
+def serve_with_worker(server, jobs, verifier, fixture_image, *, readiness=None):
     """Stop HTTP on infrastructure failure; preserve in-flight cleanup on shutdown."""
     stop = threading.Event()
     failed = threading.Event()
+
+    def stopping():
+        return stop.is_set() or server.should_exit
 
     def worker():
         try:
             # Never execute queued work before Uvicorn has bound its listener.
             while not server.started:
-                if stop.wait(0.05):
+                if stopping() or stop.wait(0.05):
                     return
-            while not stop.is_set():
+            if readiness is not None:
+                deadline = time.monotonic() + 30
+                while not stopping():
+                    if time.monotonic() >= deadline:
+                        raise RuntimeError("TLS_READINESS_TIMEOUT")
+                    try:
+                        readiness()
+                        break
+                    except OSError:
+                        stop.wait(0.25)
+            while not stopping():
                 try:
                     if verifier.enabled():
                         run_pending(jobs, fixture_image=fixture_image,
-                                    enabled=lambda: verifier.enabled() and not stop.is_set(),
+                                    enabled=lambda: verifier.enabled() and not stopping(),
                                     fixture_allowed=lambda: fixture_enabled(verifier, fixture_image))
                     if jobs.pending_effects():
                         raise RuntimeError("RECONCILIATION_REQUIRED")
@@ -228,6 +243,7 @@ def main():
     parser.add_argument("--fixture-image",help="Explicit local opt-in for fixed disposable fixture, approved digest only")
     parser.add_argument("--tls-cert", type=Path, help="Private local PEM certificate")
     parser.add_argument("--tls-key", type=Path, help="Private local PEM key")
+    parser.add_argument("--supervised-ca", type=Path, help="Require verified loopback TLS metadata before worker dispatch")
     args = parser.parse_args()
     os.umask(0o077)
     try:
@@ -235,6 +251,14 @@ def main():
     except (OSError, ValueError):
         parser.error("Invalid private TLS certificate/key configuration")
     verifier = load_config(args.config, args.state_dir)
+    readiness = None
+    if args.supervised_ca is not None:
+        if not tls or not args.supervised_ca.is_absolute() or args.supervised_ca.resolve(strict=True) != args.supervised_ca:
+            parser.error("Supervised readiness requires canonical private TLS configuration")
+        private_file(args.supervised_ca)
+        context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+        context.load_verify_locations(cafile=str(args.supervised_ca))
+        readiness = lambda: verify_metadata(read_metadata(context, args.port), verifier)
     if os.getuid()==0 or os.path.lexists(args.state_dir/"local-fixture-mode"):
         parser.error("Unprivileged dedicated HTTP state required")
     if args.fixture_image is not None and not IMAGE.fullmatch(args.fixture_image):
@@ -252,7 +276,7 @@ def main():
         import uvicorn
         server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=args.port,
                                               access_log=False, **tls))
-        serve_with_worker(server, jobs, verifier, args.fixture_image)
+        serve_with_worker(server, jobs, verifier, args.fixture_image, readiness=readiness)
 
 
 if __name__ == "__main__":

@@ -32,7 +32,7 @@ Para review y closeout de un PR en browser chat, el [adapter](../../adapters/bro
 SHA o URL remotos verificados, issue/PR, enlace al comentario nuevo confirmado o borrador pendiente, checks, tests, fallos y riesgos reales. No inventar resultados ni declarar publicación sin evidencia.
 
 ## Riesgos/limitaciones
-La skill no concede permisos. Aplica autorización por intención de PROJECT_OS.md; no mutar por la sola existencia de APIs de escritura.
+La skill no concede permisos. Aplica contrato de operación solicitada de PROJECT_OS.md; no mutar por la sola existencia de APIs de escritura.
 
 ## Publicación y continuidad seguras
 Antes de enviar un commit, review o comentario, inspeccionar proporcionalmente su contenido real por secretos, datos privados y relaciones entre repositorios que no puedan divulgarse. Verificar si los archivos privados ya están bajo seguimiento; `.gitignore` no los retira. Sin autorización o ante posible exposición detener esa publicación y conservar un borrador seguro. Las relaciones técnicas necesarias para continuidad remota deben estar documentadas en Git solo cuando su divulgación esté autorizada; los checkouts y configuraciones locales nunca se publican automáticamente.

@@ -10,13 +10,14 @@ import subprocess
 import sys
 import threading
 import time
-import http.client
+import stat
 from pathlib import Path
 
 from .workos_auth import load_config, private_directory, private_file
 from .authenticated import tls_options
 from .isolated import IMAGE
 from .service_setup import checked_path
+from .readiness import read_metadata, verify_metadata
 
 
 def read_private(path, limit):
@@ -61,7 +62,8 @@ def commands(root):
            "XDG_RUNTIME_DIR":f"/run/user/{os.getuid()}"}
     bridge = [sys.executable, "-I", "-m", "project_os_bridge.authenticated",
               "--config",str(root/"oauth.json"),"--state-dir",str(root/"state"),
-              "--port","8765","--tls-cert",str(cert),"--tls-key",str(cert_key)]
+              "--port","8765","--tls-cert",str(cert),"--tls-key",str(cert_key),
+              "--supervised-ca",str(ca)]
     if image:
         bridge += ["--fixture-image", image]
     tunnel_cmd = [str(tunnel),"run","--config",str(service/"tunnel.yaml"),
@@ -71,10 +73,14 @@ def commands(root):
     return bridge, tunnel_cmd, env, tunnel_env, context, verifier
 
 
-def stop_child(child, timeout):
+def request_stop(child):
+    if child is not None and child.poll() is None:
+        child.terminate()
+
+
+def wait_child(child, timeout):
     if child is None or child.poll() is not None:
         return
-    child.terminate()
     try:
         child.wait(timeout=timeout)
     except subprocess.TimeoutExpired:
@@ -83,23 +89,24 @@ def stop_child(child, timeout):
         raise RuntimeError("Forced child termination; inspect local state")
 
 
-def read_metadata(context):
-    # No redirect following, proxy inheritance or external destinations.
-    connection = http.client.HTTPSConnection("127.0.0.1",8765,timeout=2,context=context)
+def stop_child(child, timeout):
+    request_stop(child)
+    wait_child(child, timeout)
+
+
+def stop_children(tunnel, bridge):
+    # Signal both before waiting: the worker must stop accepting new dispatch
+    # while a slow tunnel is exiting. Preserve tunnel-first signal ordering.
     try:
-        connection.request("GET","/.well-known/oauth-protected-resource/mcp")
-        response = connection.getresponse()
-        if response.status != 200:
-            raise RuntimeError("Unexpected readiness HTTP status")
-        data = response.read(16385)
-        if len(data)>16384:
-            raise RuntimeError("Oversized readiness metadata")
-        result = json.loads(data)
-        if not isinstance(result,dict):
-            raise RuntimeError("Invalid readiness metadata")
-        return result
+        request_stop(tunnel)
     finally:
-        connection.close()
+        try:
+            request_stop(bridge)
+        finally:
+            try:
+                wait_child(tunnel, 10)
+            finally:
+                wait_child(bridge, 90)
 
 
 def supervise(bridge_cmd, tunnel_cmd, env, tunnel_env, context, verifier, stop):
@@ -120,8 +127,7 @@ def supervise(bridge_cmd, tunnel_cmd, env, tunnel_env, context, verifier, stop):
                 raise RuntimeError("Local TLS readiness failed")
             try:
                 metadata = read_metadata(context)
-                if metadata["resource"] != verifier.resource or metadata["authorization_servers"] != [verifier.issuer]:
-                    raise RuntimeError("Unexpected protected resource metadata")
+                verify_metadata(metadata, verifier)
                 break
             except (OSError, ValueError):
                 stop.wait(0.25)
@@ -136,10 +142,7 @@ def supervise(bridge_cmd, tunnel_cmd, env, tunnel_env, context, verifier, stop):
             if bridge.poll() is not None or tunnel.poll() is not None:
                 raise RuntimeError("Child exited; both services stopping")
     finally:
-        try:
-            stop_child(tunnel,10)
-        finally:
-            stop_child(bridge,90)
+        stop_children(tunnel, bridge)
 
 
 def run(root):
@@ -149,7 +152,10 @@ def run(root):
     private_directory(root / "service")
     fd = os.open(root/"service"/"supervisor.lock",os.O_CREAT|os.O_RDWR|os.O_NOFOLLOW|os.O_NONBLOCK,0o600)
     try:
-        private_file(root/"service"/"supervisor.lock")
+        info = os.fstat(fd)
+        if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
+                or info.st_nlink != 1 or info.st_mode & 0o077):
+            raise PermissionError("Unsafe supervisor lock")
         fcntl.flock(fd,fcntl.LOCK_EX|fcntl.LOCK_NB)
         bridge_cmd, tunnel_cmd, env, tunnel_env, context, verifier = commands(root)
         stop = threading.Event()

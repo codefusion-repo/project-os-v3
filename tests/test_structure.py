@@ -62,8 +62,8 @@ class Structure(unittest.TestCase):
                            'instalación-adopción-y-versión-del-proyecto', 'seguridad-transversal-y-límites'):
                 self.assertIn('../PROJECT_OS.md#' + anchor, content)
             self.assertNotIn('Conserva sus secciones sustantivas', content)
-            self.assertNotIn('PASS / CLOSEOUT PENDIENTE DE AUTORIZACIÓN', content)
-        self.assertIn('PASS / CLOSEOUT PENDIENTE DE AUTORIZACIÓN', shared)
+            self.assertNotIn('PASS / REVIEW SIN CIERRE', content)
+        self.assertIn('PASS / REVIEW SIN CIERRE', shared)
         browser = (ROOT / 'adapters/browser-chat.md').read_text()
         for mechanism in ('expected_head_sha', '--match-head-commit', 'git branch -d'):
             self.assertIn(mechanism, browser)

@@ -16,7 +16,7 @@ Aplica los gates de [implementación, testing y review](../PROJECT_OS.md#impleme
 
 Para limpieza local autorizada sin checkout accesible, entrega comandos de identidad, git status, git worktree list y ancestry hacia base integrada; Si corresponde y la rama local está integrada, usa `git branch -d <rama>` tras las comprobaciones; si falla, detente y conserva la rama. Aplica [seguridad y límites](../PROJECT_OS.md#seguridad-transversal-y-límites).
 
-En éxito entrega resultado, enlaces verificados y comandos locales restantes; en BLOCKED o PASS pendiente, findings o permiso faltante y evidencia. Sin capacidad aplica el fallback anterior; sin bundles.
+En éxito entrega resultado, enlaces verificados y comandos locales restantes; en BLOCKED o cierre impedido, findings o causa técnica/restricción aplicable y evidencia. Sin capacidad aplica el fallback anterior; sin bundles.
 
 ## Referencias operativas
 
@@ -24,4 +24,4 @@ Aplica obligatoriamente la [selección de templates](../PROJECT_OS.md#selección
 
 Si la superficie interrumpe la ejecución, aplica [Respuesta y continuidad](../PROJECT_OS.md#respuesta-y-continuidad); distingue límite técnico de decisión del PM y no presentes un checkpoint como resultado final.
 
-Cuando una interrupción técnica obligue a devolver el control, ofrece un botón de continuación si la interfaz lo permite; al finalizar, ofrece un botón de siguiente operación recomendada cuando aporte valor. El botón envía un prompt contextualizado según el contrato central de continuidad: conserva fuente, alcance y restricciones vigentes, sin inventar exclusiones ni solicitar renovación; no ejecuta mutaciones por sí mismo ni concede autorización nueva. Si no hay botones, entrega el prompt breve listo para usar. No esperes clics en checkpoints internos.
+Cuando una interrupción técnica obligue a devolver el control, ofrece un botón de continuación si la interfaz lo permite; al finalizar, ofrece un botón de siguiente operación recomendada cuando aporte valor. El botón envía un prompt contextualizado según el contrato central de continuidad: conserva fuente, alcance y restricciones vigentes, sin inventar exclusiones ni solicitar renovación; al pulsarlo, el PM solicita y autoriza la operación indicada, conforme a PROJECT_OS.md; el agente ejecuta sus pasos sin otra confirmación. Si no hay botones, entrega el prompt breve listo para usar. No esperes clics en checkpoints internos.
