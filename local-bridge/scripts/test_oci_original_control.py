@@ -3,7 +3,7 @@ import json
 from pathlib import Path
 import unittest
 
-from oci_original_control import evaluate, IMAGE, report_records, fingerprint
+from oci_original_control import evaluate, IMAGE, report_records, fingerprint, historical, fresh
 
 
 class OriginalControlTests(unittest.TestCase):
@@ -160,3 +160,26 @@ class OriginalControlTests(unittest.TestCase):
         self.assertEqual({v["Severity"] for v in current["added_findings"]}, {"UNKNOWN"})
         self.assertEqual(current["findings_count"],
                          previous["findings_count"] - len(current["removed_findings"]) + len(current["added_findings"]))
+
+    def test_historical_evidence_replays_exact_rejection(self):
+        path = Path(__file__).parent
+        lock = json.loads((path / "oci-original-rejection-r49.json").read_text())
+        self.assertFalse(historical(path / "oci-original-evidence-r49.json.gz", lock)["approved"])
+
+    def test_fresh_drift_never_approves(self):
+        report = copy.deepcopy(self.report)
+        report["Results"][0]["Vulnerabilities"][0]["VulnerabilityID"] = "changed"
+        result = fresh(report, self.lock, 0, 1, self.diagnostic)
+        self.assertTrue(result["finding_drift"])
+        self.assertFalse(result["approved"])
+        report["Results"][0]["Vulnerabilities"] = []
+        result = fresh(report, self.lock, 0, 0, "OCI HIGH/CRITICAL GATE PASS; lower severities still require review")
+        self.assertFalse(result["approved"])
+        self.assertEqual(result["candidate_gate"], "BLOCKED")
+        with self.assertRaises(ValueError):
+            fresh(report, self.lock, 1, 0, "")
+        with self.assertRaises(ValueError):
+            fresh(report, self.lock, 0, 1, self.diagnostic)
+        report["Results"][0]["Packages"].pop()
+        with self.assertRaises(ValueError):
+            fresh(report, self.lock, 0, 0, "OCI HIGH/CRITICAL GATE PASS; lower severities still require review")

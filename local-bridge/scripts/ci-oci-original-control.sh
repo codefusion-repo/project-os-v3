@@ -6,6 +6,7 @@ umask 077
 repo="$(cd -- "$(dirname -- "$0")/../.." && pwd)"
 evidence="$RUNNER_TEMP/lb-original-oci-evidence"
 mkdir "$evidence"
+python3 -I "$repo/local-bridge/scripts/oci_original_control.py" --historical "$repo/local-bridge/scripts/oci-original-evidence-r49.json.gz" "$repo/local-bridge/scripts/oci-original-rejection-r49.json" | tee "$evidence/historical-control.txt"
 work="$(mktemp -d "$RUNNER_TEMP/original-control.XXXXXXXX")"
 trap 'rm -rf -- "$work"' EXIT
 audit=0
