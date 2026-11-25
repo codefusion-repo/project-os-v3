@@ -8,7 +8,7 @@ Kit Markdown-first para desarrollar y prototipar con agentes de IA, evidencia ve
 
 ## Instalar y actualizar
 
-Linux o WSL, Git y Python 3.9+. En Bash, clona main integrado e inspecciona el código antes de instalar:
+Linux o WSL, Git y Python 3.9+. El guardado protegido requiere soporte POSIX de apertura de directorios sin seguir symlinks, operaciones relativas a descriptores y enlaces duros en el filesystem de destino. Si no está disponible, conserva la vista previa y usa un destino protegido compatible; no desactives los controles. En Bash, clona main integrado e inspecciona el código antes de instalar:
 
     git --version
     python3 --version
@@ -59,6 +59,8 @@ Revisa archivos nuevos también; SHA completo canónico verificable, exclusión 
 
 Desde el proyecto ejecuta project-os-v3, selecciona workflow (Enter: continue), skills y contexto; previsualiza y guarda. O usa CLI:
 
+    project-os-v3 --project "$PWD" --workflow continue
+    project-os-v3 --project "$PWD" --prototype --objective "Validar una hipótesis con datos simulados"
     project-os-v3 --project "$PWD" --workflow implement --objective "Implementar una tarea concreta"
     project-os-v3 --project "$PWD" --workflow review_for_close --locator 123 --objective "Revisar este PR"
 

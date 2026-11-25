@@ -1,5 +1,11 @@
 """Document regressions; these do not execute a browser agent.
 
+Text assertions are narrow documentation tripwires, not semantic or behavioral
+proof. Keep stable command tokens and links exact; avoid depending on prose
+punctuation or paragraph boundaries. Review semantic changes against the manual
+protocol, including review-only code mutation, checkpoint autonomy and resume
+controls that do not grant authorization.
+
 Manual protocol (not executed): in an explicitly authorized isolated test repo,
 record adapter version, inputs, calls, permissions, HEAD and remote state before
 and after each scenario. Test absent/ambiguous GO and explicit GO; connector
@@ -83,11 +89,9 @@ class BrowserCloseoutContract(unittest.TestCase):
 
     def test_branch_cleanup_safe_command_is_distinct_from_prohibition(self):
         # Do not case-fold: git branch -D is force deletion, not git branch -d.
-        prohibition = self.shared.split('No uses `git reset --hard`', 1)[1].split('por defecto.', 1)[0]
-        self.assertIn('`git branch -D`', prohibition)
-        instruction = self.adapter.split('Si corresponde y la rama local está integrada, usa ', 1)[1].split(' tras las comprobaciones', 1)[0]
-        self.assertEqual(instruction, '`git branch -d <rama>`')
-        self.assertNotRegex(instruction, r'git branch\s+-D\b')
+        self.assertRegex(self.shared, r'No uses[^\n]*`git branch -D`')
+        self.assertIn('`git branch -d <rama>`', self.adapter)
+        self.assertNotRegex(self.adapter, r'git branch\s+-D\b')
         self.assertIn('si falla, detente y conserva la rama', self.adapter)
 
     def test_close_and_review_route_to_adapter(self):
