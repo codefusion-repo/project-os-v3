@@ -41,7 +41,7 @@ class WorkerLifecycleTests(unittest.TestCase):
         entered, release, cleaned = (threading.Event() for _ in range(3))
         verifier = Mock()
         verifier.enabled.return_value = True
-        server = Mock(started=False)
+        server = Mock(started=False, should_exit=False)
         def drain(*args, **kwargs):
             entered.set()
             if not release.wait(3):
@@ -71,7 +71,7 @@ class WorkerLifecycleTests(unittest.TestCase):
         self.assertTrue(server.should_exit)
 
     def test_startup_failure_never_dispatches(self):
-        server = Mock(started=False)
+        server = Mock(started=False, should_exit=False)
         verifier = Mock()
         verifier.enabled.return_value = True
         with patch("project_os_bridge.authenticated.run_pending") as drain:

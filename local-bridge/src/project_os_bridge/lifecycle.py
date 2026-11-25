@@ -1,5 +1,8 @@
 """Local-only user-systemd lifecycle for the exact prepared private unit."""
 import argparse
+import fcntl
+import stat
+from contextlib import contextmanager
 import os
 import subprocess
 import sys
@@ -22,6 +25,24 @@ def systemctl(*args):
         ["/usr/bin/systemctl", "--user", "--no-pager", *args],
         env=env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
         stderr=subprocess.DEVNULL, text=True, timeout=150, check=False)
+
+
+@contextmanager
+def exclusive_lifecycle():
+    # The unit name is shared by all instances for this user, so lock at user scope.
+    directory = Path(f"/run/user/{os.getuid()}")
+    private_directory(directory)
+    fd = os.open(directory / "project-os-bridge-lifecycle.lock",
+                 os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW | os.O_NONBLOCK, 0o600)
+    try:
+        info = os.fstat(fd)
+        if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
+                or info.st_nlink != 1 or info.st_mode & 0o077):
+            raise PermissionError("Unsafe lifecycle lock")
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        yield
+    finally:
+        os.close(fd)
 
 
 def prepared_unit(root):
@@ -109,7 +130,12 @@ def operate(unit, action, call=systemctl):
     else:
         raise ValueError("Unknown lifecycle operation")
     # No retry, no restart, no --now, no mutation of another unit.
-    result = call(*args)
+    try:
+        result = call(*args)
+    except subprocess.TimeoutExpired:
+        # A timeout does not mean systemd did not apply the operation.
+        snapshot(unit, call)
+        raise RuntimeError("Lifecycle outcome unconfirmed; inspect status before retry") from None
     after = snapshot(unit, call)
     if result.returncode or not check(after):
         raise RuntimeError("Lifecycle outcome unconfirmed; inspect status before retry")
@@ -122,7 +148,9 @@ def main():
     parser.add_argument("action", choices=("link", "start", "stop", "status", "enable", "disable"))
     args = parser.parse_args()
     try:
-        state = operate(prepared_unit(args.root), args.action)
+        unit = prepared_unit(args.root)
+        with exclusive_lifecycle():
+            state = operate(unit, args.action)
         print(f"linked={state['linked']} active={state['active']} enabled={state['enabled']}")
     except (OSError, ValueError, RuntimeError, subprocess.SubprocessError):
         print("LIFECYCLE_BLOCKED_OR_UNCONFIRMED; inspect local status", file=sys.stderr)

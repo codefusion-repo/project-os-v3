@@ -1,11 +1,13 @@
 import tempfile
+import subprocess
+import os
 import threading
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
-from project_os_bridge.lifecycle import operate, UNIT
+from project_os_bridge.lifecycle import operate, UNIT, exclusive_lifecycle
 from project_os_bridge.authenticated import serve_with_worker
 
 
@@ -72,6 +74,23 @@ class LifecycleTests(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             operate(self.unit, "start", call)
         self.assertEqual([c.args for c in call.call_args_list if c.args[0] != "show"], [("start", UNIT)])
+
+    def test_timeout_reconciles_without_retry(self):
+        call = Mock(side_effect=[self.status(), subprocess.TimeoutExpired("start", 1),
+                                 self.status(active="active")])
+        with self.assertRaisesRegex(RuntimeError, "unconfirmed"):
+            operate(self.unit, "start", call)
+        self.assertEqual([c.args for c in call.call_args_list if c.args[0] != "show"], [("start", UNIT)])
+
+    def test_user_lifecycle_lock_excludes_second_controller(self):
+        # Use only temporary synthetic state, not the actual user runtime directory.
+        with patch("project_os_bridge.lifecycle.Path", return_value=self.unit.parent):
+            with exclusive_lifecycle():
+                with self.assertRaises(BlockingIOError):
+                    with exclusive_lifecycle():
+                        self.fail("second controller admitted")
+            with exclusive_lifecycle():
+                self.assertTrue((self.unit.parent / "project-os-bridge-lifecycle.lock").is_file())
 
 
 class WorkerReadinessTests(unittest.TestCase):
