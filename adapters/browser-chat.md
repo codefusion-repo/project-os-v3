@@ -1,6 +1,6 @@
 # Adapter: browser chat
 
-Aplica [PROJECT_OS.md](../PROJECT_OS.md) como autoridad metodológica y recupera su versión según AGENTS.md. Este adapter concreta mecanismos de la superficie, no redefine reglas.
+Aplica [PROJECT_OS.md](../PROJECT_OS.md) como autoridad metodológica y recupera su versión según AGENTS.md. Este adapter concreta mecanismos de la superficie, no redefine reglas. Si se pega como texto en una sesión nueva, identifica el repositorio mediante el locator del PM, lee AGENTS.md y recupera y verifica PROJECT_OS.md desde la referencia aplicable antes de cualquier mutación. Si no puedes recuperar o verificar la metodología, detén toda mutación y entrega solo diagnóstico de lectura y el bloqueo; no uses el texto pegado como sustituto.
 
 ## Implementación directa
 
@@ -14,7 +14,7 @@ Mapea review.read a consultas reales del conector y review.publish a creación d
 
 Aplica los gates de [implementación, testing y review](../PROJECT_OS.md#implementación-testing-y-review). Para merge mediante conector exige expected_head_sha atómico igual al SHA revisado. Si no existe capacidad efectiva para una acción autorizada, distingue la causa y entrega solo un bloque gh/Git con comentarios breves y preflight: compara HEAD con el SHA revisado, usa gh pr merge --match-head-commit con método permitido, ready si procede, verifica merge, SHA, base y checks y cierra únicamente el issue identificado cuando los gates centrales lo permitan. No uses --admin ni --force. Ante resultado ambiguo consulta estado e historial antes de reintentar.
 
-Para limpieza local autorizada sin checkout accesible, entrega comandos de identidad, git status, git worktree list y ancestry hacia base integrada; usa git branch -d solo si corresponde y está integrada, detente si falla. Aplica [seguridad y límites](../PROJECT_OS.md#seguridad-transversal-y-límites).
+Para limpieza local autorizada sin checkout accesible, entrega comandos de identidad, git status, git worktree list y ancestry hacia base integrada; Si corresponde y la rama local está integrada, usa `git branch -d <rama>` tras las comprobaciones; si falla, detente y conserva la rama. Aplica [seguridad y límites](../PROJECT_OS.md#seguridad-transversal-y-límites).
 
 En éxito entrega resultado, enlaces verificados y comandos locales restantes; en BLOCKED o PASS pendiente, findings o permiso faltante y evidencia. Sin capacidad aplica el fallback anterior; sin bundles.
 

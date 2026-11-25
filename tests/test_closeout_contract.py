@@ -26,6 +26,7 @@ ROOT = Path(__file__).resolve().parents[1]
 class BrowserCloseoutContract(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
+        cls.shared = (ROOT / 'PROJECT_OS.md').read_text(encoding='utf-8')
         # Count exactly the complete UTF-8 decoded file intended for pasting.
         cls.adapter = (ROOT / 'adapters/browser-chat.md').read_text(encoding='utf-8')
 
@@ -33,22 +34,28 @@ class BrowserCloseoutContract(unittest.TestCase):
         self.assertLessEqual(len(self.adapter), 7500,
                              f'Complete adapter: {len(self.adapter)} Unicode code points')
 
-    def test_closeout_retains_core_safety_in_paste_artifact(self):
-        closeout = self.adapter.split('## Review y closeout en una operación', 1)[1].split('## Instrucciones', 1)[0]
+    def test_pasted_adapter_requires_verified_methodology(self):
+        for phrase in ('lee AGENTS.md', 'recupera y verifica PROJECT_OS.md',
+                       'antes de cualquier mutación', 'detén toda mutación'):
+            self.assertIn(phrase, self.adapter)
+        self.assertIn('../PROJECT_OS.md#implementación-testing-y-review', self.adapter)
+        self.assertIn('../PROJECT_OS.md#seguridad-transversal-y-límites', self.adapter)
+
+    def test_closeout_retains_core_safety_in_central_policy(self):
         for phrase in ('autorización explícita', 'HEAD completo', 'checks', 'permisos',
-                       'expected_head_sha', '--match-head-commit', 'fallo ambiguo',
-                       'issue vinculado', 'ninguna mutación no concedida'):
-            with self.subTest(phrase=phrase):
-                self.assertIn(phrase, closeout)
-        for phrase in ('issue vinculado y estado', 'closed/completed',
+                       'fallo ambiguo', 'issue vinculado y estado',
+                       'ninguna mutación no concedida', 'closed/completed',
                        'Si ya está cerrado no repitas', 'sin otra confirmación',
-                       'PASS / CLOSEOUT PENDIENTE DE AUTORIZACIÓN', '**BLOCKED**',
+                       'PASS / CLOSEOUT PENDIENTE DE AUTORIZACIÓN', 'BLOCKED',
                        'previa verificable o dada en esta solicitud', 'ancestry'):
-            self.assertIn(phrase, closeout)
+            with self.subTest(phrase=phrase):
+                self.assertIn(phrase, self.shared)
+        for phrase in ('expected_head_sha', '--match-head-commit', 'ancestry'):
+            self.assertIn(phrase, self.adapter)
 
     def test_branch_cleanup_safe_command_is_distinct_from_prohibition(self):
         # Do not case-fold: git branch -D is force deletion, not git branch -d.
-        prohibition = self.adapter.split('No uses `git reset --hard`', 1)[1].split('por defecto.', 1)[0]
+        prohibition = self.shared.split('No uses `git reset --hard`', 1)[1].split('por defecto.', 1)[0]
         self.assertIn('`git branch -D`', prohibition)
         instruction = self.adapter.split('Si corresponde y la rama local está integrada, usa ', 1)[1].split(' tras las comprobaciones', 1)[0]
         self.assertEqual(instruction, '`git branch -d <rama>`')
