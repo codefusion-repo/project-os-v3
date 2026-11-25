@@ -2,6 +2,10 @@
 
 Kit Markdown-first para pasar de una intención a un resultado verificable con la menor fricción útil. Un workflow describe un resultado; una skill aporta una técnica; un template ayuda cuando existe un artefacto; el selector previsualiza y guarda prompts Markdown, sin ejecutar workflows ni autorizar acciones. Aplica las skills base [repo-context](skills/repo-context/SKILL.md) para tareas con repositorio y [github-traceability](skills/github-traceability/SKILL.md) según su contrato, también sin selector; carga solo las skills especializadas útiles. En un experimento local y descartable sin repositorio, no exijas consultas GitHub ni publicación remota. Una skill pedida explícitamente se selecciona, pero no amplía permisos.
 
+## Arquitectura de ejecución adaptativa (decisión aprobada)
+
+Browser Chat es el orquestador y ejecutor directo. Codex será un provider opcional, preferente únicamente en modo auto autorizado y con disponibilidad confirmada. Si su cuota se agota, Browser Chat continúa mediante sus capacidades efectivas, sin duplicar efectos ni perder el estado. El cambio de ejecutor exige recuperar issue, PR, HEAD, diff, jobs y evidencia, comprobar que el ejecutor anterior no sigue trabajando y mantener las mismas autorizaciones y gates. No se ejecutan dos agentes sobre el mismo worktree. La selección no concede permisos. El MVP actual usa ejecución browser directa; Codex y el enrutamiento automático no están implementados ni habilitados. Ver [contrato MVP](local-bridge/MVP.md).
+
 ## Ruta común
 
 1. Con el repositorio identificado, recupera objetivo y estado desde instrucciones, archivos y fuentes GitHub vivas disponibles: issues, PRs, commits, diffs, checks, findings y blockers pertinentes. No dependas del historial del chat: haz un cold start completo solo cuando sea necesario y una comprobación acotada al continuar, sin recorrer todo el repo ni consultar todos los issues/PRs sin justificación. Distingue hechos, inferencias y propuestas; pide como máximo un locator primario solo ante ambigüedad material no resoluble con evidencia y continúa el trabajo seguro.
@@ -13,7 +17,7 @@ Para un prototipo, [implement](workflows/implement.md) con [rapid-prototype](ski
 
 ## Trazabilidad GitHub obligatoria
 
-Toda implementación, corrección o modificación versionada destinada a integrarse en un proyecto GitHub debe dejar evidencia remota identificable. Una solicitud de implementar o corregir en el repositorio autoriza al agente terminal a preparar y publicar sus propios cambios en una rama, abrir un PR draft si no existe uno para el resultado y registrar la ejecución, siempre dentro del alcance solicitado y sujeto a restricciones superiores, instrucciones contrarias y permisos efectivos. No pidas una autorización redundante para esos pasos. Aplica [github-traceability](skills/github-traceability/SKILL.md), también al operar directamente con Markdown. El kit o la capacidad por sí solos no conceden autorización; merge, cierre, release y deploy requieren autorización explícita para cada acción, previa o en la misma solicitud, y no otra confirmación si sigue vigente.
+Toda implementación, corrección o modificación versionada destinada a integrarse en un proyecto GitHub debe dejar evidencia remota identificable. Una solicitud de implementar o corregir en el repositorio autoriza al agente que implementa (browser o terminal) a preparar y publicar sus propios cambios en una rama, abrir un PR draft si no existe uno para el resultado y registrar la ejecución, siempre dentro del alcance solicitado y sujeto a restricciones superiores, instrucciones contrarias y permisos efectivos. No pidas una autorización redundante para esos pasos. Aplica [github-traceability](skills/github-traceability/SKILL.md), también al operar directamente con Markdown. El kit o la capacidad por sí solos no conceden autorización; merge, cierre, release y deploy requieren autorización explícita para cada acción, previa o en la misma solicitud, y no otra confirmación si sigue vigente.
 
 El procedimiento para commits, checks, comentario nuevo por cada ejecución material autorizada —incluidos intentos y fallas—, borrador y trazabilidad pendiente está en la skill base; no edites historia. La excepción para experimentos locales descartables y la publicación de reviews se definen allí.
 
@@ -52,7 +56,7 @@ Estos criterios de evidencia y veracidad son comunes a todos los workflows y ada
 
 Las capacidades de una herramienta no son autorización. Detén solo la acción sensible que carezca de permiso explícito: merge, cierre final, release o publicación de producto, despliegue, borrado destructivo, cambios de permisos, settings, secrets, credenciales o auth/pagos productivos. El push y PR de implementación siguen la autorización de la solicitud descrita arriba. Continúa el trabajo seguro y explica la decisión pendiente. No expongas valores de secretos; usa `[REDACTED]`. Si una fuente no está disponible, informa el límite sin inventar.
 
-Elige el [adapter de terminal](adapters/terminal-agent.md) o [browser chat](adapters/browser-chat.md) según capacidades reales. El kit no mantiene estado, no es un motor de workflows y no depende de v2.
+Elige el [adapter de terminal](adapters/terminal-agent.md) o [browser chat](adapters/browser-chat.md) según capacidades reales. El núcleo Markdown y selector no mantienen estado de ejecución ni dependen de v2. El Local Bridge opcional mantiene sus propios jobs SQLite; consulta [arquitectura y piloto](local-bridge/MVP.md).
 
 ## Instalación, adopción y versión del proyecto
 

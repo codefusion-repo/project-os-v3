@@ -1,0 +1,204 @@
+"""Local-only durable job core. Never register these operations on unauthenticated MCP."""
+import json
+import re
+import sqlite3
+import uuid
+from contextlib import closing, contextmanager
+from datetime import datetime, timezone
+from pathlib import Path
+
+from .probe import Probe
+
+
+def now():
+    return datetime.now(timezone.utc).isoformat()
+
+
+class Policy:
+    """Explicit local grants; caller identity must come from trusted transport, not tool input."""
+    def __init__(self, grants):
+        self.grants = frozenset(grants)
+
+    def require(self, principal, operation, resource):
+        if not principal or (principal, operation, resource) not in self.grants:
+            raise PermissionError("DENIED")
+
+
+class QueueLimitError(RuntimeError):
+    pass
+
+
+class Jobs:
+    """Single-host SQLite queue; no automatic retry of interrupted side effects."""
+    def __init__(self, root: Path, policy: Policy, *, workflows=("probe_check",)):
+        self.probe = Probe(root)
+        self.policy = policy
+        self.workflows = frozenset(workflows)
+        if not self.workflows <= {"probe_check", "git_fixture_check"}:
+            raise ValueError("Unknown workflow configuration")
+        self.db = root / "jobs.sqlite3"
+        import os
+        try:
+            fd = os.open(self.db, os.O_CREAT | os.O_EXCL | os.O_WRONLY | os.O_NOFOLLOW, 0o600)
+            os.close(fd)
+        except FileExistsError:
+            pass
+        with self.transaction() as c:
+            c.execute("""CREATE TABLE IF NOT EXISTS jobs (
+                id TEXT PRIMARY KEY, principal TEXT NOT NULL, resource TEXT NOT NULL,
+                workflow TEXT NOT NULL, request_key TEXT NOT NULL, state TEXT NOT NULL,
+                result TEXT, created TEXT NOT NULL, updated TEXT NOT NULL,
+                UNIQUE(principal, resource, request_key))""")
+            c.execute("""CREATE TABLE IF NOT EXISTS events (
+                id INTEGER PRIMARY KEY, job_id TEXT NOT NULL, state TEXT NOT NULL,
+                at TEXT NOT NULL)""")
+
+            # Legacy interrupted/uncertain fixtures have no recorded identity.
+            # Do not infer absence or silently migrate their external effects.
+            exists = c.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='fixture_effects'").fetchone()
+            c.execute("""CREATE TABLE IF NOT EXISTS fixture_effects (
+                job_id TEXT PRIMARY KEY, token TEXT, resolved_at TEXT)""")
+            if not exists:
+                for row in c.execute("SELECT id,state,result FROM jobs WHERE workflow='git_fixture_check' AND state NOT IN ('QUEUED','CANCELLED')").fetchall():
+                    result = json.loads(row["result"] or "{}")
+                    steps = result.get("steps", [])
+                    if row["state"] == "SUCCEEDED" and steps and steps[-1].get("cleanup_verified") is True:
+                        continue
+                    c.execute("INSERT INTO fixture_effects VALUES(?,NULL,NULL)", (row["id"],))
+
+    def pending_effects(self):
+        with self.transaction() as c:
+            return [dict(row) for row in c.execute("SELECT job_id,token FROM fixture_effects WHERE resolved_at IS NULL ORDER BY job_id")]
+
+    def resolve_effect(self, job_id, token):
+        """Local reconciliation caller must hold exclusive worker lock and prove absence."""
+        with self.transaction() as c:
+            cur = c.execute("UPDATE fixture_effects SET resolved_at=? WHERE job_id=? AND token=? AND resolved_at IS NULL",
+                            (now(),job_id,token))
+            if cur.rowcount != 1:
+                raise RuntimeError("Reconciliation identity conflict")
+
+    @contextmanager
+    def transaction(self):
+        self.probe._check_directory()
+        self.probe._check_file(self.db)
+        with closing(sqlite3.connect(self.db, timeout=5)) as c, c:
+            c.row_factory = sqlite3.Row
+            c.execute("BEGIN IMMEDIATE")
+            yield c
+
+    def event(self, c, job_id, state):
+        c.execute("INSERT INTO events(job_id,state,at) VALUES(?,?,?)", (job_id,state,now()))
+
+    def submit(self, principal, resource, workflow, request_key):
+        self.policy.require(principal, "submit", resource)
+        if resource != "disposable" or workflow not in self.workflows:
+            raise ValueError("Unknown workflow or resource")
+        if workflow == "git_fixture_check":
+            self.policy.require(principal, "git_workflow", resource)
+        if not isinstance(request_key, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,80}", request_key):
+            raise ValueError("Invalid request key")
+        with self.transaction() as c:
+            row = c.execute("SELECT * FROM jobs WHERE principal=? AND resource=? AND request_key=?",
+                            (principal,resource,request_key)).fetchone()
+            if row:
+                if row["workflow"] != workflow:
+                    raise ValueError("Idempotency conflict")
+                return row["id"]
+            if c.execute("SELECT 1 FROM fixture_effects WHERE resolved_at IS NULL LIMIT 1").fetchone():
+                raise QueueLimitError("RECONCILIATION_REQUIRED")
+            # Bound total retained rows and active work; no implicit deletion.
+            if c.execute("SELECT count(*) FROM jobs").fetchone()[0] >= 10000:
+                raise QueueLimitError("JOB_STORAGE_LIMIT")
+            if c.execute("SELECT count(*) FROM jobs WHERE principal=? AND state IN ('QUEUED','RUNNING')",
+                         (principal,)).fetchone()[0] >= 32:
+                raise QueueLimitError("ACTIVE_JOB_LIMIT")
+            if workflow == "git_fixture_check" and c.execute(
+                    "SELECT count(*) FROM jobs WHERE workflow='git_fixture_check'").fetchone()[0] >= 8:
+                raise QueueLimitError("FIXTURE_STORAGE_LIMIT")
+            job_id = uuid.uuid4().hex
+            stamp = now()
+            c.execute("INSERT INTO jobs VALUES(?,?,?,?,?,?,?,?,?)",
+                      (job_id,principal,resource,workflow,request_key,"QUEUED",None,stamp,stamp))
+            self.event(c, job_id, "QUEUED")
+            return job_id
+
+    def get(self, principal, job_id):
+        with self.transaction() as c:
+            row = c.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone()
+            if not row or row["principal"] != principal:
+                raise PermissionError("DENIED")
+            self.policy.require(principal, "read", row["resource"])
+            return {"id": row["id"], "state": row["state"],
+                    "result": json.loads(row["result"]) if row["result"] else None}
+
+    def evidence(self, principal, job_id):
+        with self.transaction() as c:
+            row = c.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone()
+            if not row or row["principal"] != principal:
+                raise PermissionError("DENIED")
+            self.policy.require(principal, "read", row["resource"])
+            events = c.execute("SELECT state,at FROM events WHERE job_id=? ORDER BY id",
+                               (job_id,)).fetchall()
+            return {"id":row["id"], "workflow":row["workflow"], "state":row["state"],
+                    "result":json.loads(row["result"]) if row["result"] else None,
+                    "events":[dict(event) for event in events]}
+
+    def claim(self):
+        with self.transaction() as c:
+            if c.execute("SELECT 1 FROM fixture_effects WHERE resolved_at IS NULL LIMIT 1").fetchone():
+                return None
+            while True:
+                row = c.execute("SELECT * FROM jobs WHERE state='QUEUED' ORDER BY created,id LIMIT 1").fetchone()
+                if not row:
+                    return None
+                try:
+                    self.policy.require(row["principal"], "submit", row["resource"])
+                    if row["workflow"] not in self.workflows:
+                        raise PermissionError("Workflow disabled")
+                    if row["workflow"] == "git_fixture_check":
+                        self.policy.require(row["principal"], "git_workflow", row["resource"])
+                except PermissionError:
+                    self.transition(c,row["id"],"QUEUED","BLOCKED")
+                    continue
+                self.transition(c,row["id"],"QUEUED","RUNNING")
+                claimed = dict(row)
+                if row["workflow"] == "git_fixture_check":
+                    token = uuid.uuid4().hex
+                    c.execute("INSERT INTO fixture_effects VALUES(?,?,NULL)", (row["id"],token))
+                    claimed["effect_token"] = token
+                return claimed
+
+    def transition(self,c,job_id,old,new,result=None):
+        cur = c.execute("UPDATE jobs SET state=?,result=?,updated=? WHERE id=? AND state=?",
+                        (new,json.dumps(result) if result is not None else None,now(),job_id,old))
+        if cur.rowcount != 1:
+            raise RuntimeError("State conflict")
+        self.event(c,job_id,new)
+
+    def finish(self,job_id,state,result, *, fixture_absent=False):
+        if state not in {"SUCCEEDED","FAILED","BLOCKED"}:
+            raise ValueError("Invalid terminal state")
+        with self.transaction() as c:
+            self.transition(c,job_id,"RUNNING",state,result)
+            if fixture_absent is True:
+                c.execute("UPDATE fixture_effects SET resolved_at=? WHERE job_id=? AND resolved_at IS NULL", (now(),job_id))
+
+    def cancel(self,principal,job_id):
+        with self.transaction() as c:
+            row = c.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone()
+            if not row or row["principal"] != principal:
+                raise PermissionError("DENIED")
+            self.policy.require(principal,"cancel",row["resource"])
+            if row["state"] != "QUEUED":
+                return False
+            self.transition(c,job_id,"QUEUED","CANCELLED")
+            return True
+
+    def recover_interrupted(self):
+        """Only call after exclusive worker lock is acquired."""
+        with self.transaction() as c:
+            rows = c.execute("SELECT id FROM jobs WHERE state='RUNNING'").fetchall()
+            for row in rows:
+                self.transition(c,row["id"],"RUNNING","INTERRUPTED")
+            return len(rows)

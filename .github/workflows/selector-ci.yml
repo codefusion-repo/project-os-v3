@@ -13,6 +13,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - name: Run stdlib tests
         run: python3 -m unittest discover -s tests -v
       - name: Test optional enhanced terminal
@@ -20,3 +22,187 @@ jobs:
           python3 -m venv /tmp/project-os-ci-venv
           /tmp/project-os-ci-venv/bin/python -m pip install 'prompt_toolkit==3.0.53'
           /tmp/project-os-ci-venv/bin/python -m unittest discover -s tests -v
+
+  probe:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Run installer and negative controls in disposable checkout
+        run: bash local-bridge/scripts/ci-install.sh
+
+  dependency-evidence:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Verify exact runtime closure and audit with locked tooling
+        run: bash local-bridge/scripts/ci-dependency-evidence.sh runtime
+
+  build-backend-evidence:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Verify backend wheel, offline build and locked audit
+        run: bash local-bridge/scripts/ci-dependency-evidence.sh build
+
+  powershell-wrapper:
+    runs-on: windows-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Test wrapper argument forwarding and failure propagation
+        shell: pwsh
+        run: ./local-bridge/tests/test_install_wrapper.ps1
+
+  oci-audit:
+    # Retain the legacy check name; it cannot pass unless both candidate replicas pass.
+    needs: [alpine-fixture-only]
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Test original rejection evaluator
+        run: python3 -m unittest discover -s local-bridge/scripts -p test_oci_original_control.py -v
+      - name: Prove exact rejection of original public fixture without executing it
+        run: bash local-bridge/scripts/ci-oci-original-control.sh
+      - name: Preserve original scanner report and exit evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: original-oci-rejection-evidence
+          path: ${{ runner.temp }}/lb-original-oci-evidence/
+          if-no-files-found: error
+          retention-days: 90
+      - name: Require both fixture-only replicas even for legacy check
+        if: always()
+        env:
+          CANDIDATE: ${{ needs.alpine-fixture-only.result }}
+        run: test "$CANDIDATE" = success
+
+  oci-comparison:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Test official manifest resolver and audit summaries
+        run: python3 -m unittest discover -s local-bridge/scripts -p test_oci_compare.py -v
+      - name: Compare official Python variants by platform digest (evidence only)
+        run: python3 local-bridge/scripts/oci_compare.py
+
+  alpine-remediation:
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        replica: [1, 2]
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Build and audit disposable Alpine candidate
+        run: bash local-bridge/scripts/ci-alpine-remediate.sh
+      - name: Preserve public OCI scanner evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: alpine-baseline-${{ matrix.replica }}-evidence
+          path: ${{ runner.temp }}/lb-oci-evidence/
+          if-no-files-found: error
+          retention-days: 90
+
+  alpine-residual:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        replica: [1, 2]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Evaluate residual security fixes in disposable runner
+        run: bash local-bridge/scripts/ci-alpine-remediate.sh residual
+      - name: Preserve public OCI scanner evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: alpine-residual-${{ matrix.replica }}-evidence
+          path: ${{ runner.temp }}/lb-oci-evidence/
+          if-no-files-found: error
+          retention-days: 90
+
+  alpine-fixture-only:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        replica: [1, 2]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Evaluate minimal fixture-only candidate in disposable runner
+        run: bash local-bridge/scripts/ci-alpine-remediate.sh fixture-only
+      - name: Preserve public OCI scanner evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: alpine-fixture-only-${{ matrix.replica }}-evidence
+          path: ${{ runner.temp }}/lb-oci-evidence/
+          if-no-files-found: error
+          retention-days: 90
+
+  oci-acceptance:
+    # PM-approved CI-only stdlib fixture; no local binding or general execution.
+    needs: [alpine-fixture-only, alpine-residual, oci-audit]
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Require both candidate replicas and both negative controls
+        env:
+          CANDIDATE: ${{ needs.alpine-fixture-only.result }}
+          RESIDUAL: ${{ needs.alpine-residual.result }}
+          ORIGINAL: ${{ needs.oci-audit.result }}
+        run: |
+          set -eu
+          test "$CANDIDATE" = success
+          test "$RESIDUAL" = success
+          test "$ORIGINAL" = success
+          echo 'OCI_ACCEPTANCE_PASS scope=ci-fixed-stdlib-fixture sha256:0c8e915d597f997fc64b7ddfc8e25de93873d06126faccbee1f46446deb30cfb'
