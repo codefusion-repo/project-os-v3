@@ -2,6 +2,10 @@
 
 Project OS is a Markdown-first coordination kit, not a SaaS, IDE or agent fleet. Browser Chat implements directly using authorized tools. GitHub Connector handles remote GitHub changes and evidence independently; Local Bridge handles bounded local jobs; neither grants permissions to the other. Terminal agents and Codex are optional. The approved target is adaptive execution; current MVP is browser-direct only.
 
+## Methodology invariant
+
+Local Bridge is an optional capability provider, not a replacement for the Project OS coordination methodology. All agents must preserve the versioned rules, workflows, skills, templates and adapters specified in [PROJECT_OS.md](../PROJECT_OS.md), regardless of execution provider. GitHub artifacts must use the applicable template and verified evidence; local job success does not waive review, authorization or closeout gates. No provider may silently change the pinned methodology version of an adopted repository.
+
 ## Approved adaptive execution architecture
 
 The PM approved this direction on 2026-11-24. Browser Chat remains the orchestrator, reviewer and direct executor. Future strategies: auto (prefer authorized available Codex, otherwise browser), browser (direct), codex (explicitly authorized Codex). No extra user-facing menu or command family. A router is a small selection policy, not a second workflow engine. Quota exhaustion must be based on verified signals, not guessed from arbitrary error text. Before switching executors, reconcile issue/PR, branch and full HEAD, pending diffs, job state, tests and uncertain side effects. Never run both against the same worktree; stop if previous execution cannot be verified. Same policy and security gates apply to both. No automatic retry of uncertain effects. Codex provider and routing are deferred, not implemented or invoked in this MVP. Use GitHub Connector and registered Local Bridge handlers directly.

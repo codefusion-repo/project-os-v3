@@ -6,6 +6,10 @@ Kit Markdown-first para pasar de una intención a un resultado verificable con l
 
 Browser Chat es el orquestador y ejecutor directo. Codex será un provider opcional, preferente únicamente en modo auto autorizado y con disponibilidad confirmada. Si su cuota se agota, Browser Chat continúa mediante sus capacidades efectivas, sin duplicar efectos ni perder el estado. El cambio de ejecutor exige recuperar issue, PR, HEAD, diff, jobs y evidencia, comprobar que el ejecutor anterior no sigue trabajando y mantener las mismas autorizaciones y gates. No se ejecutan dos agentes sobre el mismo worktree. La selección no concede permisos. El MVP actual usa ejecución browser directa; Codex y el enrutamiento automático no están implementados ni habilitados. Ver [contrato MVP](local-bridge/MVP.md).
 
+## Invariancia de la metodología entre proveedores
+
+Project OS v3 es la autoridad metodológica versionada: reglas, workflows, skills, templates y adapters aplicables se conservan al incorporar o cambiar cualquier proveedor. Local Bridge, GitHub Connector, terminal y futuros providers son capacidades de ejecución, no workflows alternativos ni fuentes de autorización. Con o sin selector, el agente debe recuperar la versión aplicable desde AGENTS.md, leer el workflow y las skills pertinentes, aplicar sus gates y utilizar los templates exigibles. La falta de una capacidad no permite sustituir ni omitir la metodología; informa el bloqueo y continúa únicamente las acciones seguras autorizadas. No copies el kit ni cambies automáticamente el SHA fijado de proyectos adoptados.
+
 ## Ruta común
 
 1. Con el repositorio identificado, recupera objetivo y estado desde instrucciones, archivos y fuentes GitHub vivas disponibles: issues, PRs, commits, diffs, checks, findings y blockers pertinentes. No dependas del historial del chat: haz un cold start completo solo cuando sea necesario y una comprobación acotada al continuar, sin recorrer todo el repo ni consultar todos los issues/PRs sin justificación. Distingue hechos, inferencias y propuestas; pide como máximo un locator primario solo ante ambigüedad material no resoluble con evidencia y continúa el trabajo seguro.
@@ -13,7 +17,7 @@ Browser Chat es el orquestador y ejecutor directo. Codex será un provider opcio
 3. Trabaja y valida proporcionalmente al riesgo. Registra comandos, resultados y exit codes reales; identifica lo no probado y no inventes cobertura, aprobaciones ni estado remoto.
 4. Entrega resultado, rutas o referencias, evidencia, riesgos y siguiente paso. Reutiliza el issue/PR existente durante implementación, review y correcciones; si no existe, crea uno solo cuando aporte valor y esté autorizado. Relaciona las referencias verificadas de issue, PR, commits, diff, checks, findings, decisiones y correcciones.
 
-Para un prototipo, [implement](workflows/implement.md) con [rapid-prototype](skills/rapid-prototype/SKILL.md) recorre idea → slice vertical → validación; un experimento expresamente local y descartable puede terminar sin publicación. Los [templates](templates/) son adaptables, nunca formularios obligatorios.
+Para un prototipo, [implement](workflows/implement.md) con [rapid-prototype](skills/rapid-prototype/SKILL.md) recorre idea → slice vertical → validación; un experimento expresamente local y descartable puede terminar sin publicación. Los [templates](templates/) son adaptables en sus campos, pero su aplicación es obligatoria para los artefactos GitHub definidos en la sección de selección de templates.
 
 ## Trazabilidad GitHub obligatoria
 
@@ -25,7 +29,9 @@ El workflow [review_for_close](workflows/review_for_close.md) revisa y ejecuta e
 
 ## Selección de templates
 
-Cuando debas producir un artefacto, evalúa y consulta el template pertinente si aporta valor. Adapta su estructura a la evidencia y al resultado solicitado: omite campos irrelevantes o sin datos; no inventes resultados ni fuerces formularios. Si no puedes acceder al template, informa el límite y entrega lo seguro con la evidencia disponible. Preparar un borrador no autoriza publicarlo ni ejecutar la acción.
+**Aplicación obligatoria en GitHub:** antes de crear o actualizar un issue, PR, registro de ejecución, review, comentario de review, decisión material, merge, cierre o preparación de release, lee el template correspondiente de la versión aplicable y úsalo como estructura del artefacto. Conserva sus secciones sustantivas, encabezados y tablas de evidencia cuando existan; adapta campos, omite los irrelevantes y declara explícitamente lo no verificado. No reemplaces el template por un párrafo libre, no publiques placeholders sin resolver ni inventes datos. En una review bloqueada registra findings y SHA; un merge con evidencia suficiente puede evitar el comentario redundante previsto en la skill de trazabilidad. Una descripción de PR es un resumen vigente: actualiza HEAD, cambios, checks, riesgos y evidencia al finalizar una ejecución material que los cambie, sin editar comentarios históricos. Si no puedes leer el template o verificar la publicación, informa trazabilidad pendiente y conserva un borrador seguro; no declares conformidad. Preparar un borrador no autoriza publicarlo ni ejecutar la acción.
+
+Para otros artefactos y respuestas conversacionales utiliza el template pertinente cuando corresponda, sin imponer reportes innecesarios. Antes de publicar, comprueba que el contenido real corresponde al template, que sus secciones sustantivas están presentes y que evidencia, alcance y permisos coinciden con fuentes vivas. Después de publicar, relee el artefacto y verifica contenido, identidad cuando corresponda, URL y SHA. Si una unidad vigente incumple el contrato, corrige su resumen preservando el original y registra la rectificación en una entrada nueva autorizada; nunca reescribas comentarios históricos.
 
 - [task](templates/task.md): concretar una tarea o resultado verificable.
 - [issue](templates/issue.md): preparar un issue cuando aporta valor y está autorizado.
