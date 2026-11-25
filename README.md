@@ -31,6 +31,10 @@ project-os-v3 --list
 
 `export PATH=...` agrega el launcher solo a **esta sesión de shell**. Si abres otra terminal y no se encuentra `project-os-v3`, repite ese `export` o configura tu PATH manualmente. El instalador no modifica `~/.bashrc` ni requiere `sudo`. `prompt_toolkit` es opcional; ante fallo de instalación, el launcher puede usar Python estándar.
 
+### Conectar proveedores
+
+El selector existente ofrece una guía local de solo lectura: `project-os-v3 --providers terminal`, `project-os-v3 --providers chatgpt` o `project-os-v3 --providers both`. No instala ni autentica automáticamente. La presencia en PATH no acredita versiones, credenciales, aislamiento ni permisos. Para ChatGPT, conecta GitHub Connector independientemente del Local Bridge opcional; sigue [instalación revisada](local-bridge/README.md), [WorkOS y túnel](local-bridge/WORKOS.md) y [validación independiente](local-bridge/WSL-VALIDATION.md). PowerShell utiliza WSL para ejecutar el mismo selector instalado. Conserva instalaciones y configuración privadas; no copies secretos al chat. La certificación real de Windows/WSL, instalación integral y rollback permanece pendiente.
+
 ### Actualización posterior
 
 Desde el **mismo checkout central** (no desde un proyecto adoptado):
