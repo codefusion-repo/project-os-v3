@@ -18,7 +18,9 @@ from mcp.server.auth.middleware.bearer_auth import AuthenticatedUser
 from starlette.middleware import Middleware
 from starlette.middleware.authentication import AuthenticationMiddleware
 from starlette.responses import JSONResponse
-from pydantic import AnyHttpUrl
+from starlette.routing import Route
+from starlette.middleware.cors import CORSMiddleware
+from mcp.server.auth.routes import build_resource_metadata_url
 
 from .workos_auth import Verifier, SCOPE, load_config
 from .core import Jobs, Policy
@@ -45,9 +47,13 @@ def fixture_enabled(verifier, image):
 def build_server(verifier, jobs, fixture_reader=None, *, fixture_image=None, diagnostics=None):
     mcp = MCPServer("Project OS authenticated disposable jobs",
                     token_verifier=verifier,
-                    auth=AuthSettings(issuer_url=AnyHttpUrl(verifier.issuer),
-                                      resource_server_url=AnyHttpUrl(verifier.resource),
-                                      required_scopes=[SCOPE],validate_token_resource=True))
+                    # Let AuthSettings preserve the exact path-less issuer string.
+                    auth=AuthSettings.model_validate({
+                        "issuer_url": verifier.issuer,
+                        "resource_server_url": verifier.resource,
+                        "required_scopes": [SCOPE],
+                        "validate_token_resource": True,
+                    }))
     read = ToolAnnotations(read_only_hint=True,open_world_hint=False)
     write = ToolAnnotations(read_only_hint=False,destructive_hint=False,idempotent_hint=True,open_world_hint=False)
 
@@ -140,40 +146,26 @@ def build_http_app(verifier, jobs, fixture_reader=None, *, audit=None, limit=120
         stateless_http=True, json_response=True, max_request_body_size=65536,
         host="127.0.0.1",
     )
-    # SDK v2.3.0 derives discovery scopes from required_scopes. Renewal
-    # must be advertised without requiring offline_access on every access token.
-    # Keep the SDK's canonical route, method and CORS handling, but use the
-    # same metadata endpoint for the canonical path and the two tunnel aliases.
-    from urllib.parse import urlsplit
-    from starlette.responses import JSONResponse
-    from starlette.routing import Route
-    from starlette.middleware.cors import CORSMiddleware
-
+    # MCP authorization (SEP-2207): offline_access is negotiated with the
+    # authorization server, not advertised as a protected-resource scope.
+    # Preserve the SDK's canonical metadata handler (including CORS/cache)
+    # and reuse its exact ASGI endpoint for the fixed tunnel aliases.
     prefix = "/.well-known/oauth-protected-resource"
-    canonical = prefix + urlsplit(verifier.resource).path
-
-    async def metadata(request):
-        return JSONResponse({
-            "resource": verifier.resource,
-            "authorization_servers": [verifier.issuer],
-            "scopes_supported": [SCOPE, "offline_access"],
-            "bearer_methods_supported": ["header"],
-        })
-
+    canonical = build_resource_metadata_url(server.settings.auth.resource_server_url).path
     routes = app.router.routes
     matches = [route for route in routes if getattr(route, "path", None) == canonical]
-    if len(matches) != 1 or not isinstance(matches[0], Route):
-        raise RuntimeError("Expected exactly one SDK protected resource metadata route")
-    # Preserve discovery CORS for GET/OPTIONS on the fixed public endpoints.
-    for path in dict.fromkeys((canonical, prefix, prefix + "/mcp")):
-        if path != canonical and any(getattr(route, "path", None) == path for route in routes):
-            raise RuntimeError("Unexpected protected resource metadata alias")
-        route = Route(path, endpoint=metadata, methods=["GET", "OPTIONS"])
-        route.app = CORSMiddleware(route.app, allow_origins=["*"], allow_methods=["GET", "OPTIONS"])
+    if (len(matches) != 1 or not isinstance(matches[0], Route)
+            or not isinstance(matches[0].endpoint, CORSMiddleware)
+            or matches[0].methods != {"GET", "HEAD", "OPTIONS"}):
+        raise RuntimeError("Unexpected SDK protected resource metadata route")
+    metadata_route = matches[0]
+    for path in (prefix, prefix + "/mcp"):
         if path == canonical:
-            routes[routes.index(matches[0])] = route
-        else:
-            routes.append(route)
+            continue
+        if any(getattr(route, "path", None) == path for route in routes):
+            raise RuntimeError("Unexpected protected resource metadata alias")
+        routes.append(Route(path, endpoint=metadata_route.endpoint,
+                            methods=list(metadata_route.methods)))
 
     # SDK v2.3.0 authenticates before routing. Insert the local policy gate
     # immediately after that middleware; fail closed if the stack changes.

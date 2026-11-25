@@ -131,29 +131,36 @@ class AuthTests(unittest.TestCase):
         self.assertIsNotNone(self.verify(self.token()))
         self.assertIsNone(self.verify(self.token({"exp":1})))
 
-    def test_oauth_discovery_and_optional_refresh_scope(self):
+    def test_resource_discovery_excludes_refresh_scope(self):
         jobs = Jobs(self.root, Policy([(SUBJECT, "read", "disposable")]))
         app = build_http_app(self.verifier, jobs)
         prefix = "/.well-known/oauth-protected-resource"
         canonical = prefix + "/v1/mcp/tunnel_fixture"
         with TestClient(app, base_url="http://127.0.0.1:8765") as client:
+            # Metadata must remain public when the local opt-in is revoked.
+            self.flag.unlink()
             documents = []
+            cache_headers = []
             for path in (canonical, prefix, prefix + "/mcp"):
                 response = client.get(path, headers={"Origin": "https://chatgpt.com"})
                 self.assertEqual(response.status_code, 200)
                 self.assertEqual(response.headers.get("access-control-allow-origin"), "*")
                 documents.append(response.json())
+                cache_headers.append(response.headers.get("cache-control"))
                 preflight = client.options(path, headers={
                     "Origin": "https://chatgpt.com",
                     "Access-Control-Request-Method": "GET",
+                    "Access-Control-Request-Headers": "MCP-Protocol-Version",
                 })
                 self.assertEqual(preflight.status_code, 200)
                 self.assertEqual(client.post(path).status_code, 405)
             self.assertEqual(documents, [documents[0]] * 3)
+            self.assertTrue(cache_headers[0])
+            self.assertEqual(cache_headers, [cache_headers[0]] * 3)
             self.assertEqual(documents[0], {
                 "resource": RESOURCE,
                 "authorization_servers": [ISSUER],
-                "scopes_supported": ["openid", "offline_access"],
+                "scopes_supported": ["openid"],
                 "bearer_methods_supported": ["header"],
             })
             accept = {"Accept": "application/json, text/event-stream"}
@@ -164,12 +171,23 @@ class AuthTests(unittest.TestCase):
             self.assertEqual(denied.status_code, 401)
             self.assertIn("https://api.openai.com" + canonical,
                           denied.headers["www-authenticate"])
+            self.assertNotIn("offline_access", denied.headers["www-authenticate"])
+            valid = {**accept, "Authorization": "Bearer " + self.token({"scope": "openid"})}
+            revoked = client.post("/mcp", headers=valid, json=init)
+            self.assertEqual(revoked.status_code, 403)
+            self.assertNotIn("www-authenticate", revoked.headers)
+            self.flag.touch(mode=0o600)
             for scope in ("openid", "openid offline_access"):
                 response = client.post("/mcp", json=init, headers={
                     **accept, "Authorization": "Bearer " + self.token({"scope": scope}),
                 })
                 self.assertEqual(response.status_code, 200)
                 self.assertIn("result", response.json())
+            no_access = client.post("/mcp", json=init, headers={
+                **accept, "Authorization": "Bearer " + self.token({"scope": "offline_access"}),
+            })
+            self.assertEqual(no_access.status_code, 401)
+            self.assertNotIn("offline_access", no_access.headers["www-authenticate"])
         with jobs.transaction() as conn:
             self.assertEqual(conn.execute("SELECT count(*) FROM jobs").fetchone()[0], 0)
 
