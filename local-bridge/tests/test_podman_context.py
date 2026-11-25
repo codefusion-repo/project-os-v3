@@ -3,7 +3,7 @@ import os
 from pathlib import Path
 import tempfile
 import unittest
-from unittest.mock import Mock, patch
+from unittest.mock import patch
 from subprocess import CompletedProcess
 
 from project_os_bridge.podman_context import PodmanContext, FIXTURE_TAG
@@ -14,7 +14,7 @@ IMAGE_ID = "b" * 64
 
 class PodmanContextTests(unittest.TestCase):
     def setUp(self):
-        directory = tempfile.TemporaryDirectory()
+        directory = tempfile.TemporaryDirectory(prefix="lbc.", dir="/tmp")
         self.addCleanup(directory.cleanup)
         old = os.umask(0o077)
         self.addCleanup(os.umask, old)
