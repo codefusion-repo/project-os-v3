@@ -7,6 +7,36 @@ from pathlib import Path
 PRIVILEGED = {"sudo","wheel","docker","lxd","libvirt","disk","root","adm","podman","incus","shadow"}
 
 
+HOST_MOUNT_TYPES = {"9p", "drvfs", "virtiofs", "cifs", "smb3"}
+WSL_DRIVER_PATH = "/usr/lib/wsl/drivers"
+
+
+def mount_inventory(mountinfo):
+    """Classify visible mount targets for diagnosis, not trust or authorization."""
+    driver_path_seen = other_host_mount_seen = False
+    lines = mountinfo.splitlines()
+    if not lines:
+        raise ValueError("Empty mount inventory")
+    for line in lines:
+        left, separator, right = line.partition(" - ")
+        fields, filesystem = left.split(), right.split()
+        if not separator or len(fields) < 6 or len(filesystem) < 3:
+            raise ValueError("Malformed mount inventory")
+        if not fields[4].startswith("/"):
+            raise ValueError("Invalid mount target")
+        if filesystem[0] in HOST_MOUNT_TYPES:
+            # Exact path label only: never an allowlist or a provenance assertion.
+            if fields[4] == WSL_DRIVER_PATH:
+                driver_path_seen = True
+            else:
+                other_host_mount_seen = True
+    return {
+        "windows_mounts_absent": not (driver_path_seen or other_host_mount_seen),
+        "wsl_driver_path_mount_absent": not driver_path_seen,
+        "other_host_mounts_absent": not other_host_mount_seen,
+    }
+
+
 def inspect():
     results = {}
     uid = os.getuid()
@@ -24,8 +54,7 @@ def inspect():
     results["privileged_sockets_inaccessible"] = all(not os.access(p,os.W_OK,effective_ids=True) for p in sockets)
     # Mount inventory is conservative; unknown mount types require manual review.
     mountinfo = Path("/proc/self/mountinfo").read_text()
-    types = [line.split(" - ",1)[1].split()[0] for line in mountinfo.splitlines()]
-    results["windows_mounts_absent"] = not any(t in {"9p","drvfs","virtiofs","cifs","smb3"} for t in types)
+    results.update(mount_inventory(mountinfo))
     kernel = Path("/proc/sys/kernel/osrelease").read_text().lower()
     wsl = "microsoft" in kernel or "wsl" in kernel
     interop = Path("/proc/sys/fs/binfmt_misc/WSLInterop")

@@ -46,7 +46,7 @@ The validated disposable pilot at d5bf579b5adf43a6b8893d3d2005b5578f8b5f97 compl
 
 ## Account boundary inventory
 
-Run `python3 local-bridge/scripts/account_preflight.py` as the intended service user. It checks UID, known privileged groups, private home, effective traversal of other enumerated non-system homes, known privileged sockets, visible mount types and WSL interop indicators. It prints only booleans, never paths or account names. WSL always requires a separate host-boundary review; no automatic real-resource grant. This inventory cannot prove sudo policy, all ACLs, namespaces, remote endpoints or credential scopes. Do not run it as root to simulate the service account.
+Run `python3 local-bridge/scripts/account_preflight.py` as the intended service user. It checks UID, known privileged groups, private home, effective traversal of other enumerated non-system homes, known privileged sockets, visible mount types and WSL interop indicators. It prints only booleans, never paths or account names. The mount inventory distinguishes an exact driver-path label and other known host mount targets; both continue to block the strict absence gate. No path allowlist or provenance claim. The existing-WSL preparation path in WSL-VALIDATION.md is diagnostic only: direct access denial under a dedicated UID does not replace host/namespace/ACL review or independent certification. WSL always requires a separate host-boundary review; no automatic real-resource grant. This inventory cannot prove sudo policy, all ACLs, namespaces, remote endpoints or credential scopes. Do not run it as root to simulate the service account.
 
 ## Grouped independent validation
 

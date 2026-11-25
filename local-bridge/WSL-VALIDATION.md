@@ -35,6 +35,16 @@ default=bridge-service
 
 After explicitly checking the distribution name, terminate only the NEW distribution from PowerShell using `wsl --terminate <NEW-DISTRO>`, then reopen it using `wsl --distribution <NEW-DISTRO> --user bridge-service`. Do not use wsl --shutdown, unregister, or stop the pilot. WSL settings and user-systemd availability depend on the installed WSL version. See https://learn.microsoft.com/windows/wsl/wsl-config . Disabling interop may prevent Windows ADB access: do not re-enable it for this test.
 
+### Existing WSL: account-boundary preparation only (not independent certification)
+
+A reused development or pilot distribution can be assessed without replacing its administrator, exchange share, or installed kit. This is a separate preparation path, not a substitute for the new WSL/VM required by [#14](https://github.com/codefusion-repo/project-os-v3/issues/14). Do not start a new bridge, tunnel, or fixture while the independent boundary gate is unresolved. Do not stop, change or migrate the pilot in this procedure.
+
+If the operator chooses to provision a new service account for this assessment, use the dedicated-account checks above: separate non-privileged UID/group, private home, non-overlapping subordinate IDs, no sudo rules or privileged sockets. Preserve the administrator and current default WSL user. Do not copy the administrator's credentials, checkout, venv, Podman store or private state; any subsequent install uses its own reviewed checkout.
+
+Inspect the administrator and service-user mount views and effective ACLs locally. The inventory now distinguishes the exact WSL driver-path label from all other known host-backed mount targets. Neither is exempt from the strict gate. A visible path does not prove mount provenance; an inaccessible path does not prove absence of aliases, inherited file descriptors, or future mount propagation. Inspect the actual mount namespaces, mount sources/options and bind aliases, Windows ACLs and host account trust. Do not detach internal WSL mounts or disable the exchange share just to pass a check.
+
+For the named service account, verify direct read/write/traverse denial of the identified exchange mount and the administrator's home, and a synthetic marker outside the boundary. Use only synthetic data, never actual credentials. Test from the intended account, not root. An inaccessible directory is supporting evidence, not a replacement for the strict mount gate. Report only booleans, exit status and reviewed limitations, not paths or identities. Check the service-user Podman JSON separately, without pulling or running an image. A different UID on the same distribution is not independence from its administrator or the Windows host. Do not treat account-level preparation as LB-05 certification; any alternative production profile requires a separately reviewed threat model, live namespace/ACL evidence and reconciled acceptance criteria before activation.
+
 ## 2. Independent installation and boundary checks
 
 Run as the new service account. Replace REVIEWED_SHA with the full explicitly reviewed Git commit (not a tag, merge preview or abbreviated SHA). Stop at any failure. Before this step, verify the reviewed SHA and passing artifact-specific bootstrap applicability gate described in SECURITY.md; the PM-approved disposition is limited to the exact wheel and three advisories, not an override of scanner failures or other security gates. Verify host Python 3.12, distribution package provenance, OS/curl CA trust and security updates locally. The installer skips ensurepip, verifies the pinned pip wheel before execution and uses the reviewed Git tree and offline wheel installs. It requires direct HTTPS access to PyPI and files.pythonhosted.org; do not disable TLS or substitute a mirror/wheel on failure. Two independent source-tree builds must match SHA-256 before installation. Preserve the old installation and its state for rollback; a failed fresh installation is not activated or migrated. Record host Python/OS, OpenSSL, Git/curl and CA provenance locally, as well as the reviewed SHA, wheel digest and tests. No requirement to run CI-only scripts locally.
@@ -55,7 +65,7 @@ bash local-bridge/scripts/install.sh "$REVIEWED_SHA"
 python3 -I local-bridge/scripts/account_preflight.py
 ```
 
-The last nonzero exit is a stop point, not a bypass. Review every boolean; require positive unprivileged UID, groups, home, other homes, sockets, Windows mounts absent and interop not observed. WSL review is always required. Independently inspect sudo policy, ACLs, mount namespace, /etc/fstab, host shares, network/firewall, systemd user session, and separate rootless Podman storage. Verify the service account cannot access a synthetic marker outside its boundary (no actual secrets). Do not copy private files, personal gh credentials, or the existing pilot state. The host administrator may still access WSL; no hostile-host isolation is claimed.
+The last nonzero exit is a stop point, not a bypass. The additional mount booleans are diagnostic subdivisions; neither changes the required windows_mounts_absent result. Review every boolean; require positive unprivileged UID, groups, home, other homes, sockets, Windows mounts absent and interop not observed. WSL review is always required. Independently inspect sudo policy, ACLs, mount namespace, /etc/fstab, host shares, network/firewall, systemd user session, and separate rootless Podman storage. Verify the service account cannot access a synthetic marker outside its boundary (no actual secrets). Do not copy private files, personal gh credentials, or the existing pilot state. The host administrator may still access WSL; no hostile-host isolation is claimed.
 
 After independent review, in a NEW shell as the service user:
 
@@ -65,9 +75,15 @@ cd "$HOME/bridge-kit"
 test "$(id -u)" -ne 0
 test "$(ps -p 1 -o comm=)" = systemd
 systemctl --user show-environment >/dev/null
-test "$(/usr/bin/podman info --format '{{.Host.Security.Rootless}}')" = true
-test "$(/usr/bin/podman info --format '{{.Host.Security.SeccompEnabled}}')" = true
-test "$(/usr/bin/podman info --format '{{.Host.CgroupVersion}}')" = v2
+/usr/bin/podman info --format json | python3 -I -c '
+import json, sys
+host = json.load(sys.stdin)["host"]
+security = host["security"]
+assert security["rootless"] is True
+assert security["seccompEnabled"] is True
+assert host["cgroupVersion"] == "v2"
+print("PODMAN_SECURITY_PASS")
+'
 ```
 
 Keep all privileged sockets inaccessible. No image pull/run in this step. Install the separately verified tunnel-client binary (version and upstream hash checked independently) without personal credentials.
