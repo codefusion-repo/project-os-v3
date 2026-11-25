@@ -103,6 +103,19 @@ class Structure(unittest.TestCase):
         self.assertIn('template pull-request', (ROOT / 'workflows/implement.md').read_text())
         self.assertIn('## Methodology invariant', (ROOT / 'local-bridge/MVP.md').read_text())
 
+    def test_adaptive_execution_roles_are_distinct(self):
+        shared = (ROOT / 'PROJECT_OS.md').read_text()
+        self.assertIn('existen dos implementadores', shared)
+        self.assertIn('Codex, que se ejecuta en el terminal', shared)
+        self.assertIn('Local Bridge y terminal no son implementadores', shared)
+        self.assertIn('LB-ARCH-20261124-29', shared)
+        browser = (ROOT / 'adapters/browser-chat.md').read_text()
+        self.assertIn('Codex se ejecuta en el terminal como implementador', browser)
+        self.assertIn('Local Bridge y terminal no son implementadores', browser)
+        self.assertLessEqual(len(browser), 7500)
+        self.assertIn('Codex running in the terminal, or ChatGPT Browser', 
+                      (ROOT / 'local-bridge/MVP.md').read_text())
+
     def test_relative_markdown_links(self):
         for path in ROOT.rglob('*.md'):
             if '.git' in path.parts or '.project-os' in path.parts:
