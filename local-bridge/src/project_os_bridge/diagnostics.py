@@ -20,7 +20,6 @@ from .lifecycle import prepared_unit, snapshot, systemctl
 from .readiness import read_metadata, verify_metadata
 from .workos_auth import load_config, private_directory, private_file
 from .security import MAX_AUDIT_BYTES
-from .workos_auth import AuthOutcome
 
 Section = Literal["host", "security", "runtime", "service", "network", "jobs", "audit"]
 SECTIONS = get_args(Section)
@@ -241,16 +240,10 @@ class Diagnostics:
         counts = Counter()
         for line in bounded_text(path, MAX_AUDIT_BYTES, private=True).splitlines():
             event = json.loads(line)
-            if (not isinstance(event, dict)
-                    or set(event) not in ({"at", "event", "status"},
-                                          {"at", "event", "status", "auth_outcome"})
+            if (not isinstance(event, dict) or set(event) != {"at", "event", "status"}
                     or event["event"] != "mcp_http" or type(event["status"]) is not int
                     or not 100 <= event["status"] <= 599):
                 raise ValueError("Unexpected audit event")
-            if "auth_outcome" in event:
-                if (type(event["auth_outcome"]) is not str or event["status"] < 200
-                        or event["auth_outcome"] not in {item.value for item in AuthOutcome}):
-                    raise ValueError("Unexpected authentication outcome")
             counts[str(event["status"])] += 1
         return {"audit": "observed", "http_status_counts": dict(counts)}
 

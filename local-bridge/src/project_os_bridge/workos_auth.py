@@ -1,6 +1,7 @@
 """WorkOS Connect user access-token verifier. No token or private key storage."""
 import asyncio
 from contextvars import ContextVar
+from dataclasses import dataclass
 from enum import Enum
 import json
 import os
@@ -33,15 +34,22 @@ class AuthOutcome(str, Enum):
     TOKEN_ACCEPTED = "TOKEN_ACCEPTED"
 
 
-# Request-local diagnostic only; never consulted for authorization.
-# None outside the HTTP gate prevents standalone verifier calls from retaining
-# diagnostic state. The gate initializes and resets this for every request.
-auth_outcome: ContextVar[AuthOutcome | None] = ContextVar("auth_outcome", default=None)
+@dataclass
+class AuthObservation:
+    """One request's diagnostic outcome, not an authorization decision."""
+    outcome: AuthOutcome
+
+
+# Each request creates its own holder. Child tasks inherit the reference,
+# so an observation survives task boundaries without leaking across requests.
+# None outside MCP requests prevents standalone verification from storing it.
+auth_outcome: ContextVar[AuthObservation | None] = ContextVar("auth_outcome", default=None)
 
 
 def observe_auth(outcome):
-    if auth_outcome.get() is not None:
-        auth_outcome.set(outcome)
+    observation = auth_outcome.get()
+    if observation is not None:
+        observation.outcome = outcome
     return None
 
 

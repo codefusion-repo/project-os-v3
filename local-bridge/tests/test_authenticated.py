@@ -3,6 +3,7 @@ import json
 import tempfile
 import time
 import unittest
+import httpx
 from pathlib import Path
 from unittest.mock import patch
 from cryptography.hazmat.primitives.asymmetric import rsa
@@ -11,7 +12,7 @@ from starlette.testclient import TestClient
 from project_os_bridge.authenticated import build_http_app
 from project_os_bridge.workos_auth import Verifier, JWKS, SCOPE, CLIENT_ID, load_config
 from project_os_bridge.core import Jobs, Policy
-from project_os_bridge.security import Audit, MAX_AUDIT_BYTES
+from project_os_bridge.security import Audit, MAX_AUDIT_BYTES, AUTH_AUDIT_NAME
 from project_os_bridge.workos_auth import AuthOutcome, auth_outcome
 from project_os_bridge.github_fixture import SyntheticGitHubReader
 
@@ -177,16 +178,26 @@ class AuthTests(unittest.TestCase):
             response = client.get("/.well-known/oauth-protected-resource")
             self.assertEqual(response.status_code, 200)
         raw = (self.root / "security-audit.jsonl").read_text()
+        auth_raw = (self.root / AUTH_AUDIT_NAME).read_text()
         events = [json.loads(line) for line in raw.splitlines()]
+        observed = [json.loads(line) for line in auth_raw.splitlines()]
         completion = [event for event in events if event["status"] != 100]
-        self.assertEqual([event.get("auth_outcome") for event in completion],
+        # Independently assert the legacy stream and its exact format, then
+        # join the supplemental observations to the same completion timestamps.
+        self.assertEqual([event["status"] for event in events],
+                         [code for status in [401] * 9 + [200, 403, 200]
+                          for code in (100, status)])
+        self.assertTrue(all(set(e) == {"at", "event", "status"} for e in events))
+        self.assertEqual([event["auth_outcome"] for event in observed],
                          [outcome for _, outcome in cases] +
-                         ["JWKS_UNAVAILABLE", "TOKEN_ACCEPTED", "TOKEN_ACCEPTED", None])
-        self.assertEqual([event["status"] for event in completion],
-                         [401] * 9 + [200, 403, 200])
+                         ["JWKS_UNAVAILABLE", "TOKEN_ACCEPTED", "TOKEN_ACCEPTED"])
+        self.assertTrue(all(set(e) == {"at", "event", "status", "auth_outcome"}
+                            for e in observed))
+        self.assertEqual([{k: v for k, v in e.items() if k != "auth_outcome"}
+                          for e in observed], completion[:-1])
         for secret in tokens + ["private-fixture-audience", "user_privatefixture",
                                 "private-fixture-network", SUBJECT, RESOURCE, ISSUER]:
-            self.assertNotIn(secret, raw)
+            self.assertNotIn(secret, raw + auth_raw)
         self.assertIsNone(auth_outcome.get())
         with jobs.transaction() as conn:
             self.assertEqual(conn.execute("SELECT count(*) FROM jobs").fetchone()[0], 0)
@@ -198,15 +209,114 @@ class AuthTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             audit.record(100, outcome=AuthOutcome.TOKEN_ACCEPTED)
         audit.record(401, outcome=AuthOutcome.TOKEN_EXPIRED)
-        self.assertEqual(json.loads(audit.path.read_text())["auth_outcome"], "TOKEN_EXPIRED")
+        legacy = json.loads(audit.path.read_text())
+        observed = json.loads(audit.auth_path.read_text())
+        self.assertEqual(observed, {**legacy, "auth_outcome": "TOKEN_EXPIRED"})
+        self.assertEqual(set(legacy), {"at", "event", "status"})
         with audit.path.open("wb") as stream:
-            stream.truncate(MAX_AUDIT_BYTES)
+            stream.truncate(MAX_AUDIT_BYTES - audit.auth_path.stat().st_size)
         jobs = Jobs(self.root, Policy([(SUBJECT, "read", "disposable")]))
         app = build_http_app(self.verifier, jobs)
         with TestClient(app, base_url="http://127.0.0.1:8765") as client:
             self.assertEqual(client.post("/mcp", headers={"Authorization": "Bearer " + self.token()}).status_code, 503)
-        self.assertEqual(audit.path.stat().st_size, MAX_AUDIT_BYTES)
+        self.assertEqual(audit.path.stat().st_size + audit.auth_path.stat().st_size,
+                         MAX_AUDIT_BYTES)
         self.assertEqual(self.fetch.call_count, 0)
+
+    def test_auth_observation_failure_preserves_http_completion(self):
+        audit = Audit(self.root)
+        audit.record(100)
+        append = audit._append
+        def fail_sidecar(fd, data):
+            if b'"auth_outcome"' in data:
+                raise OSError("fixture write failure")
+            append(fd, data)
+        with patch.object(audit, "_append", side_effect=fail_sidecar):
+            with self.assertRaises(OSError):
+                audit.record(403, outcome=AuthOutcome.TOKEN_ACCEPTED)
+        self.assertEqual([json.loads(line)["status"] for line in
+                          audit.path.read_text().splitlines()], [100, 403])
+        self.assertEqual(audit.auth_path.read_bytes(), b"")
+
+    def test_auth_audit_shared_budget_and_unsafe_sidecar(self):
+        audit = Audit(self.root)
+        audit.auth_path.touch(mode=0o600)
+        with audit.auth_path.open("wb") as stream:
+            stream.truncate(MAX_AUDIT_BYTES - 110)
+        # Legacy completion fits, but the supplemental record cannot.
+        with self.assertRaises(OSError):
+            audit.record(403, outcome=AuthOutcome.TOKEN_ACCEPTED)
+        self.assertEqual(json.loads(audit.path.read_text())["status"], 403)
+        self.assertLessEqual(audit.path.stat().st_size + audit.auth_path.stat().st_size,
+                             MAX_AUDIT_BYTES)
+        with self.assertRaises(OSError):
+            audit.record(100)
+        audit.auth_path.unlink()
+        target = self.root / "private-target"
+        target.write_bytes(b"unchanged")
+        audit.auth_path.symlink_to(target)
+        with self.assertRaises(OSError):
+            audit.record(100)
+        self.assertEqual(target.read_bytes(), b"unchanged")
+
+    def test_auth_outcomes_concurrent_requests_and_child_tasks(self):
+        jobs = Jobs(self.root, Policy([(SUBJECT, "read", "disposable")]))
+        app = build_http_app(self.verifier, jobs)
+        valid = self.token()
+        now = int(time.time())
+        expired = self.token({"iat": now - 600, "exp": now - 300})
+        verify = self.verifier.verify_token
+        init = {"jsonrpc": "2.0", "id": 1, "method": "initialize",
+                "params": {"protocolVersion": "2025-11-25", "capabilities": {},
+                           "clientInfo": {"name": "test", "version": "1"}}}
+
+        async def scenario():
+            accepted = asyncio.Event()
+            rejected = asyncio.Event()
+
+            async def interleaved(token):
+                # Force verification in an inherited child-task context.
+                result = await asyncio.create_task(verify(token))
+                if token == valid:
+                    accepted.set()
+                    await asyncio.wait_for(rejected.wait(), timeout=5)
+                elif token == expired:
+                    await asyncio.wait_for(accepted.wait(), timeout=5)
+                    rejected.set()
+                return result
+
+            async with app.router.lifespan_context(app):
+                with patch.object(self.verifier, "verify_token", side_effect=interleaved):
+                    async with httpx.AsyncClient(
+                        transport=httpx.ASGITransport(app=app),
+                        base_url="http://127.0.0.1:8765",
+                        headers={"Accept": "application/json, text/event-stream"},
+                    ) as client:
+                        async def call(token):
+                            return await client.post("/mcp", json=init,
+                                headers={"Authorization": "Bearer " + token})
+                        good, bad = await asyncio.wait_for(
+                            asyncio.gather(call(valid), call(expired)), timeout=15)
+                        self.assertEqual((good.status_code, bad.status_code), (200, 401))
+                        self.assertIn("www-authenticate", bad.headers)
+                        self.assertEqual((await client.get(
+                            "/.well-known/oauth-protected-resource")).status_code, 200)
+                        self.assertEqual((await client.post("/mcp", json=init)).status_code, 401)
+                        self.assertIsNone(auth_outcome.get())
+
+        asyncio.run(scenario())
+        events = [json.loads(line) for line in
+                  (self.root / "security-audit.jsonl").read_text().splitlines()]
+        observed = [json.loads(line) for line in
+                    (self.root / AUTH_AUDIT_NAME).read_text().splitlines()]
+        self.assertCountEqual([(e["status"], e["auth_outcome"]) for e in observed],
+                              [(200, "TOKEN_ACCEPTED"), (401, "TOKEN_EXPIRED"),
+                               (401, "TOKEN_MISSING")])
+        self.assertCountEqual([e["status"] for e in events],
+                              [100, 100, 200, 401, 100, 200, 100, 401])
+        for e in observed:
+            self.assertIn({k: v for k, v in e.items() if k != "auth_outcome"}, events)
+        self.assertIsNone(auth_outcome.get())
 
     def test_resource_discovery_excludes_refresh_scope(self):
         jobs = Jobs(self.root, Policy([(SUBJECT, "read", "disposable")]))
@@ -376,10 +486,11 @@ class AuthTests(unittest.TestCase):
         self.assertNotIn("synthetic-secret",raw)
         events=[json.loads(line) for line in raw.splitlines()]
         self.assertEqual([e["status"] for e in events],[100,401,100,401,429])
-        self.assertEqual([e.get("auth_outcome") for e in events],
-                         [None, "TOKEN_MALFORMED", None, "TOKEN_MALFORMED", None])
-        self.assertTrue(all(set(e) in ({"at","event","status"},
-                                      {"at","event","status","auth_outcome"}) for e in events))
+        self.assertTrue(all(set(e)=={"at","event","status"} for e in events))
+        observations = [json.loads(line) for line in
+                        (self.root / AUTH_AUDIT_NAME).read_text().splitlines()]
+        self.assertEqual(observations, [{**e, "auth_outcome": "TOKEN_MALFORMED"}
+                                        for e in events if e["status"] == 401])
 
     def test_opt_in_fixture_and_evidence(self):
         from project_os_bridge.vertical import OPERATIONS, bind_image

@@ -112,15 +112,17 @@ class DiagnosticsTests(unittest.TestCase):
         path.touch(mode=0o600)
         path.write_text(json.dumps({"at": "private-time", "event": "mcp_http", "status": 403}) + "\n")
         self.assertEqual(self.diagnostics.audit()["http_status_counts"], {"403": 1})
-        with path.open("a") as stream:
-            stream.write(json.dumps({"at": "private-time", "event": "mcp_http",
-                                     "status": 401, "auth_outcome": "TOKEN_EXPIRED"}) + "\n")
+        # The exact legacy collector schema remains usable even after the
+        # new runtime writes an OAuth observation to its separate file.
+        from project_os_bridge.security import Audit
+        from project_os_bridge.workos_auth import AuthOutcome
+        audit = Audit(self.state)
+        audit.record(401, outcome=AuthOutcome.TOKEN_EXPIRED)
         self.assertEqual(self.diagnostics.audit(), {"audit": "observed",
                                                    "http_status_counts": {"403": 1, "401": 1}})
-        with path.open("a") as stream:
-            stream.write(json.dumps({"at": "private-time", "event": "mcp_http",
-                                     "status": 401, "auth_outcome": "private-value"}) + "\n")
-        self.assertEqual(self.diagnostics.collect("audit")["status"], "unavailable")
+        self.assertEqual(set(json.loads(path.read_text().splitlines()[-1])),
+                         {"at", "event", "status"})
+        self.assertNotIn("TOKEN_EXPIRED", json.dumps(self.diagnostics.audit()))
         path.write_text(json.dumps({"at": "private-time", "event": "mcp_http", "status": 403, "secret": "private"}) + "\n")
         self.assertEqual(self.diagnostics.collect("audit")["status"], "unavailable")
 
