@@ -301,6 +301,8 @@ def interpreter_identity(venv, *, executable=None):
                 if info.st_uid not in (0, os.getuid()):
                     raise PermissionError("Untrusted interpreter owner")
                 if remaining and in_venv:
+                    if actual == venv:
+                        raise ValueError("Canonical directory required")
                     raise PermissionError("Unexpected venv interpreter parent link")
                 if actual in seen:
                     raise ValueError("Interpreter link cycle")

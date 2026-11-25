@@ -384,7 +384,10 @@ class UpgradeTests(unittest.TestCase):
         canonical = upgrade.validated_host_python(expected)
         mismatched = {key: expected[key] for key in upgrade.INTERPRETER_FIELDS}
         mismatched["sha256"] = "0" * 64
-        worker = Path(__file__).resolve().parents[1] / "scripts/install-build.sh"
+        source = Path(__file__).resolve().parents[1] / "scripts/install-build.sh"
+        worker = self.bridge / "scripts/install-build.sh"
+        worker.parent.mkdir(mode=0o700)
+        shutil.copyfile(source, worker)
         result = subprocess.run(
             ["/bin/bash", str(worker), "3", str(canonical), json.dumps(mismatched), self.sha],
             capture_output=True, text=True, timeout=10)
