@@ -215,11 +215,30 @@ class UpgradeTests(unittest.TestCase):
         self.assertFalse(self.venv.exists())
 
     def test_host_interpreter_link_identity_survives_relocation(self):
+        # Use a trusted system executable as a byte-identity fixture, not
+        # the CI toolcache interpreter (its ancestors may be group writable).
+        # The identity check never executes this file.
         path = self.venv / "bin/python"
         path.unlink()
-        path.symlink_to(Path(sys._base_executable).resolve())
+        path.symlink_to(Path("/usr/bin/false").resolve(strict=True))
         self.interrupted()
         self.assertTrue(self.restore())
+
+    def test_untrusted_host_interpreter_parent_blocks_before_rename(self):
+        path = self.venv / "bin/python"
+        path.unlink()
+        host = self.kit / "untrusted-host"
+        host.mkdir(mode=0o700)
+        target = host / "python"
+        target.write_bytes(b"fixture")
+        target.chmod(0o700)
+        host.chmod(0o777)
+        path.symlink_to(target)
+        with self.assertRaises(PermissionError):
+            self.interrupted()
+        self.assertFalse(self.backup.exists())
+        self.assertFalse(self.active.exists())
+        self.assertTrue(self.venv.exists())
 
     def test_fence_rejects_legacy_lifecycle_and_requires_loaded_barrier(self):
         from project_os_bridge import lifecycle
