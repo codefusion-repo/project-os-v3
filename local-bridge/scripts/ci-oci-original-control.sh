@@ -21,4 +21,4 @@ done
 if [ -f "$source_dir/cache/db/metadata.json" ]; then
   cp -- "$source_dir/cache/db/metadata.json" "$evidence/db-metadata.json"
 fi
-python3 -I "$repo/local-bridge/scripts/oci_original_control.py" "$evidence/report.json" "$repo/local-bridge/scripts/oci-original-rejection.json" "$evidence/scanner-exit.txt" "$evidence/audit-exit.txt" "$evidence/audit.log" "$evidence/db-metadata.json" | tee "$evidence/control.txt"
+python3 -I "$repo/local-bridge/scripts/oci_original_control.py" "$evidence/report.json" "$repo/local-bridge/scripts/oci-original-rejection-r37.json" "$evidence/scanner-exit.txt" "$evidence/audit-exit.txt" "$evidence/audit.log" "$evidence/db-metadata.json" | tee "$evidence/control.txt"
