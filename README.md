@@ -51,9 +51,53 @@ Desde PowerShell, usando una distribución WSL existente y el checkout Linux rev
 
 Sin Mode el wrapper conserva su comportamiento Bridge-only. El checkout debe existir y pertenecer al operador; las rutas con espacios se pasan como argumento individual. No instala WSL ni inicia servicios.
 
-Si se interrumpe la instalación, verifica HEAD, git status, launcher y entornos; conserva la configuración privada, no borres ni reutilices un entorno Bridge parcial. El instalador rechaza un entorno existente; para recuperación independiente usa el runbook y una nueva ubicación revisada, sin reemplazar el piloto. Para volver a una versión anterior del kit no fuerces main ni elimines datos: conserva el checkout y solicita una recuperación revisada con launcher separado. Desinstalación no destructiva: deja de usar el launcher y retíralo manualmente solo tras comprobar identidad y ownership; conserva checkout, preferencias, instancias y entornos. No se certifica rollback ejecutado ni prueba real Windows/WSL mediante el mock.
+Si se interrumpe la instalación, verifica HEAD, git status, launcher y entornos; conserva la configuración privada, no borres ni reutilices un entorno Bridge parcial. El instalador rechaza un entorno existente; para recuperación independiente usa el runbook y una nueva ubicación revisada, sin reemplazar el piloto. Para volver temporalmente a una versión anterior revisada del selector central, utiliza el procedimiento de rollback siguiente; nunca fuerces main ni elimines datos. Desinstalación no destructiva: deja de usar el launcher y retíralo manualmente solo tras comprobar identidad y ownership; conserva checkout, preferencias, instancias y entornos. No se certifica rollback ejecutado ni prueba real Windows/WSL mediante el mock.
 
 Después de una instalación Bridge exitosa, la guía ofrece inicializar una instancia privada nueva mediante el inicializador existente y preparar HTTPS/túnel sin iniciar servicios ni habilitar fixtures. Cada acción tiene consentimiento independiente. El operador debe verificar previamente el binario del túnel y configurar WorkOS en su interfaz externa según WORKOS.md; la clave runtime se introduce únicamente en el terminal privado mediante getpass. La comprobación autenticada se realiza desde el conector ChatGPT con health, no mediante tokens copiados al selector. No se certifica conexión nueva ni rollback operativo hasta disponer de evidencia independiente.
+
+### Rollback temporal del selector central
+
+Solo para el checkout central limpio, con launcher revisado de Python estándar y sin operaciones concurrentes. Comprueba el origen canónico, ownership, estado y ambos SHA completos previamente revisados. No modifica main, no reinstala Bridge, no migra instancias ni cambia versiones fijadas de proyectos. Si alguna comprobación falla, detente.
+
+```bash
+(
+  set -eu
+  : "${CURRENT_SHA:?}" "${PREVIOUS_SHA:?}"
+  for sha in "$CURRENT_SHA" "$PREVIOUS_SHA"; do
+    printf '%s\n' "$sha" | grep -Eq '^[a-f0-9]{40}$'
+  done
+  test "$(git rev-parse --show-toplevel)" = "$(pwd -P)"
+  test "$(git config --local --get remote.origin.url)" = 'https://github.com/codefusion-repo/project-os-v3.git'
+  test "$(git symbolic-ref --short HEAD)" = main
+  test "$(git rev-parse HEAD)" = "$CURRENT_SHA"
+  test "$(git rev-parse --verify "$PREVIOUS_SHA^{commit}")" = "$PREVIOUS_SHA"
+  test -z "$(git status --porcelain)"
+  git worktree list
+  git merge-base --is-ancestor "$PREVIOUS_SHA" "$CURRENT_SHA"
+  git checkout --detach --no-overwrite-ignore "$PREVIOUS_SHA"
+  test "$(git rev-parse HEAD)" = "$PREVIOUS_SHA"
+  python3 tools/select.py --help
+)
+```
+
+Para restaurar, desde ese mismo checkout y tras comprobar identidad y ausencia de cambios:
+
+```bash
+(
+  set -eu
+  : "${CURRENT_SHA:?}" "${PREVIOUS_SHA:?}"
+  test "$(git rev-parse --show-toplevel)" = "$(pwd -P)"
+  test "$(git config --local --get remote.origin.url)" = 'https://github.com/codefusion-repo/project-os-v3.git'
+  test "$(git rev-parse HEAD)" = "$PREVIOUS_SHA"
+  test "$(git rev-parse main)" = "$CURRENT_SHA"
+  test -z "$(git status --porcelain)"
+  git checkout --no-overwrite-ignore main
+  test "$(git rev-parse HEAD)" = "$CURRENT_SHA"
+  python3 tools/select.py --help
+)
+```
+
+No ejecutes el instalador mientras HEAD esté detached. La prueba descartable del recorrido usa commits sintéticos y no certifica rollback de servicios ni el host del PM. 
 
 ### Actualización posterior
 
