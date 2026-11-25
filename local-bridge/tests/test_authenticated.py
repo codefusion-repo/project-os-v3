@@ -5,6 +5,7 @@ import time
 import unittest
 import httpx
 from pathlib import Path
+from http import HTTPStatus
 from unittest.mock import patch
 from cryptography.hazmat.primitives.asymmetric import rsa
 import jwt
@@ -12,7 +13,7 @@ from starlette.testclient import TestClient
 from project_os_bridge.authenticated import build_http_app
 from project_os_bridge.workos_auth import Verifier, JWKS, SCOPE, CLIENT_ID, load_config
 from project_os_bridge.core import Jobs, Policy
-from project_os_bridge.security import Audit, MAX_AUDIT_BYTES, AUTH_AUDIT_NAME
+from project_os_bridge.security import Audit, AuditObservationError, MAX_AUDIT_BYTES, AUTH_AUDIT_NAME
 from project_os_bridge.workos_auth import AuthOutcome, auth_outcome
 from project_os_bridge.github_fixture import SyntheticGitHubReader
 
@@ -202,8 +203,115 @@ class AuthTests(unittest.TestCase):
         with jobs.transaction() as conn:
             self.assertEqual(conn.execute("SELECT count(*) FROM jobs").fetchone()[0], 0)
 
+    def test_sdk_http_status_enum_and_health_audit(self):
+        # Trace the actual pinned SDK -> ASGI -> RequestGate -> Audit path.
+        # Capture status and the fixed category only, not headers or JWTs.
+        jobs = Jobs(self.root, Policy([(SUBJECT, "read", "disposable")]))
+        audit = Audit(self.root)
+        app = build_http_app(self.verifier, jobs, audit=audit)
+        headers = {"Accept": "application/json, text/event-stream",
+                   "Authorization": "Bearer " + self.token()}
+        init = {"jsonrpc": "2.0", "id": 1, "method": "initialize",
+                "params": {"protocolVersion": "2025-11-25", "capabilities": {},
+                           "clientInfo": {"name": "test", "version": "1"}}}
+        health = {"jsonrpc": "2.0", "id": 2, "method": "tools/call",
+                  "params": {"name": "health", "arguments": {}}}
+        trace = []
+        record = audit.record
+
+        def traced(status, *, outcome=None):
+            kind = type(status).__name__
+            try:
+                record(status, outcome=outcome)
+            except (OSError, ValueError) as exc:
+                trace.append((kind, int(status), outcome, type(exc).__name__))
+                raise
+            trace.append((kind, int(status), outcome, "recorded"))
+
+        with patch.object(audit, "record", side_effect=traced):
+            with TestClient(app, base_url="http://127.0.0.1:8765") as client:
+                response = client.post("/mcp", headers=headers, json=init)
+                self.assertEqual(response.status_code, 200)
+                headers["MCP-Protocol-Version"] = response.json()["result"]["protocolVersion"]
+                response = client.post("/mcp", headers=headers, json=health)
+                self.assertEqual(response.status_code, 200)
+                self.assertFalse(response.json()["result"].get("isError", False))
+                self.assertTrue(response.json()["result"]["structuredContent"]["caller_identity_verified"])
+        self.assertEqual(trace, [
+            ("int", 100, None, "recorded"),
+            ("HTTPStatus", 200, AuthOutcome.TOKEN_ACCEPTED, "recorded"),
+            ("int", 100, None, "recorded"),
+            ("HTTPStatus", 200, AuthOutcome.TOKEN_ACCEPTED, "recorded"),
+        ])
+        # The previous strict predicate rejected exactly this input.
+        self.assertIsNot(type(HTTPStatus.OK), int)
+        events = [json.loads(line) for line in audit.path.read_text().splitlines()]
+        observations = [json.loads(line) for line in audit.auth_path.read_text().splitlines()]
+        self.assertEqual([e["status"] for e in events], [100, 200, 100, 200])
+        self.assertTrue(all(type(e["status"]) is int for e in events))
+        self.assertEqual(observations, [{**e, "auth_outcome": "TOKEN_ACCEPTED"}
+                                        for e in events if e["status"] == 200])
+
+    def test_auth_observation_open_failure_preserves_http_completion(self):
+        for existing in (False, True):
+            with self.subTest(existing=existing), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                audit = Audit(root)
+                if existing:
+                    audit.record(401, outcome=AuthOutcome.TOKEN_EXPIRED)
+                audit.record(100)
+                original_open = audit._open
+
+                def fail_sidecar(path, **kwargs):
+                    if path == audit.auth_path:
+                        raise OSError("fixture private path")
+                    return original_open(path, **kwargs)
+
+                with patch.object(audit, "_open", side_effect=fail_sidecar):
+                    with self.assertRaises(AuditObservationError):
+                        audit.record(HTTPStatus.OK, outcome=AuthOutcome.TOKEN_ACCEPTED)
+                    if existing:
+                        # A subsequent admission still fails closed.
+                        with self.assertRaises(OSError):
+                            audit.record(100)
+                events = [json.loads(line) for line in audit.path.read_text().splitlines()]
+                self.assertEqual([e["status"] for e in events],
+                                 ([401] if existing else []) + [100, 200])
+                if existing:
+                    self.assertEqual(len(audit.auth_path.read_text().splitlines()), 1)
+                else:
+                    self.assertFalse(audit.auth_path.exists())
+
+    def test_http_completion_warning_is_sanitized(self):
+        jobs = Jobs(self.root, Policy([(SUBJECT, "read", "disposable")]))
+        audit = Audit(self.root)
+        app = build_http_app(self.verifier, jobs, audit=audit)
+        headers = {"Accept": "application/json, text/event-stream",
+                   "Authorization": "Bearer " + self.token()}
+        init = {"jsonrpc": "2.0", "id": 1, "method": "initialize",
+                "params": {"protocolVersion": "2025-11-25", "capabilities": {},
+                           "clientInfo": {"name": "test", "version": "1"}}}
+        original_open = audit._open
+
+        def fail_sidecar(path, **kwargs):
+            if path == audit.auth_path:
+                raise OSError("private-fixture-error")
+            return original_open(path, **kwargs)
+
+        with patch.object(audit, "_open", side_effect=fail_sidecar):
+            with self.assertLogs("project_os_bridge.security", level="WARNING") as logs:
+                with TestClient(app, base_url="http://127.0.0.1:8765") as client:
+                    self.assertEqual(client.post("/mcp", headers=headers, json=init).status_code, 200)
+        self.assertEqual(logs.output, [
+            "WARNING:project_os_bridge.security:OAuth audit observation unavailable"])
+        self.assertEqual([json.loads(line)["status"] for line in
+                          audit.path.read_text().splitlines()], [100, 200])
+
     def test_auth_outcome_audit_validation_and_capacity(self):
         audit = Audit(self.root)
+        for invalid in (True, 200.0, "200", 99, 600):
+            with self.assertRaises(ValueError):
+                audit.record(invalid)
         with self.assertRaises(ValueError):
             audit.record(401, outcome="arbitrary-private-value")
         with self.assertRaises(ValueError):

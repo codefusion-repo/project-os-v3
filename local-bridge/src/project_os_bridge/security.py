@@ -1,11 +1,13 @@
 """Bounded single-instance HTTP admission and sanitized local audit."""
 import json
+import logging
 import os
 import stat
 import threading
 import time
 from collections import deque
 from datetime import datetime, timezone
+from http import HTTPStatus
 
 from starlette.responses import JSONResponse
 
@@ -15,6 +17,11 @@ MAX_AUDIT_BYTES = 4 * 1024 * 1024
 
 
 AUTH_AUDIT_NAME = "oauth-audit.jsonl"
+logger = logging.getLogger(__name__)
+
+
+class AuditObservationError(OSError):
+    """Primary completion persisted, supplemental observation unavailable."""
 
 
 class Audit:
@@ -27,19 +34,43 @@ class Audit:
         self.lock=threading.Lock()
 
     @staticmethod
-    def _open(path, *, create):
+    def _validate_info(st):
+        if not stat.S_ISREG(st.st_mode) or st.st_uid != os.getuid() or st.st_nlink != 1 or st.st_mode & 0o077:
+            raise PermissionError("Unsafe audit file")
+
+    @staticmethod
+    def _open(path, *, create, exclusive=False):
         flags = os.O_WRONLY | os.O_APPEND | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC
         if create:
             flags |= os.O_CREAT
+        if exclusive:
+            flags |= os.O_EXCL
         fd = os.open(path, flags, 0o600)
         try:
             st = os.fstat(fd)
-            if not stat.S_ISREG(st.st_mode) or st.st_uid != os.getuid() or st.st_nlink != 1 or st.st_mode & 0o077:
-                raise PermissionError("Unsafe audit file")
+            Audit._validate_info(st)
             return fd, st.st_size
         except BaseException:
             os.close(fd)
             raise
+
+    def _sidecar_info(self):
+        try:
+            info = self.auth_path.lstat()
+        except FileNotFoundError:
+            return None
+        self._validate_info(info)
+        return info
+
+    @staticmethod
+    def _verify_sidecar(fd, expected):
+        actual = os.fstat(fd)
+        if expected is None:
+            if actual.st_size != 0:
+                raise OSError("Unexpected OAuth audit size")
+        elif (actual.st_dev, actual.st_ino, actual.st_size) != (
+                expected.st_dev, expected.st_ino, expected.st_size):
+            raise OSError("OAuth audit changed")
 
     @staticmethod
     def _append(fd, data):
@@ -47,8 +78,12 @@ class Audit:
             raise OSError("Incomplete audit")
 
     def record(self,status, *, outcome=None):
-        if type(status) is not int or not 100 <= status <= 599:
+        # MCP 2.3.0 passes HTTPStatus to Starlette 1.10.0, which
+        # forwards it unchanged in ASGI response.start. Accept only the
+        # standard enum or exact int, and serialize a plain integer.
+        if type(status) not in (int, HTTPStatus) or not 100 <= status <= 599:
             raise ValueError("Invalid HTTP status")
+        status = int(status)
         if outcome is not None and (not isinstance(outcome, AuthOutcome) or status < 200):
             raise ValueError("Invalid authentication outcome")
         at = datetime.now(timezone.utc).isoformat()
@@ -62,24 +97,31 @@ class Audit:
             fd, size = self._open(self.path, create=True)
             auth_fd = None
             try:
-                # Admission checks both private files and the shared budget,
-                # even when no OAuth observation is to be written.
-                try:
-                    auth_fd, auth_size = self._open(self.auth_path, create=auth_data is not None)
-                except FileNotFoundError:
-                    if auth_data is not None:
-                        raise
-                    auth_size = 0
+                # Inspect the existing sidecar without following links.
+                # If its size or safety cannot be established, the shared
+                # budget cannot be verified: do not append either record.
+                info = self._sidecar_info()
+                auth_size = 0 if info is None else info.st_size
+                if status == 100 and info is not None:
+                    # Admission also requires append access to an existing
+                    # sidecar. Never create it just to admit a request.
+                    auth_fd, _ = self._open(self.auth_path, create=False)
+                    self._verify_sidecar(auth_fd, info)
                 if size + auth_size + len(data) > MAX_AUDIT_BYTES:
                     raise OSError("Audit capacity reached")
-                # Always preserve the original HTTP completion first.
                 self._append(fd, data)
-                # Supplemental observation is best effort, like completion.
-                # Never displace an HTTP record to make room for it.
                 if auth_data is not None:
-                    if size + auth_size + len(data) + len(auth_data) > MAX_AUDIT_BYTES:
-                        raise OSError("OAuth audit capacity reached")
-                    self._append(auth_fd, auth_data)
+                    # The primary completion is already persisted. Open or
+                    # exclusively create the supplemental file only now.
+                    try:
+                        if size + auth_size + len(data) + len(auth_data) > MAX_AUDIT_BYTES:
+                            raise OSError("OAuth audit capacity reached")
+                        auth_fd, _ = self._open(self.auth_path, create=info is None,
+                                                exclusive=info is None)
+                        self._verify_sidecar(auth_fd, info)
+                        self._append(auth_fd, auth_data)
+                    except (OSError, ValueError):
+                        raise AuditObservationError("OAuth audit observation unavailable") from None
             finally:
                 if auth_fd is not None:
                     os.close(auth_fd)
@@ -151,9 +193,13 @@ class RequestGate:
                         self.audit.record(message["status"])
                     else:
                         self.audit.record(message["status"], outcome=outcome)
+                except AuditObservationError:
+                    logger.warning("OAuth audit observation unavailable")
                 except (OSError,ValueError):
-                    # Do not claim an already performed side effect was undone.
-                    pass
+                    # Admission has already occurred. Do not claim an
+                    # already performed side effect was undone or log
+                    # exception text, paths, headers or request data.
+                    logger.warning("HTTP audit completion unavailable")
             await send(message)
         try:
             await self.app(scope,receive,audited_send)
