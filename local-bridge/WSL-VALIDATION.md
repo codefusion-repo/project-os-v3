@@ -46,7 +46,7 @@ The strict independent-host path above remains available. The existing-WSL profi
 - Identify every host-backed mount, source/options, bind alias and namespace/propagation relation. Driver-path label is not provenance. An intentional exchange share can remain accessible to the trusted local agent only within the reviewed Windows ACL boundary; no personal files or secrets in it. Prove access outside the approved share is denied with a synthetic marker and that untrusted job profiles cannot reach the share, personal credentials, host sockets or other unauthorized paths. DAC at a single mount root is not proof. Do not dismantle WSL infrastructure or alter the share to manufacture a passing result.
 - Review effective Windows/Hyper-V firewall, listeners and reachable host/LAN endpoints, WSL interop, DNS/proxy inheritance and credential scope. Mirrored networking, firewall=true, DNS tunneling and autoProxy are configuration, not proof of isolation. Verify loopback-only TLS listener and no alternate plaintext endpoint; do not widen firewall rules. Inspect proxy configuration privately and report only presence/disposition, never values. See https://learn.microsoft.com/windows/wsl/networking and https://learn.microsoft.com/windows/wsl/file-permissions.
 - Use rootless Podman, Seccomp, cgroup v2, distinct subordinate ID ranges and reviewed storage; validate actual namespaces, capabilities, no-new-privileges, mounts, network and cleanup against the existing execution gate. No image pull/import/run until its separate authorization and audit gates.
-- Verify a clean reviewed installation (existing verified installation evidence may be reused for the exact SHA/artifact if still applicable), fresh private instance state, independent staging OAuth identity and tunnel, no inherited pilot job state/grants and quiescence/reconciliation of earlier effects. Keep current central kit and development checkout; no automatic reinstall, credential copying or destructive cleanup.
+- Verify a clean reviewed installation (existing verified installation evidence may be reused for the exact SHA/artifact if still applicable), fresh private instance state, either independent staging OAuth identity and tunnel or the exclusive same-operator transition in section 3, no inherited pilot job state/grants and quiescence/reconciliation of earlier effects. Keep current central kit and development checkout; no automatic reinstall, credential copying or destructive cleanup.
 
 Run the inventory as the intended user; a negative strict result remains a stop point for strict certification. For the conditional profile it identifies review work, not permission to start the bridge. Review all observations, retain the independent security review and actual positive/negative evidence in #14 before proceeding to the new probe-only instance. If evidence cannot establish the stated boundary, keep BLOCKED and choose a stronger isolation mechanism; do not certify by accepting a risk silently. No new human confirmations for each authorized task: OAuth/resource grants and operation scope define the limits; job checks execute automatically. This profile never authorizes real resources, arbitrary shell, Android, Codex or OCI.
 
@@ -95,7 +95,17 @@ Keep all privileged sockets inaccessible. No image pull/run in this step. Instal
 
 ## 3. New HTTPS probe-only instance
 
-Provision a separate WorkOS staging identity/application and separate tunnel with scoped runtime key (Read + Use). Follow WORKOS.md for exact issuer, resource and subject, MFA and disabled public signup. No real GitHub or device credentials. Never paste key, subject, configuration, certificates or raw logs into chat/GitHub. Ensure port 8765 is free in the dedicated environment; do not stop unknown listeners or reuse the existing tunnel. Use a new instance path outside Git.
+Choose the strict path with a separate WorkOS staging identity/application and separate tunnel, or the conditional exclusive same-operator transition below. Both require scoped runtime key (Read + Use), exact issuer, resource and subject, MFA and disabled public signup per WORKOS.md. No real GitHub or device credentials. Never paste key, subject, configuration, certificates or raw logs into chat/GitHub. Ensure port 8765 is free; do not stop unknown listeners. Use a new private instance path outside Git.
+
+### Exclusive same-operator staging transition
+
+PM decision [LB05-20261125-REUSE-PILOT-INFRA-01](https://github.com/codefusion-repo/project-os-v3/issues/14#issuecomment-7155949280): the existing operator may retain the pilot's WorkOS staging application/issuer, subject, tunnel/resource, restricted runtime key and OAuth connector. This is a sequential cutover, not concurrent operation or independent credential/host certification. No mandatory duplication or routine key rotation. The strict separate-infrastructure path remains available, and distinct operators must never share credentials.
+
+Before any link/start, record the effective boundary review required in section 1 and verify the installed tunnel-client version and upstream artifact hash, exact existing OAuth configuration and key scope privately. Confirm no compromise, incompatible outstanding sessions or grants; if scope, credential integrity or exclusivity is uncertain, stop and resolve it before startup. Verify the previous bridge, tunnel and workers are stopped, no competing tunnel session or pending jobs/uncertain effects remain (reconcile through section 6 where applicable), and the unit identity is not foreign. A free port alone is insufficient. Do not delete, migrate or overwrite the pilot state or configuration. Preserve the prior installation for rollback, without restarting its plaintext or rejected-image configuration as a production fallback.
+
+Use the reviewed installed runtime, new private root/state, new local TLS material, and prepared unit, with no inherited state, grants, fixture binding or opt-in. Reuse the exact already verified runtime artifact and completed preparation when still applicable; a documentation-only policy revision does not by itself require rebuilding or rerunning a wizard. Verify the integrated revision and unchanged runtime/build inputs before reusing earlier artifact evidence; record both references without claiming installation at a different SHA. If preparation already exists, validate it in place using the installed supervisor configuration checks and lifecycle status; skip the initializer commands below. A partial or foreign preparation blocks, rather than authorizing overwrite.
+
+Complete fresh live TLS, OAuth principal/resource/scope, 401/403 and no-new-job evidence, replay and lifecycle checks in section 4 against the intended HTTPS instance. Existing connector sessions are not proof of current authentication; verify the exact destination, fresh authorization and tool discovery (no fixture or real resources), refresh/reconnect if needed without duplicating the connector by default. Reject incompatible sessions or unresolved effects. The local opt-in is not IdP token revocation. Keep only the new service active during the test, then revoke its opt-in and stop it. No real-resource or OCI authorization follows.
 
 ```bash
 set -euo pipefail
@@ -104,8 +114,8 @@ cd "$HOME/bridge-kit"
 ROOT="$HOME/bridge-production-probe"
 test ! -e "$ROOT" && test ! -L "$ROOT"
 local-bridge/.venv/bin/project-os-bridge-init --root "$ROOT"
-# Enter verified tunnel executable; leave image blank; enter key privately.
-local-bridge/.venv/bin/project-os-bridge-init --root "$ROOT" --prepare-service
+# Enter verified canonical tunnel executable and key privately; fixture disabled.
+local-bridge/.venv/bin/project-os-bridge-init --root "$ROOT" --prepare-service --no-fixture
 test ! -e "$ROOT/state/allow-authenticated-probe"
 systemd-analyze --user verify "$ROOT/service/project-os-bridge.service"
 # Use the reviewed installed bridge venv Python, not the system Python.
@@ -152,7 +162,7 @@ print('LOCAL TLS METADATA 200; UNAUTHENTICATED 401')
 PY
 ```
 
-Only with explicit permission for this NEW disposable probe, create its empty local opt-in using `(umask 077; set -o noclobber; : > "$ROOT/state/allow-authenticated-probe")`. Attach the separate OAuth connector, confirm health reports no real repository access and no fixture availability, submit a unique disposable probe, replay the same request key and compare job ID/evidence. Remove only that known empty marker to revoke access; expect FORBIDDEN, not a reconnect loop. Restore with the same noclobber command, check health and job evidence again. Verify fixed-schema local audit 403 without publishing identifiers. Stop if any unexpected behavior.
+Only with explicit permission for this NEW disposable probe, create its empty local opt-in using `(umask 077; set -o noclobber; : > "$ROOT/state/allow-authenticated-probe")`. Attach the separate OAuth connector for the strict path, or verify/refresh the existing connector for the exclusive transition; confirm health reports no real repository access and no fixture availability, submit a unique disposable probe, replay the same request key and compare job ID/evidence. Remove only that known empty marker to revoke access; expect FORBIDDEN, not a reconnect loop. Restore with the same noclobber command, check health and job evidence again. Verify fixed-schema local audit 403 without publishing identifiers. Stop if any unexpected behavior.
 
 ```bash
 local-bridge/.venv/bin/python -I -m project_os_bridge.lifecycle --root "$ROOT" stop
