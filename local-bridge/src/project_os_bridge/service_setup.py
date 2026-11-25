@@ -122,13 +122,13 @@ WantedBy=default.target
     return service
 
 
-def interactive_prepare(root):
+def interactive_prepare(root, allow_fixture=True):
     if not sys.stdin.isatty() or not sys.stderr.isatty():
         raise ValueError("Interactive local terminal required")
     if os.path.lexists(root / "service"):
         raise FileExistsError("Existing service preparation preserved")
     tunnel = Path(input("Verified tunnel-client executable (absolute path): ").strip())
-    image = input("Previously validated fixture image digest (blank disables fixture): ").strip() or None
+    image = (input("Previously validated fixture image digest (blank disables fixture): ").strip() or None) if allow_fixture else None
     with warnings.catch_warnings():
         warnings.simplefilter("error", getpass.GetPassWarning)
         key = getpass.getpass("Runtime API key (Read + Use only): ")

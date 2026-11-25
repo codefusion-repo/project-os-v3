@@ -1,6 +1,6 @@
 # Project OS v3 — Especificación implementable del MVP
 
-> Esta especificación incorpora las decisiones del PM y sus [addenda](V3_ADDENDUM.md); prevalecen las instrucciones más recientes ante contradicciones.
+> Antecedentes de la especificación del MVP y sus [addenda](V3_ADDENDUM.md). Para operar, [PROJECT_OS.md](../PROJECT_OS.md) contiene las reglas y decisiones vigentes, incluidos templates GitHub obligatorios y arquitectura adaptativa. No tratar esta especificación histórica como una segunda fuente normativa.
 
 **Estado del documento:** especificación histórica del MVP, actualizada para reflejar cinco workflows. La implementación está integrada en `main`, pero la instalación y adopción end-to-end en un proyecto real siguen pendientes de validación. Para el uso vigente consulta el [README](../README.md) y la [guía de adopción](ADOPTION.md).
 

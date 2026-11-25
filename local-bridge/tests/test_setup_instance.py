@@ -92,3 +92,70 @@ class SetupTests(unittest.TestCase):
                                 capture_output=True, text=True, timeout=10)
         self.assertEqual(result.returncode, 0)
         self.assertIn("--prepare-service", result.stdout)
+        self.assertIn("--no-fixture", result.stdout)
+
+    def test_no_fixture_requires_prepare_service(self):
+        import subprocess
+        import sys
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder) / "never-created"
+            result = subprocess.run(
+                [sys.executable, "-I", "-m", "project_os_bridge.setup_instance",
+                 "--root", str(root), "--no-fixture"],
+                stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=10)
+            self.assertEqual(result.returncode, 2)
+            self.assertIn("--no-fixture requires --prepare-service", result.stderr)
+            self.assertFalse(root.exists())
+
+    @unittest.skipIf(os.getuid() == 0, "Requires unprivileged user")
+    def test_no_fixture_preparation_and_partial_recovery(self):
+        import json
+        import sys
+        from project_os_bridge.setup_instance import main
+        from project_os_bridge.service_setup import write_new
+        with tempfile.TemporaryDirectory(dir="/tmp") as folder:
+            parent = Path(folder).resolve()
+            root = parent / "partial"
+            recovered = parent / "recovered"
+            tunnel = parent / "tunnel-client"
+            tunnel.write_text("#!/bin/sh\nexit 0\n")
+            tunnel.chmod(0o700)
+            initialize(root, ISSUER, RESOURCE, SUBJECT)
+            original = (root / "oauth.json").read_bytes()
+            original_umask = os.umask(0o077)
+
+            def fail_after_creation(directory):
+                write_new(directory / "partial-marker", b"preserve")
+                raise OSError("synthetic interruption")
+
+            def prepare(instance):
+                with patch.object(sys, "argv", ["project-os-bridge-init", "--root",
+                            str(instance), "--prepare-service", "--no-fixture"]), patch(
+                    "builtins.input", side_effect=[str(tunnel)]
+                ) as prompt, patch("sys.stdin.isatty", return_value=True), patch(
+                    "sys.stderr.isatty", return_value=True
+                ), patch("getpass.getpass", return_value="synthetic-only-runtime-key"):
+                    main()
+                    self.assertEqual(prompt.call_count, 1)
+
+            try:
+                with patch("project_os_bridge.service_setup.generate_tls",
+                           side_effect=fail_after_creation), self.assertRaises(OSError):
+                    prepare(root)
+                marker = root / "service" / "partial-marker"
+                self.assertEqual(marker.read_bytes(), b"preserve")
+                with self.assertRaises(FileExistsError):
+                    prepare(root)
+                self.assertEqual((root / "oauth.json").read_bytes(), original)
+                self.assertFalse((root / "state" / "allow-authenticated-probe").exists())
+                initialize(recovered, ISSUER, RESOURCE, SUBJECT)
+                prepare(recovered)
+                runtime = json.loads((recovered / "service" / "runtime.json").read_text())
+                self.assertIsNone(runtime["image"])
+                self.assertFalse((recovered / "state" / "fixture-image").exists())
+                self.assertFalse((recovered / "state" / "allow-authenticated-probe").exists())
+                self.assertTrue((recovered / "service" / "project-os-bridge.service").is_file())
+                self.assertEqual(marker.read_bytes(), b"preserve")
+                self.assertEqual((root / "oauth.json").read_bytes(), original)
+            finally:
+                os.umask(original_umask)

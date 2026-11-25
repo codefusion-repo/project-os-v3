@@ -228,3 +228,72 @@ class Installer(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+class ReviewedInstaller(unittest.TestCase):
+    def test_sha_mismatch_and_exact_install(self):
+        with tempfile.TemporaryDirectory(prefix="project os ") as tmp:
+            root = Path(tmp)
+            kit = install_fixture(root)
+            sha = subprocess.check_output(["git", "-C", str(kit), "rev-parse", "HEAD"], text=True).strip()
+            env = dict(os.environ, HOME=str(root), **transport(root))
+            run = lambda *args: subprocess.run([str(kit / "install.sh"), *args], env=env, capture_output=True, text=True)
+            rejected = run("0"*40)
+            self.assertNotEqual(rejected.returncode, 0)
+            self.assertFalse((root / ".local/bin/project-os-v3").exists())
+            accepted = run(sha)
+            self.assertEqual(accepted.returncode, 0, accepted.stderr)
+            self.assertFalse((kit / ".venv").exists())
+            self.assertTrue((root / ".local/bin/project-os-v3").is_file())
+            self.assertEqual(run(sha).returncode, 0)
+
+    def test_reviewed_rollback_and_restore(self):
+        with tempfile.TemporaryDirectory(prefix="project os rollback ") as tmp:
+            root = Path(tmp)
+            kit = install_fixture(root)
+            env = dict(os.environ, HOME=str(root), PROJECT_OS_BIN_DIR=str(root / "bin"), **transport(root))
+            def git(*args, checkout=kit):
+                return subprocess.check_output(["git", "-C", str(checkout), *args],
+                                               text=True, stderr=subprocess.PIPE).strip()
+            def install(sha):
+                result = subprocess.run([str(kit / "install.sh"), sha], env=env,
+                                        capture_output=True, text=True, timeout=30)
+                self.assertEqual(result.returncode, 0, result.stderr)
+            previous = git("rev-parse", "HEAD")
+            install(previous)
+            launcher = root / "bin/project-os-v3"
+            original = launcher.read_bytes()
+            private = kit / ".venv" / "keep"
+            private.parent.mkdir()
+            private.write_text("preserve environment")
+            project = root / "project"
+            project.mkdir()
+            (project / "AGENTS.md").write_text("pinned version")
+            (project / ".project-os").mkdir()
+            (project / ".project-os" / "keep").write_text("private fixture")
+            writer = root / "writer"
+            subprocess.run(["git", "clone", "-q", str(root / "remote.git"), str(writer)], check=True)
+            (writer / "version.txt").write_text("reviewed update")
+            git("add", "version.txt", checkout=writer)
+            git("-c", "user.name=Test", "-c", "user.email=test@example.invalid",
+                "commit", "-qm", "reviewed update", checkout=writer)
+            updated = git("rev-parse", "HEAD", checkout=writer)
+            git("push", "-q", "origin", "main", checkout=writer)
+            install(updated)
+            self.assertEqual(git("rev-parse", "HEAD"), updated)
+            self.assertEqual(git("status", "--porcelain"), "")
+            git("merge-base", "--is-ancestor", previous, updated)
+            git("checkout", "--detach", "--no-overwrite-ignore", previous)
+            self.assertEqual(git("rev-parse", "HEAD"), previous)
+            self.assertFalse((kit / "version.txt").exists())
+            self.assertEqual(git("rev-parse", "main"), updated)
+            result = subprocess.run([str(launcher), "--help"], env=env,
+                                    capture_output=True, text=True, timeout=15)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("--project", result.stdout)
+            git("checkout", "--no-overwrite-ignore", "main")
+            self.assertEqual(git("rev-parse", "HEAD"), updated)
+            self.assertEqual((kit / "version.txt").read_text(), "reviewed update")
+            self.assertEqual(launcher.read_bytes(), original)
+            self.assertEqual(private.read_text(), "preserve environment")
+            self.assertEqual((project / "AGENTS.md").read_text(), "pinned version")
+            self.assertEqual((project / ".project-os" / "keep").read_text(), "private fixture")

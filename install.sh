@@ -9,9 +9,18 @@ python3 -c 'import sys; sys.exit(sys.version_info < (3, 9))' || { printf '%s\n' 
 KIT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)
 if [ "${1-}" != '--project-os-internal' ]; then
     # Load the script before a fast-forward can replace this file on disk.
-    exec sh -c "$(cat -- "$KIT_DIR/install.sh")" project-os-install --project-os-internal "$KIT_DIR"
+    exec sh -c "$(cat -- "$KIT_DIR/install.sh")" project-os-install --project-os-internal "$KIT_DIR" "$@"
 fi
 KIT_DIR=$2
+shift 2
+REVIEWED=${1-}
+MODE=${2-}
+[ "$#" -le 2 ] || exit 1
+if [ -n "$REVIEWED" ]; then
+    printf '%s\n' "$REVIEWED" | grep -Eq '^[a-f0-9]{40}$' || { echo 'SHA revisado inválido.' >&2; exit 1; }
+fi
+case "$MODE" in ''|terminal|chatgpt|both) ;; *) echo 'Modo inválido.' >&2; exit 1;; esac
+[ -z "$MODE" ] || [ -n "$REVIEWED" ] || exit 1
 BIN_DIR=${PROJECT_OS_BIN_DIR:-"${HOME:?}/.local/bin"}
 case "$BIN_DIR" in /*) ;; *) printf '%s\n' 'La carpeta del launcher debe ser absoluta.' >&2; exit 1;; esac
 # Refuse symlinked or traversal paths and check hard-link / no-follow support.
@@ -95,11 +104,14 @@ CHANGES=$(git -C "$KIT_DIR" status --porcelain --untracked-files=normal) || { pr
 [ -z "$CHANGES" ] || { printf '%s\n' 'Hay cambios locales; consérvalos y usa un checkout central limpio.' >&2; exit 1; }
 git -C "$KIT_DIR" fetch --no-tags origin main || { printf '%s\n' 'No se pudo consultar main; se conserva la instalación anterior.' >&2; exit 1; }
 TARGET=$(git -C "$KIT_DIR" rev-parse --verify 'FETCH_HEAD^{commit}')
+[ -z "$REVIEWED" ] || [ "$TARGET" = "$REVIEWED" ] || { echo 'main cambió respecto al SHA revisado; instalación anterior conservada.' >&2; exit 1; }
 git -C "$KIT_DIR" merge-base --is-ancestor HEAD "$TARGET" || { printf '%s\n' 'main no avanza limpiamente; se conserva la instalación anterior.' >&2; exit 1; }
 git -C "$KIT_DIR" merge --ff-only "$TARGET" || { printf '%s\n' 'No se pudo actualizar; revisa el checkout central.' >&2; exit 1; }
 [ "$(git -C "$KIT_DIR" rev-parse HEAD)" = "$TARGET" ] || { printf '%s\n' 'No se pudo verificar la versión instalada.' >&2; exit 1; }
 PYTHON=python3
-if [ -L "$KIT_DIR/.venv" ]; then
+if [ -n "$REVIEWED" ]; then
+    printf '%s\n' 'Modo revisado: Python estándar; entorno opcional existente preservado.'
+elif [ -L "$KIT_DIR/.venv" ]; then
     printf '%s\n' 'El entorno .venv es un enlace; se conserva y se usa Python estándar.' >&2
 elif [ -f "$KIT_DIR/.venv/.project-os-v3" ] && [ ! -L "$KIT_DIR/.venv/.project-os-v3" ] && [ "$(cat "$KIT_DIR/.venv/.project-os-v3")" = 'project-os-v3 isolated environment' ] && [ -x "$KIT_DIR/.venv/bin/python" ] && "$KIT_DIR/.venv/bin/python" -c 'import prompt_toolkit' >/dev/null 2>&1; then
     PYTHON=$KIT_DIR/.venv/bin/python
@@ -132,3 +144,6 @@ else
 fi
 printf '%s\n' "Launcher instalado: $LAUNCHER"
 case ":${PATH:-}:" in *":$BIN_DIR:"*) ;; *) printf '%s\n' "Agrega $BIN_DIR a PATH en tu shell para ejecutar project-os-v3.";; esac
+if [ -n "$MODE" ]; then
+    "$PYTHON" "$KIT_DIR/tools/select.py" --providers "$MODE"
+fi
