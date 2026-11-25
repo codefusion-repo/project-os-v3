@@ -68,3 +68,38 @@ class AccountMountInventoryTests(unittest.TestCase):
         with patch.object(account, "inspect", side_effect=ValueError("/private/path")), contextlib.redirect_stdout(io.StringIO()) as output:
             self.assertEqual(account.main(), 1)
         self.assertEqual(output.getvalue(), "ACCOUNT_PREFLIGHT: BLOCKED\n")
+
+
+class ProcessPrivilegeInventoryTests(unittest.TestCase):
+    def status(self, permitted="0000", effective="0000", ambient="0000", nnp="0"):
+        return f"CapPrm:\t{permitted}\nCapEff:\t{effective}\nCapAmb:\t{ambient}\nNoNewPrivs:\t{nnp}\n"
+
+    def test_unprivileged_process_and_nnp_observation(self):
+        for flag in ("0", "1"):
+            self.assertEqual(account.process_privilege_inventory(self.status(nnp=flag)), {
+                "process_capabilities_absent": True,
+                "no_new_privileges_enabled": flag == "1",
+            })
+
+    def test_each_capability_set_blocks(self):
+        for key in ("permitted", "effective", "ambient"):
+            with self.subTest(key=key):
+                privileges = account.process_privilege_inventory(self.status(**{key: "0001"}))
+                self.assertFalse(privileges["process_capabilities_absent"])
+                results = dict(privileges, wsl_boundary_review_required=False)
+                with patch.object(account, "inspect", return_value=results), contextlib.redirect_stdout(io.StringIO()):
+                    self.assertEqual(account.main(), 1)
+
+    def test_invalid_privilege_status_blocks(self):
+        for status in ("", self.status(nnp="2"), self.status(effective="-1"),
+                       self.status(ambient="xyz"), self.status() + "CapEff: 0\n",
+                       self.status().replace("CapPrm:\t0000\n", "")):
+            with self.subTest(status=status), self.assertRaises(ValueError):
+                account.process_privilege_inventory(status)
+
+    def test_observation_does_not_certify_wsl_or_bypass_groups(self):
+        for wsl, groups, expected in ((False, True, 0), (True, True, 1), (False, False, 1)):
+            results = dict(account.process_privilege_inventory(self.status()),
+                           wsl_boundary_review_required=wsl, privileged_groups_absent=groups)
+            with patch.object(account, "inspect", return_value=results), contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(account.main(), expected)

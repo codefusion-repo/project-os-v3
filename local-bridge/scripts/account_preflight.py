@@ -37,11 +37,35 @@ def mount_inventory(mountinfo):
     }
 
 
+def process_privilege_inventory(status):
+    """Report current capabilities, not future elevation or sudo policy."""
+    keys = {"CapPrm", "CapEff", "CapAmb", "NoNewPrivs"}
+    values = {}
+    for line in status.splitlines():
+        key, separator, value = line.partition(":")
+        if separator and key in keys:
+            if key in values:
+                raise ValueError("Duplicate process privilege field")
+            values[key] = value.strip()
+    if set(values) != keys or values["NoNewPrivs"] not in {"0", "1"}:
+        raise ValueError("Incomplete process privilege inventory")
+    for key in ("CapPrm", "CapEff", "CapAmb"):
+        value = values[key]
+        if not value or any(c not in "0123456789abcdefABCDEF" for c in value):
+            raise ValueError("Invalid process capability field")
+    return {
+        "process_capabilities_absent": all(
+            int(values[key], 16) == 0 for key in ("CapPrm", "CapEff", "CapAmb")),
+        "no_new_privileges_enabled": values["NoNewPrivs"] == "1",
+    }
+
+
 def inspect():
     results = {}
     uid = os.getuid()
     account = pwd.getpwuid(uid)
     results["unprivileged_uid"] = uid != 0 and os.geteuid() == uid
+    results.update(process_privilege_inventory(Path("/proc/self/status").read_text()))
     results["privileged_groups_absent"] = not PRIVILEGED.intersection(
         grp.getgrgid(g).gr_name for g in set(os.getgroups()) | {os.getgid(),os.getegid()})
     home = Path(account.pw_dir)
@@ -73,7 +97,10 @@ def main():
     for name,value in results.items():
         print(name+": "+("YES" if value else "NO"))
     print("Inventory only: sudo policy, ACLs, network, credential scopes and host boundary require independent review.")
-    return 0 if all(v for k,v in results.items() if k!="wsl_boundary_review_required") and not results["wsl_boundary_review_required"] else 1
+    # NoNewPrivs is an observation here, not proof of a restricted job.
+    # The strict inventory remains blocking on WSL and all known host mounts.
+    observations = {"wsl_boundary_review_required", "no_new_privileges_enabled"}
+    return 0 if all(v for k,v in results.items() if k not in observations) and not results["wsl_boundary_review_required"] else 1
 
 
 if __name__=="__main__":
