@@ -11,7 +11,7 @@ Repositorio o checkout accesible; locator primario solo ante ambigüedad materia
 
 ## Procedimiento concreto
 1. Comprobar repo, branch y objetivo; leer instrucciones y archivos de entrada pertinentes. Hacer cold start completo solo si se necesita; al continuar, acotar la inspección a lo cambiado o relevante y no recorrer todo el árbol.
-2. Inspeccionar issues, PRs, commits, diffs, checks, findings y blockers relevantes si GitHub está disponible; priorizar datos vivos al historial o resúmenes anteriores y no consultar todos los issues/PRs sin justificación.
+2. Inspeccionar issues, PRs, commits, diffs, checks, findings y blockers relevantes si GitHub está disponible; priorizar estado vivo al historial o resúmenes anteriores. Recuperar decisiones ratificadas del PM que afecten la tarea, según [PROJECT_OS.md](../../PROJECT_OS.md#decisiones-vigentes-y-continuidad), y distinguirlas de propuestas y autorizaciones históricas. No consultar todos los issues/PRs sin justificación.
 3. Identificar stack, comandos de verificación y archivos de alcance por evidencia; distinguir incertidumbres secundarias.
 4. Recuperar objetivo, estado, referencias, validación, blockers y siguiente paso seguro; pedir como máximo un locator primario solo ante ambigüedad material no resoluble.
 

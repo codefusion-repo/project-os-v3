@@ -1,6 +1,6 @@
 # Addendum — Project OS v3 MVP
 
-Complementa [V3_SPEC.md](V3_SPEC.md). La decisión consolidada de instalación central y adopción por proyecto al final de este documento prevalece sobre decisiones anteriores contradictorias:
+Antecedentes de [V3_SPEC.md](V3_SPEC.md). Para operar, lee [PROJECT_OS.md](../PROJECT_OS.md), que incorpora las decisiones vigentes y enlaza sus fuentes GitHub. Este addendum conserva contexto histórico; no es una segunda fuente normativa ni lectura obligatoria de los agentes.
 
 - El selector es obligatorio y conserva una experiencia familiar: selección interactiva de workflows y skills, composición, prompts listos para el agente, `continue` predeterminado y navegación rápida con pocas decisiones. Simplificar la implementación no debe degradar la experiencia útil. No importar resolver, kernel ni catálogo MOS de v2.
 - El PM autoriza desarrollar `codefusion-repo/project-os-v3` como repositorio público, subir el código y documentación de este MVP y abrir su draft PR. No incluir secretos, credenciales, datos privados ni material interno de otros repositorios. Merge, releases, deploys, permisos, settings y otras acciones sensibles siguen requiriendo autorización específica.
@@ -8,11 +8,11 @@ Complementa [V3_SPEC.md](V3_SPEC.md). La decisión consolidada de instalación c
 
 ## Templates operativos GitHub
 
-La biblioteca se amplía de diez a catorce templates: [merge](../templates/merge.md), [close](../templates/close.md), [comment](../templates/comment.md) y [review-comment](../templates/review-comment.md) preparan mensajes y acciones con referencias y resultados verificados. Se integran con implement, review_for_close y github-traceability y los agentes los utilizan cuando aportan valor, sin selección manual en el wizard. Preparación, ejecución y confirmación son distintas; merge y cierre requieren autorización específica. Se reutilizan la unidad y conversación existentes.
+La biblioteca se amplía de diez a catorce templates: [merge](../templates/merge.md), [close](../templates/close.md), [comment](../templates/comment.md) y [review-comment](../templates/review-comment.md) preparan mensajes y acciones con referencias y resultados verificados. Se integran con implement, review_for_close y github-traceability y los agentes aplican obligatoriamente el template pertinente a los artefactos GitHub, sin selección manual en el wizard, según [PROJECT_OS.md](../PROJECT_OS.md#selección-de-templates). Preparación, ejecución y confirmación son distintas; merge y cierre requieren autorización específica. Se reutilizan la unidad y conversación existentes.
 
 ## Garantías esenciales
 
-El PM requiere cold start desde el repositorio y GitHub, respuestas comunes de Ejecución, Review y Decisión pendiente, trazabilidad de toda la unidad y continuidad entre agentes con fuentes vivas. El selector y los catorce templates permanecen obligatorios como artefactos; su uso no es un gate. Continuar lo seguro ante incertidumbre secundaria y detener solo acciones sensibles sin autorización. Los escenarios de aceptación y sus límites se describen en [V3_SPEC.md](V3_SPEC.md) y [ADOPTION.md](ADOPTION.md).
+El PM requiere cold start desde el repositorio y GitHub, respuestas comunes de Ejecución, Review y Decisión pendiente, trazabilidad de toda la unidad y continuidad entre agentes con fuentes vivas. El selector y los catorce templates permanecen obligatorios como artefactos; el uso del selector no es un gate; la estructura del template correspondiente es obligatoria para los artefactos GitHub que existan, sin crear artefactos innecesarios. Continuar lo seguro ante incertidumbre secundaria y detener solo acciones sensibles sin autorización. Los escenarios de aceptación y sus límites se describen en [V3_SPEC.md](V3_SPEC.md) y [ADOPTION.md](ADOPTION.md).
 
 ## Corrección del selector tras review
 

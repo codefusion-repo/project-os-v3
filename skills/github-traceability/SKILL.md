@@ -18,6 +18,8 @@ Repo, scope autorizado y locator de issue/PR si existe.
 
 ## Contrato de templates y verificación
 
+Cuando el PM ratifique o sustituya una decisión material, actualizar el contrato operativo existente y la unidad GitHub afectada con referencia, alcance y estado; conservar historia y verificar publicación. Aplicar [decisiones vigentes y continuidad](../../PROJECT_OS.md#decisiones-vigentes-y-continuidad). No crear un registro paralelo ni inferir permisos.
+
 Aplica la [selección de templates](../../PROJECT_OS.md#selección-de-templates) obligatoriamente a los artefactos GitHub. Usa issue para issues, pull-request para descripción vigente del PR, execution o comment para registro material, review/review-comment para findings, decision para decisiones materiales, merge y close para sus registros, release para preparación de release. Conserva secciones sustantivas y tablas del template elegido; adapta campos y declara evidencia pendiente. Verifica estructura, contenido, permisos y ausencia de datos sensibles antes de publicar; relee el resultado y confirma URL y SHA. Al cambiar materialmente el PR actualiza su resumen y conserva el historial de comentarios. No confundas un texto libre, un commit o un check verde con cumplimiento del template. Si falta capacidad de lectura/publicación informa trazabilidad pendiente; no declares conformidad ni inventes evidencia. Este contrato no cambia por usar Local Bridge, terminal u otro proveedor.
 
 ## Publicación de review desde browser chat
