@@ -50,9 +50,26 @@ class Structure(unittest.TestCase):
         for adapter in ('terminal-agent.md', 'browser-chat.md'):
             content = (ROOT / 'adapters' / adapter).read_text().lower()
             self.assertIn('../project_os.md#selección-de-templates', content)
-            self.assertIn('evidencia real', content)
-            self.assertRegex(content, r'om(?:ite|itir)')
-            self.assertRegex(content, r'(?:no|nunca) invent')
+        self.assertIn('evidencia real', shared)
+        self.assertRegex(shared, r'om(?:ite|itir)')
+        self.assertRegex(shared, r'(?:no|nunca) invent')
+
+    def test_adapters_reference_central_policy_and_keep_surface_mechanisms(self):
+        shared = (ROOT / 'PROJECT_OS.md').read_text()
+        for name in ('browser-chat.md', 'terminal-agent.md'):
+            content = (ROOT / 'adapters' / name).read_text()
+            for anchor in ('trazabilidad-github-obligatoria', 'selección-de-templates',
+                           'instalación-adopción-y-versión-del-proyecto', 'seguridad-transversal-y-límites'):
+                self.assertIn('../PROJECT_OS.md#' + anchor, content)
+            self.assertNotIn('Conserva sus secciones sustantivas', content)
+            self.assertNotIn('PASS / CLOSEOUT PENDIENTE DE AUTORIZACIÓN', content)
+        self.assertIn('PASS / CLOSEOUT PENDIENTE DE AUTORIZACIÓN', shared)
+        browser = (ROOT / 'adapters/browser-chat.md').read_text()
+        for mechanism in ('expected_head_sha', '--match-head-commit', 'git branch -d'):
+            self.assertIn(mechanism, browser)
+        terminal = (ROOT / 'adapters/terminal-agent.md').read_text()
+        for mechanism in ('git status', 'git check-ignore', 'git ls-files', 'sandbox'):
+            self.assertIn(mechanism, terminal)
 
     def test_direct_markdown_bootstrap_links_both_base_skills(self):
         for filename in ('AGENTS.md', 'PROJECT_OS.md'):
@@ -99,8 +116,11 @@ class Structure(unittest.TestCase):
             content = (ROOT / path).read_text().lower()
             self.assertIn('selección-de-templates', content, path)
             self.assertIn('obligatori', content, path)
-            self.assertIn('secciones sustantivas', content, path)
-            self.assertIn('relee', content, path)
+        self.assertIn('secciones sustantivas', shared)
+        self.assertIn('relee', shared)
+        skill = (ROOT / 'skills/github-traceability/SKILL.md').read_text()
+        self.assertIn('secciones sustantivas', skill)
+        self.assertIn('relee', skill)
         self.assertIn('template pull-request', (ROOT / 'workflows/implement.md').read_text())
         self.assertIn('## Methodology invariant', (ROOT / 'local-bridge/MVP.md').read_text())
 
