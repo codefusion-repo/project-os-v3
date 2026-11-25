@@ -63,7 +63,7 @@ def prepared_unit(root):
 
 
 def snapshot(unit, call=systemctl):
-    result = call("show", *("--property=" + key for key in PROPERTIES), UNIT)
+    result = call("show", "--all", *("--property=" + key for key in PROPERTIES), UNIT)
     fields = {}
     for line in result.stdout.splitlines():
         key, sep, value = line.partition("=")
@@ -72,9 +72,13 @@ def snapshot(unit, call=systemctl):
         fields[key] = value
     if set(fields) != set(PROPERTIES) or fields["Id"] != UNIT:
         raise RuntimeError("Unconfirmed unit status")
-    if not fields["Job"].isascii() or not fields["Job"].isdecimal():
+    # systemctl v255 prints Job= when the uint32 job ID is zero.
+    # --all retains this explicit empty field; a missing field is still rejected.
+    job = fields["Job"]
+    if job and (len(job) > 10 or not job.isascii() or not job.isdecimal()
+                or int(job) > 0xFFFFFFFF):
         raise RuntimeError("Unconfirmed systemd job status")
-    pending = int(fields["Job"]) != 0
+    pending = bool(job) and int(job) != 0
     if (fields["LoadState"] == "not-found" and not fields["FragmentPath"]
             and not fields["DropInPaths"] and fields["ActiveState"] == "inactive"
             and fields["UnitFileState"] in ("", "not-found") and not pending):
@@ -124,10 +128,10 @@ def operate(unit, action, call=systemctl):
         args = ("reset-failed", UNIT)
         check = lambda state: state["linked"] and state["active"] == "inactive"
     elif action == "enable":
-        if not before["linked"] or before["active"] != "active":
-            raise RuntimeError("Explicit successful start and live health review required before enable")
         if before["enabled"]:
             return before
+        if not before["linked"] or before["active"] != "active":
+            raise RuntimeError("Explicit successful start and live health review required before enable")
         args = ("enable", str(unit))
         check = lambda state: state["linked"] and state["enabled"]
     elif action == "disable":

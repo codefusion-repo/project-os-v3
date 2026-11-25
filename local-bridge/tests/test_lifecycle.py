@@ -23,8 +23,47 @@ class LifecycleTests(unittest.TestCase):
                       FragmentPath=str(self.unit.parent / "foreign") if foreign else str(self.unit) if linked else "",
                       DropInPaths=dropins, NeedDaemonReload="no", ActiveState=active,
                       UnitFileState="enabled" if enabled else "linked" if linked else "",
-                      Job="42" if pending else "0")
+                      Job="42" if pending else "")
         return SimpleNamespace(returncode=0, stdout="\n".join(f"{k}={v}" for k,v in fields.items()))
+
+    def test_empty_job_status_for_absent_inactive_and_active_units(self):
+        for initial in (self.status(linked=False), self.status(),
+                        self.status(active="active")):
+            with self.subTest(output=initial.stdout):
+                call = Mock(return_value=initial)
+                self.assertFalse(operate(self.unit, "status", call)["pending_job"])
+                self.assertIn("--all", call.call_args.args)
+
+    def test_numeric_job_status(self):
+        for value, pending in (("0", False), ("42", True), ("4294967295", True)):
+            with self.subTest(value=value):
+                initial = self.status()
+                initial.stdout = initial.stdout.replace("Job=", "Job=" + value)
+                self.assertEqual(operate(self.unit, "status", Mock(return_value=initial))["pending_job"], pending)
+
+    def test_invalid_or_missing_job_status_never_mutates(self):
+        for line in ("", "Job= ", "Job=-1", "Job=abc", "Job=１２",
+                     "Job=4294967296", "Job=00000000000", "Job=0\nJob=42"):
+            with self.subTest(line=line):
+                initial = self.status()
+                initial.stdout = initial.stdout.replace("Job=", line).rstrip("\n")
+                call = Mock(return_value=initial)
+                with self.assertRaises(RuntimeError):
+                    operate(self.unit, "start", call)
+                self.assertEqual(call.call_count, 1)
+
+    def test_enable_existing_stopped_unit_is_noop(self):
+        for active in ("inactive", "failed"):
+            with self.subTest(active=active):
+                call = Mock(return_value=self.status(active=active, enabled=True))
+                self.assertTrue(operate(self.unit, "enable", call)["enabled"])
+                self.assertEqual(call.call_count, 1)
+
+    def test_enable_stopped_unenabled_unit_still_rejected(self):
+        call = Mock(return_value=self.status())
+        with self.assertRaisesRegex(RuntimeError, "live health"):
+            operate(self.unit, "enable", call)
+        self.assertEqual(call.call_count, 1)
 
     def test_link_idempotent_and_no_implicit_start(self):
         call = Mock(side_effect=[self.status(linked=False), SimpleNamespace(returncode=0),
