@@ -9,7 +9,7 @@ Evaluación de publicación, versión o despliegue.
 ## Ruta rápida
 1. Identifica ref, alcance, checks y estado real de revisión.
 2. Evalúa compatibilidad, migraciones, datos, seguridad y rollback cuando apliquen.
-3. Registra riesgos y preparación; ejecuta una acción de producción solo con autorización explícita.
+3. Registra riesgos y preparación; ejecuta la acción de producción si la operación solicitada la incluye, sin confirmación adicional y con sus gates satisfechos.
 ## Evidencia y validación
 Usa checks y controles observados; indica los no disponibles. Skills sugeridas: [security-review](../skills/security-review/SKILL.md), [documentation](../skills/documentation/SKILL.md).
 ## Salida

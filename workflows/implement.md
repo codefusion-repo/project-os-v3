@@ -10,7 +10,7 @@ Feature, corrección, refactor acotado o idea que necesita un slice vertical.
 1. Inspecciona requisitos, instrucciones, estado y código relevante; conserva cambios existentes.
 2. Elige una solución simple; para prototipo define hipótesis y un camino entrada → lógica → salida visible.
 3. Implementa y ejecuta la comprobación más útil; corrige fallos y revisa el diff.
-4. Para cambios destinados a integración, prepara y publica un commit significativo dentro del alcance solicitado; reutiliza el PR existente o abre uno draft, aplica el template pull-request a su descripción vigente y execution o comment al registro material, y verifica contenido publicado, SHA remoto y checks disponibles. Aplica la autorización por intención de [PROJECT_OS.md](../PROJECT_OS.md) a estos pasos.
+4. Para cambios destinados a integración, prepara y publica un commit significativo dentro del alcance solicitado; reutiliza el PR existente o abre uno draft, aplica el template pull-request a su descripción vigente y execution o comment al registro material, y verifica contenido publicado, SHA remoto y checks disponibles. Aplica la contrato de operación solicitada de [PROJECT_OS.md](../PROJECT_OS.md) a estos pasos.
 ## Evidencia y validación
 Muestra demo o pruebas reales y exit codes. Aplica [github-traceability](../skills/github-traceability/SKILL.md): sin publicación verificable informa trazabilidad pendiente; solo un experimento expresamente local y descartable se exceptúa. Skills sugeridas: [implement-change](../skills/implement-change/SKILL.md), [rapid-prototype](../skills/rapid-prototype/SKILL.md), [debug](../skills/debug/SKILL.md), [testing](../skills/testing/SKILL.md), [security-review](../skills/security-review/SKILL.md).
 ## Salida

@@ -12,4 +12,4 @@ Preparar readiness y mensaje de merge; ejecutar y confirmar son pasos separados.
 >
 > {{resultado_y_referencias_reales_a_issue_o_pr}}
 
-La preparación no autoriza merge. Solo con autorización específica y capacidad real, vuelve a comprobar PR, head, checks y política, y ejecuta la acción autorizada. Consulta después el estado del PR y el commit de merge real; informa confirmación solo si se observó. Si falla o falta acceso, informa el límite sin afirmar que se fusionó. No añadas un comentario duplicado si el merge ya proporciona trazabilidad.
+La preparación no autoriza merge. Cuando el PM solicita merge o review_for_close y se cumplen gates y capacidad real, vuelve a comprobar PR, head, checks y política, y ejecuta la acción autorizada. Consulta después el estado del PR y el commit de merge real; informa confirmación solo si se observó. Si falla o falta acceso, informa el límite sin afirmar que se fusionó. No añadas un comentario duplicado si el merge ya proporciona trazabilidad.

@@ -12,4 +12,4 @@ Preparar el cierre de la unidad existente con evidencia; ejecutar y confirmar so
 >
 > Evidencia: {{pr_commit_check_o_enlace_verificado}}. {{pendiente_si_aplica}}
 
-Preparar o publicar un mensaje no cierra la unidad. Cerrar requiere autorización específica: verifica el estado y la conversación antes de actuar, evita comentarios duplicados y no crees otro issue/PR. Si se ejecuta el cierre, consulta de nuevo el estado y reporta la confirmación observada; si no, informa que queda pendiente o sin verificar.
+Preparar o publicar un mensaje no cierra la unidad. Solicitar cerrar o review_for_close incluye el cierre cuando correspondan sus gates: verifica el estado y la conversación antes de actuar, evita comentarios duplicados y no crees otro issue/PR. Si se ejecuta el cierre, consulta de nuevo el estado y reporta la confirmación observada; si no, informa que queda pendiente o sin verificar.

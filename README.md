@@ -64,6 +64,6 @@ Desde el proyecto ejecuta project-os-v3, selecciona workflow (Enter: continue), 
     project-os-v3 --project "$PWD" --workflow implement --objective "Implementar una tarea concreta"
     project-os-v3 --project "$PWD" --workflow review_for_close --locator 123 --objective "Revisar este PR"
 
-Sustituye 123 por el PR real. Review requiere evidencia; closeout solo con autorización específica vigente y gates satisfechos. Para uso directo lee [PROJECT_OS.md](PROJECT_OS.md) y documentos pertinentes de la versión aplicable. Para desarrollar el kit usa [checkout separado](docs/PRODUCT.md#desarrollar-project-os-con-su-wizard). La certificación independiente y dogfood real son distintas de los tests del kit.
+Sustituye 123 por el PR real. Review requiere evidencia; review_for_close solicitado incluye closeout con PASS y gates satisfechos, sin otro GO. Para uso directo lee [PROJECT_OS.md](PROJECT_OS.md) y documentos pertinentes de la versión aplicable. Para desarrollar el kit usa [checkout separado](docs/PRODUCT.md#desarrollar-project-os-con-su-wizard). La certificación independiente y dogfood real son distintas de los tests del kit.
 
     python3 -m unittest discover -s tests -v

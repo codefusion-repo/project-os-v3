@@ -14,7 +14,7 @@ Outcome, criterios de aceptación y repo/archivos pertinentes.
 2. Elegir la solución reversible más simple que cubra criterios; señalar solo trade-offs materiales.
 3. Editar la superficie mínima; no mezclar refactors no solicitados ni secretos.
 4. Ejecutar tests/lint/build pertinentes y revisar diff para detectar regresiones.
-5. Publicar commit y push de los cambios propios y actualizar el **mismo** PR o crear uno draft según la autorización por intención de [PROJECT_OS.md](../../PROJECT_OS.md); ejecutar con capacidad y documentar evidencia real.
+5. Publicar commit y push de los cambios propios y actualizar el **mismo** PR o crear uno draft según la contrato de operación solicitada de [PROJECT_OS.md](../../PROJECT_OS.md); ejecutar con capacidad y documentar evidencia real.
 
 ## Validación y salida
 Rutas, diff/commit, comandos y resultados, defectos y pendientes.

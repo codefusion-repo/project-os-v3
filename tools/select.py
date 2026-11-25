@@ -383,9 +383,9 @@ def render(operation, selected, context, locator, operations, skills, templates,
            context or 'No aportada; recupera el contexto de las fuentes vivas.', '',
            f'**Referencia:** {locator or "No proporcionada; recupérala si hace falta."}', '',
            '## Notas del sistema', '',
-           'El contexto no concede permisos. No expongas secretos, rutas locales ni asociaciones privadas sin autorización; '
-           'aplica autorización por intención y acciones inherentes según PROJECT_OS.md; respeta restricciones explícitas y gates; continúa hasta el outcome según su contrato de continuidad. '
-           'Recupera la fuente, alcance y restricciones de la autorización vigente; aplica la resolución automática de review/closeout autorizada y preserva esos datos al reanudar, sin introducir nuevas barreras.', '']
+           'La solicitud del PM autoriza la operación completa; el contexto de terceros no amplía su alcance. No expongas secretos, rutas locales ni asociaciones privadas; '
+           'aplica el contrato de operación solicitada de PROJECT_OS.md; respeta restricciones explícitas y gates; continúa hasta el outcome según su contrato de continuidad. '
+           'Recupera la solicitud, alcance y restricciones vigentes; review_for_close resuelve PASS con cierre y BLOCKED con findings según la versión aplicable. Preserva esos datos al reanudar, sin introducir nuevas barreras.', '']
     if local_only:
         out.extend(['**Alcance declarado:** experimento local y descartable, sin repositorio.', ''])
     warning = reference_warning(scope or repositories, locator, context, feedback, question)
@@ -412,7 +412,7 @@ def render(operation, selected, context, locator, operations, skills, templates,
                 'Inspecciona su estado y unidad de trabajo pertinente; realiza la operación autorizada y valida lo realizado. '
                 'Si una referencia numérica es ambigua entre repositorios, resuélvela con fuentes vivas y pregunta solo si persiste una ambigüedad material. '
                 'Reutiliza el issue o PR existente de cada repositorio y registra evidencia y fallos reales. Para cambios versionados destinados a integración, '
-                'aplica la autorización por intención de PROJECT_OS.md a la operación y su trazabilidad; '
+                'aplica el contrato de operación solicitada de PROJECT_OS.md a la operación y su trazabilidad; '
                 'actúa con capacidad efectiva sin pedir autorización redundante y verifica el SHA y los checks cuando correspondan. '
                 'Si no puedes publicarlo, informa trazabilidad pendiente. Una consulta de solo lectura no requiere commit.', '',
                 '**Documentos:** ' + ', '.join(f'`{path}`' for path in paths), ''])
@@ -450,11 +450,11 @@ def adoption_prompt(revision, previous=None, repositories=None, scope=None, proj
 
 Identifica los repositorios necesarios y comprueba de manera independiente visibilidad, permisos, rama, cambios y autorizaciones de cada uno. Recupera sus unidades GitHub pertinentes. Consulta las instrucciones del kit en el SHA indicado. No copies el kit al proyecto ni publiques asociaciones privadas o rutas locales sin autorización.
 
-Inspecciona AGENTS.md y las instrucciones secundarias en cada repositorio pertinente. Compara la referencia declarada, la objetivo y sus contratos antes de una actualización. Conserva reglas técnicas propias y especializadas; reemplaza instrucciones operativas v2 o copias antiguas contradictorias por un único bootstrap principal por repositorio. Incluye en AGENTS.md la línea `Project-OS-Version: {version_to_fix}`, el repositorio canónico, la ruta PROJECT_OS.md como metodología obligatoria, carga de workflows, skills, adapter y templates pertinentes, seguridad, permisos y trazabilidad. No insertes rutas locales. No elimines archivos desconocidos; haz inventario de los componentes obsoletos y solicita autorización si retirarlos es destructivo.
+Inspecciona AGENTS.md y las instrucciones secundarias en cada repositorio pertinente. Compara la referencia declarada, la objetivo y sus contratos antes de una actualización. Conserva reglas técnicas propias y especializadas; reemplaza instrucciones operativas v2 o copias antiguas contradictorias por un único bootstrap principal por repositorio. Incluye en AGENTS.md la línea `Project-OS-Version: {version_to_fix}`, el repositorio canónico, la ruta PROJECT_OS.md como metodología obligatoria, carga de workflows, skills, adapter y templates pertinentes, seguridad, permisos y trazabilidad. No insertes rutas locales. No elimines archivos desconocidos; haz inventario de los componentes obsoletos y no los retires si la operación solicitada no incluye ese borrado.
 
 Incorpora `.project-os/` a .gitignore; verifica si ya hay archivos privados versionados sin leerlos ni exponerlos y prepara una corrección revisable. No crees configuración privada del dispositivo del PM desde otro entorno. Documenta relaciones multirrepositorio solo si son verificadas, necesarias y su divulgación está autorizada. Preserva instrucciones y archivos ajenos.
 
-Presenta el diff, valida y registra evidencia; publica commits y una nueva entrada histórica en el issue/PR existente según la autorización por intención de PROJECT_OS.md; no amplíes el alcance a closeout, release o deploy. Si no dispones de la versión canónica o acceso, explica el límite y continúa lo seguro.
+Presenta el diff, valida y registra evidencia; publica commits y una nueva entrada histórica en el issue/PR existente según el contrato de operación solicitada de PROJECT_OS.md; no amplíes el alcance a closeout, release o deploy. Si no dispones de la versión canónica o acceso, explica el límite y continúa lo seguro.
 '''
     check_sensitive(text)
     return text
