@@ -15,6 +15,7 @@ CONTEXT_ID = re.compile(r"[0-9a-f]{64}")
 DIGEST = re.compile(r"sha256:[0-9a-f]{64}")
 SAFE_PATH = re.compile(r"/[A-Za-z0-9_./-]+")
 PODMAN = "/usr/bin/podman"
+RUNROOT_MAX_BYTES = 50  # Podman 4.9.3 storage path limit.
 FIXTURE_TAG = "localhost/project-os-alpine-ci:candidate"
 DIRECTORIES = ("home", "runtime", "graph", "runroot", "libpod", "volumes", "networks", "tmp", "hooks",
                "config", "data", "cache")
@@ -35,6 +36,8 @@ class PodmanContext:
     def __init__(self, root):
         if os.getuid() == 0 or not SAFE_PATH.fullmatch(str(root)):
             raise ContextError("Canonical private rootless Podman context required")
+        if len(os.fsencode(root / "runroot")) > RUNROOT_MAX_BYTES:
+            raise ContextError("Podman runroot would exceed 50 bytes; choose a shorter private context path")
         self.root = root
 
     def configuration(self):
@@ -199,7 +202,7 @@ class PodmanContext:
             raise ContextError("Fixture image was not imported into this context")
         self.check_image(identity, image)
 
-    def smoke(self, image):
+    def smoke(self, image, *, fixture_only=True):
         identity = self.identity()
         self.host(identity)
         self.require_import(identity, image)
@@ -210,12 +213,15 @@ class PodmanContext:
             'assert pathlib.Path("/lib/ld-musl-x86_64.so.1").exists(); ctypes.CDLL("libkrb5.so.3"); '
             'assert sqlite3.connect(":memory:").execute("select 1").fetchone() == (1,); '
             'assert ssl.create_default_context() and {n for _, n in socket.if_nameindex()} <= {"lo"}; '
-            'assert all(u.find_spec(n) is None for n in ("pip", "setuptools", "ensurepip")); '
-            'assert not {d.metadata["Name"].lower() for d in m.distributions()} & {"pip", "setuptools"}; '
-            'assert not any(shutil.which(n) for n in ("pip", "pip3", "pip3.12")); '
-            'assert not list(pathlib.Path(sysconfig.get_path("stdlib")).glob("ensurepip/_bundled/*.whl")); '
             'assert zlib.decompress(zlib.compress(b"fixture")) == b"fixture"'
         )
+        if fixture_only:
+            program += (
+                '; assert all(u.find_spec(n) is None for n in ("pip", "setuptools", "ensurepip")); '
+                'assert not {d.metadata["Name"].lower() for d in m.distributions()} & {"pip", "setuptools"}; '
+                'assert not any(shutil.which(n) for n in ("pip", "pip3", "pip3.12")); '
+                'assert not list(pathlib.Path(sysconfig.get_path("stdlib")).glob("ensurepip/_bundled/*.whl"))'
+            )
         result = self.run(identity, "run", "--rm", "--pull=never", "--network=none", "--read-only",
                           "--cap-drop=ALL", "--security-opt=no-new-privileges", "--http-proxy=false",
                           "--image-volume=ignore", "--entrypoint", "python", image, "-I", "-B", "-c", program, timeout=30)

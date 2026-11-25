@@ -109,7 +109,8 @@ Review scanner/database freshness and every remaining finding. A scan of a diffe
 # Use the independently reviewed runtime and the verified local OCI bytes.
 bridge_python="$repo/local-bridge/.venv/bin/python"
 fixture_cli="$repo/local-bridge/.venv/bin/project-os-bridge-fixture"
-PODMAN_CONTEXT="$work/execution-context"  # new path, on a native filesystem
+context_parent="$(mktemp -d /tmp/lboci.XXXXXXXX)"  # use a native filesystem
+PODMAN_CONTEXT="$context_parent/context"  # Podman 4.9.3 limits runroot to 50 bytes
 "$bridge_python" -I -m project_os_bridge.podman_context --context "$PODMAN_CONTEXT" prepare
 image="$("$bridge_python" -I -m project_os_bridge.podman_context \
   --context "$PODMAN_CONTEXT" import-layout "$work/oci" "$digest")"

@@ -7,7 +7,8 @@ umask 077
 export XDG_RUNTIME_DIR="/run/user/$(id -u)"
 repo="$(cd -- "$(dirname -- "$0")/../.." && pwd)"
 work="$(mktemp -d "$RUNNER_TEMP/alpine-remediation.XXXXXXXX")"
-trap 'rm -rf -- "$work"' EXIT
+context_parent=
+trap 'rm -rf -- "$work"; if [ -n "$context_parent" ]; then rm -rf -- "$context_parent"; fi' EXIT
 mkdir "$work/packages" "$work/context" "$work/home" "$work/cache" "$work/state"
 # Only public-image scanner evidence; no container bytes, state or credentials.
 evidence_dir="$RUNNER_TEMP/lb-oci-evidence"
@@ -173,12 +174,21 @@ fi
 python3 -m venv "$work/venv"
 "$work/venv/bin/python" -m pip --isolated install --index-url https://pypi.org/simple --only-binary=:all: --require-hashes -r "$repo/local-bridge/requirements-linux-py312.lock"
 "$work/venv/bin/python" -m pip check
-context="$work/execution-context"
+# Podman 4.9.3 limits runroot to 50 bytes. Keep the native execution root short.
+context_parent="$(mktemp -d /tmp/lboci.XXXXXXXX)"
+context="$context_parent/context"
 runtime=(env "PYTHONPATH=$repo/local-bridge/src" "$work/venv/bin/python" -B)
 "${runtime[@]}" -m project_os_bridge.podman_context --context "$context" prepare
 [ "$("${runtime[@]}" -m project_os_bridge.podman_context --context "$context" import-layout "$work/oci" "$digest")" = "$image" ]
 if [ "$mode" = fixture-only ]; then
   "${runtime[@]}" -m project_os_bridge.podman_context --context "$context" smoke "$image"
+else
+  "${runtime[@]}" - "$context" "$image" <<'PYSMOKE'
+from pathlib import Path
+import sys
+from project_os_bridge.podman_context import PodmanContext
+PodmanContext(Path(sys.argv[1])).smoke(sys.argv[2], fixture_only=False)
+PYSMOKE
 fi
 fixture=0
 PYTHONPATH="$repo/local-bridge/src" "$work/venv/bin/python" -m project_os_bridge.vertical --state-dir "$work/state" --request-key ci-alpine-remediation --image "$image" --podman-context "$context" > "$work/evidence.json" || fixture=$?

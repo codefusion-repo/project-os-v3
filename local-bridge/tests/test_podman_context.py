@@ -44,6 +44,10 @@ class PodmanContextTests(unittest.TestCase):
         for flag, path in (("--root", "graph"), ("--runroot", "runroot"), ("--tmpdir", "libpod")):
             self.assertEqual(args[args.index(flag)+1], self.context.root / path)
 
+    def test_podman_runroot_length_is_checked_before_any_call(self):
+        with self.assertRaisesRegex(PermissionError, "50 bytes"):
+            PodmanContext(self.parent / ("x" * 50))
+
     def test_reopened_context_matches_and_wrong_store_does_not_call_podman(self):
         reopened = PodmanContext(self.context.root)
         self.assertEqual(reopened.identity(), self.identity)
