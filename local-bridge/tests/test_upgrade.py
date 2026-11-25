@@ -224,6 +224,17 @@ class UpgradeTests(unittest.TestCase):
         self.interrupted()
         self.assertTrue(self.restore())
 
+    def test_host_preflight_uses_same_strict_parent_policy(self):
+        host = self.kit / "untrusted-preflight"
+        host.mkdir(mode=0o700)
+        launcher = host / "python3"
+        launcher.symlink_to(Path("/usr/bin/false").resolve(strict=True))
+        host.chmod(0o777)
+        with self.assertRaisesRegex(PermissionError, "Unsafe host interpreter parent"):
+            upgrade.host_interpreter_identity(launcher)
+        self.assertFalse(self.active.exists())
+        self.assertFalse(self.backup.exists())
+
     def test_untrusted_host_interpreter_parent_blocks_before_rename(self):
         path = self.venv / "bin/python"
         path.unlink()

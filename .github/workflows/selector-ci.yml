@@ -33,8 +33,32 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
+      - name: Diagnose setup-python interpreter against the production trust policy
+        run: |
+          python3 -I -B - <<'PY'
+          import importlib.util, os, stat, sys
+          from pathlib import Path
+          spec = importlib.util.spec_from_file_location("upgrade", Path("local-bridge/scripts/upgrade.py"))
+          upgrade = importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(upgrade)
+          executable = Path(sys.executable)
+          for parent in (executable.resolve().parent, *executable.resolve().parent.parents):
+              info = parent.lstat()
+              print("CI_TOOLCACHE_PARENT", parent, "mode=" + oct(stat.S_IMODE(info.st_mode)),
+                    "trusted_owner=" + str(info.st_uid in (0, os.getuid())))
+          try:
+              identity = upgrade.host_interpreter_identity()
+          except PermissionError as exc:
+              if str(exc) not in ("Unsafe host interpreter parent", "Untrusted interpreter owner", "Unsafe interpreter executable"):
+                  raise
+              print("CI_TOOLCACHE_TRUST_REJECTED:", str(exc))
+          else:
+              print("CI_TOOLCACHE_TRUST_PASS", "interpreter_sha256=" + identity["sha256"])
+          PY
       - name: Run installer and negative controls in disposable checkout
-        run: bash local-bridge/scripts/ci-install.sh
+        # Ubuntu 24.04 supplies system Python 3.12; no toolcache override or
+        # permission changes. The public coordinator enforces the same policy.
+        run: env -u LD_LIBRARY_PATH -u PYTHONHOME -u PYTHONPATH PATH=/usr/bin:/bin /bin/bash local-bridge/scripts/ci-install.sh
 
   dependency-evidence:
     runs-on: ubuntu-24.04

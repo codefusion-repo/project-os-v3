@@ -32,8 +32,39 @@ expect_block 'Dirty checkout; preserved.' "$GITHUB_SHA"
 [ -f "$sentinel" ]
 rm -- "$sentinel"
 [ ! -e local-bridge/.venv ]
+# Public installer must reject a writable host interpreter parent before any
+# venv or active transaction is created, even if the executable itself is safe.
+bad_python="$(mktemp -d "$RUNNER_TEMP/bridge-untrusted-python.XXXXXXXX")"
+ln -s "$(command -v python3)" "$bad_python/python3"
+chmod 0777 "$bad_python"
+PATH="$bad_python:$PATH" expect_block 'BRIDGE INTERPRETER REJECTED: Unsafe host interpreter parent' "$GITHUB_SHA"
+unlink "$bad_python/python3"
+rmdir "$bad_python"
+[ ! -e local-bridge/.venv ] && [ ! -L local-bridge/.venv ]
+[ ! -e local-bridge/.venv-install.guard/active.json ] && [ ! -L local-bridge/.venv-install.guard/active.json ]
+echo 'HOST INTERPRETER PREFLIGHT NEGATIVE PASS'
 PIP_INDEX_URL=http://127.0.0.1:1 PIP_EXTRA_INDEX_URL=http://127.0.0.1:1 PIP_REQUIRE_VIRTUALENV=false bash "$install" "$GITHUB_SHA"
 venv=local-bridge/.venv
+# Check the actual installed interpreter, not a substitute executable, and
+# prove the public coordinator completed its durable transaction.
+python3 -I -B - <<'PY'
+import importlib.util
+from pathlib import Path
+spec = importlib.util.spec_from_file_location("upgrade", Path("local-bridge/scripts/upgrade.py"))
+upgrade = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(upgrade)
+host = upgrade.host_interpreter_identity()
+kit = Path.cwd()
+installed = upgrade.identity(kit / "local-bridge/.venv")["interpreter"]
+for key in ("dev", "ino", "uid", "mode", "size", "sha256"):
+    assert host[key] == installed[key], key
+with upgrade.checkout_guard(kit) as (guard, fd):
+    assert not (guard / upgrade.ACTIVE).exists()
+    assert not (guard / upgrade.ACTIVE).is_symlink()
+    assert not (guard.parent / upgrade.BACKUP).exists()
+    assert not (guard.parent / upgrade.BACKUP).is_symlink()
+print("PUBLIC_INSTALL_TRANSACTION_PASS", "interpreter_sha256=" + host["sha256"])
+PY
 for cli in project-os-bridge project-os-bridge-http project-os-bridge-fixture project-os-bridge-init; do
   "$venv/bin/$cli" --help >/dev/null
 done

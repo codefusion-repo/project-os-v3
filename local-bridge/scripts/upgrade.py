@@ -261,19 +261,21 @@ def validate_venv(path):
         raise ValueError("Incomplete virtual environment")
 
 
-def interpreter_identity(venv):
+def interpreter_identity(venv, *, executable=None):
     # Use relative labels inside the venv: a backup rename must not change
     # the recorded identity. Never execute a relocated interpreter.
     def label(path):
-        return ("venv:" + str(path.relative_to(venv)) if path.is_relative_to(venv)
+        return ("venv:" + str(path.relative_to(venv)) if venv is not None and path.is_relative_to(venv)
                 else "host:" + str(path))
 
-    path = venv / "bin/python"
+    path = venv / "bin/python" if executable is None else executable
+    if not path.is_absolute():
+        raise ValueError("Absolute interpreter path required")
     links = []
     seen = set()
     for _ in range(16):
         parent = path.parent.resolve(strict=True)
-        if path.is_relative_to(venv):
+        if venv is not None and path.is_relative_to(venv):
             if parent != path.parent:
                 raise PermissionError("Unexpected venv interpreter parent link")
         else:
@@ -295,7 +297,7 @@ def interpreter_identity(venv):
             if ".." in target_path.parts:
                 raise ValueError("Unsupported interpreter link traversal")
             if target_path.is_absolute():
-                if target_path.is_relative_to(venv):
+                if venv is not None and target_path.is_relative_to(venv):
                     raise ValueError("Absolute link into relocated venv")
                 next_path = target_path
             else:
@@ -321,6 +323,12 @@ def interpreter_identity(venv):
                 "dev": info.st_dev, "ino": info.st_ino, "uid": info.st_uid,
                 "mode": stat.S_IMODE(info.st_mode), "size": info.st_size, "sha256": digest}
     raise ValueError("Interpreter link limit exceeded")
+
+
+def host_interpreter_identity(executable=None):
+    # Same policy as the installed venv target, before creating a journal or
+    # moving the previous environment. Do not resolve away launcher links.
+    return interpreter_identity(None, executable=Path(sys.executable) if executable is None else executable)
 
 
 def identity(path):
@@ -480,7 +488,7 @@ def launch_build(kit, sha, wheel, active, tx, fds):
                'IFS= read -r -n 1 -u "$1" permit && [ "$permit" = Y ] || exit 1; '
                'shift; exec /bin/bash "$@"',
                "bridge-build", str(reader), str(kit / "local-bridge/scripts/install-build.sh"),
-               str(fds[0]), sha]
+               str(fds[0]), sys.executable, sha]
         if wheel is not None:
             cmd.append(wheel)
         child = subprocess.Popen(cmd, start_new_session=True,
@@ -616,6 +624,7 @@ def initial_install(kit, sha, wheel, guard, fd):
     if observed is None or observed["sha"] != sha or (wheel is not None and observed["wheel_sha256"] != wheel):
         raise ValueError("Installation receipt mismatch")
     finish(active, tx)
+    print("BRIDGE INSTALL PASS; existing wizard available; no service started.", flush=True)
 
 
 def check_release(kit, sha, guard, bound_python, root=None):
@@ -660,6 +669,8 @@ def main():
         verify_checkout(kit, args.reviewed_sha)
         if args.expected_wheel is not None and not DIGEST.fullmatch(args.expected_wheel):
             raise ValueError("Invalid expected wheel digest")
+        if args.action in ("install", "upgrade"):
+            host_interpreter_identity()
         with checkout_guard(kit) as (guard, fd):
             verify_checkout(kit, args.reviewed_sha)
             if args.action == "install":
@@ -704,6 +715,11 @@ def main():
                         "Existing bridge environment preserved."):
             if type(exc) is ValueError and str(exc) == message:
                 print(message, file=sys.stderr)
+        # Fixed diagnostic categories only; no paths or exception payloads.
+        if isinstance(exc, PermissionError) and str(exc) in (
+                "Unsafe host interpreter parent", "Untrusted interpreter owner",
+                "Unsafe interpreter executable", "Unexpected venv interpreter parent link"):
+            print("BRIDGE INTERPRETER REJECTED: " + str(exc), file=sys.stderr)
         print("BRIDGE MAINTENANCE BLOCKED OR INTERRUPTED; preserve files and inspect locally",
               file=sys.stderr)
         raise SystemExit(1) from None

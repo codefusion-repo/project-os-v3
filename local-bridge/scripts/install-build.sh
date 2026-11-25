@@ -7,9 +7,11 @@ umask 077
 # Verify the same open file description holds the lock and matches the durable
 # transaction group before any writes. This is coordination, not a UID sandbox.
 lock_fd="${1-}"
-shift
+host_python="${2-}"
+shift 2
+[[ "$host_python" = /* ]] || exit 1
 KIT="$(cd -- "$(dirname -- "$0")/../.." && pwd -P)"
-python3 -I - "$KIT" "$lock_fd" "${1-}" "${2-}" <<'PY'
+"$host_python" -I - "$KIT" "$lock_fd" "${1-}" "${2-}" <<'PY'
 import fcntl, json, os, stat, sys
 from pathlib import Path
 kit, raw_fd, sha, wheel = sys.argv[1:]
@@ -47,7 +49,7 @@ fi
 [ "$(git -C "$KIT" config --local --get remote.origin.url)" = https://github.com/codefusion-repo/project-os-v3.git ] || { echo 'Unexpected origin.' >&2; exit 1; }
 checkout_status="$(git -C "$KIT" status --porcelain --untracked-files=normal)"
 [ -z "$checkout_status" ] || { echo 'Dirty checkout; preserved.' >&2; exit 1; }
-python3 -I -c 'import sys,platform; sys.exit(not (sys.version_info[:2]==(3,12) and sys.platform=="linux" and platform.machine()=="x86_64"))'
+"$host_python" -I -c 'import sys,platform; sys.exit(not (sys.version_info[:2]==(3,12) and sys.platform=="linux" and platform.machine()=="x86_64"))'
 VENV="$KIT/local-bridge/.venv"
 if [ -e "$VENV" ] || [ -L "$VENV" ]; then
   echo 'Existing bridge environment preserved. Use the reviewed upgrade runbook for maintenance.' >&2
@@ -55,11 +57,11 @@ if [ -e "$VENV" ] || [ -L "$VENV" ]; then
 fi
 # Create at final path (venv entrypoints are not relocatable).
 # Do not execute the host's unreviewed bundled pip from ensurepip.
-python3 -I - "$VENV" <<'PY'
+"$host_python" -I - "$VENV" <<'PY'
 import os, sys
 os.mkdir(sys.argv[1],0o700)
 PY
-python3 -I -m venv --without-pip "$VENV"
+"$host_python" -I -m venv --without-pip "$VENV"
 work="$(mktemp -d /tmp/project-os-install.XXXXXXXX)"
 trap 'rm -rf -- "$work"' EXIT
 mkdir "$work/wheels" "$work/source" "$work/source-repeat" "$work/home" "$work/project-wheel" "$work/project-repeat"
@@ -106,4 +108,4 @@ with os.fdopen(fd, "w") as stream:
     stream.flush()
     os.fsync(stream.fileno())
 PY
-printf '%s\n' 'BRIDGE INSTALL PASS; existing wizard available; no service started.'
+printf '%s\n' 'BRIDGE BUILD PASS; coordinator validation pending.'
