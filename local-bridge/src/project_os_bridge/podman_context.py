@@ -20,6 +20,10 @@ DIRECTORIES = ("home", "runtime", "graph", "runroot", "libpod", "volumes", "netw
                "config", "data", "cache")
 
 
+class ContextError(PermissionError):
+    """A fixed diagnostic safe for local CLI and disposable CI output."""
+
+
 def file_identity(path):
     info = path.stat()
     return [info.st_dev, info.st_ino]
@@ -30,7 +34,7 @@ class PodmanContext:
 
     def __init__(self, root):
         if os.getuid() == 0 or not SAFE_PATH.fullmatch(str(root)):
-            raise PermissionError("Canonical private rootless Podman context required")
+            raise ContextError("Canonical private rootless Podman context required")
         self.root = root
 
     def configuration(self):
@@ -51,13 +55,13 @@ class PodmanContext:
         for name, content in self.configuration().items():
             path = root / name
             if private_file(path).st_size != len(content) or path.read_bytes() != content:
-                raise PermissionError("Podman context configuration changed")
+                raise ContextError("Podman context configuration changed")
         if any((root / "hooks").iterdir()) or any((root / "home").iterdir()):
-            raise PermissionError("Podman context HOME and hooks must be empty")
+            raise ContextError("Podman context HOME and hooks must be empty")
         for line in Path("/proc/self/mountinfo").read_text().splitlines():
             mount = re.sub(r"\\([0-7]{3})", lambda match: chr(int(match[1], 8)), line.split()[4])
             if Path(mount).is_relative_to(root):
-                raise PermissionError("Unexpected mount inside Podman context")
+                raise ContextError("Unexpected mount inside Podman context")
         # Avoid auto-injected host mounts before the fixed child can inspect its mount table.
         for directory in (Path("/usr/share/containers"), Path("/etc/containers"), root / "config/containers"):
             path = directory / "mounts.conf"
@@ -65,7 +69,7 @@ class PodmanContext:
                 info = path.stat()
                 if (not stat.S_ISREG(info.st_mode) or info.st_size > 65536 or any(
                         line.strip() and not line.lstrip().startswith("#") for line in path.read_text().splitlines())):
-                    raise PermissionError("Podman automatic host mounts are not allowed")
+                    raise ContextError("Podman automatic host mounts are not allowed")
 
     def _run(self, *args, timeout=10, capture=False):
         root = self.root
@@ -82,24 +86,33 @@ class PodmanContext:
                  "--storage-driver=overlay", "--events-backend=file")
         return subprocess.run([PODMAN, *flags, *args], env=env, stdin=subprocess.DEVNULL,
                               stdout=subprocess.PIPE if capture else subprocess.DEVNULL,
-                              stderr=subprocess.DEVNULL, timeout=timeout, check=False)
+                              stderr=subprocess.PIPE if args[:1] == ("info",) else subprocess.DEVNULL,
+                              timeout=timeout, check=False)
 
     def _host(self):
         info = self._run("info", "--format", "json", capture=True)
-        if info.returncode or len(info.stdout) > 262144:
-            raise ValueError("Podman info failed")
+        if info.returncode:
+            error = (info.stderr or b"").lower()
+            categories = ((b"permission denied", "permission"), (b"operation not permitted", "permission"),
+                          (b"database", "database"), (b"cgroup", "cgroup"), (b"namespace", "namespace"),
+                          (b"invalid argument", "invalid argument"), (b"no such file", "missing file"))
+            reason = next((name for needle, name in categories if needle in error), "unclassified")
+            raise ContextError(f"Podman info exit {info.returncode} ({reason})")
+        if len(info.stdout) > 262144:
+            raise ContextError("Podman info exceeds bound")
         data = json.loads(info.stdout)
         host, store = data["host"], data["store"]
         paths = {"graphRoot": "graph", "runRoot": "runroot", "volumePath": "volumes",
                  "imageCopyTmpDir": "tmp", "configFile": "storage.conf"}
-        if any(store.get(key) != str(self.root / value) for key, value in paths.items()):
-            raise PermissionError("Unexpected Podman storage paths")
+        for key, value in paths.items():
+            if store.get(key) != str(self.root / value):
+                raise ContextError(f"Unexpected Podman storage path field: {key}")
         if (store.get("graphDriverName") != "overlay" or store.get("transientStore") is not False
                 or any("additional" in k.lower() for k in (store.get("graphOptions") or {}))
                 or not host["security"].get("rootless") is True
                 or not host["security"].get("seccompEnabled") is True
                 or host.get("cgroupVersion") != "v2" or host.get("databaseBackend") != "sqlite"):
-            raise PermissionError("Unexpected Podman storage or security configuration")
+            raise ContextError("Unexpected Podman storage or security configuration")
         return host
 
     def _identity(self):
@@ -110,13 +123,13 @@ class PodmanContext:
         info = db.lstat()
         if (db.resolve(strict=True) != db or not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
                 or info.st_mode & 0o022 or info.st_nlink != 1):
-            raise PermissionError("Unknown Podman state database")
+            raise ContextError("Unknown Podman state database")
         pause = root / "runtime/libpod/tmp/pause.pid"
         if pause.resolve(strict=True) != pause or not 0 < private_file(pause).st_size <= 32:
-            raise PermissionError("Rootless Podman pause identity unavailable")
+            raise ContextError("Rootless Podman pause identity unavailable")
         pid = pause.read_text().strip()
         if not re.fullmatch(r"[1-9][0-9]*", pid):
-            raise PermissionError("Rootless Podman pause identity unavailable")
+            raise ContextError("Rootless Podman pause identity unavailable")
         ns = Path("/proc") / pid / "ns"
         values = ["podman-context-v1", os.getuid(), str(root), Path("/proc/sys/kernel/random/boot_id").read_text()]
         values += [file_identity(p) for p in (root, *(root / name for name in DIRECTORIES), db, pause,
@@ -127,11 +140,11 @@ class PodmanContext:
         private_directory(self.root)
         path = self.root / "identity"
         if private_file(path).st_size != 65:
-            raise PermissionError("Unknown Podman context")
+            raise ContextError("Unknown Podman context")
         identity = path.read_text().strip()
         if (not CONTEXT_ID.fullmatch(identity) or (expected is not None and identity != expected)
                 or identity != self._identity()):
-            raise PermissionError("Podman context identity differs")
+            raise ContextError("Podman context identity differs")
         return identity
 
     def host(self, expected):
@@ -157,7 +170,15 @@ class PodmanContext:
                 file.write(content)
         self.check_layout()
         self._host()
-        identity = self._identity()
+        try:
+            identity = self._identity()
+        except (FileNotFoundError, PermissionError) as exc:
+            if isinstance(exc, ContextError):
+                raise
+            db = self.root / "graph/db.sql"
+            pause = self.root / "runtime/libpod/tmp/pause.pid"
+            part = "state DB" if not db.is_file() else "pause file" if not pause.is_file() else "pause namespace"
+            raise ContextError(f"Podman {part} unavailable during prepare ({type(exc).__name__})") from None
         with (self.root / "identity").open("x") as file:
             file.write(identity + "\n")
         return identity
@@ -165,13 +186,13 @@ class PodmanContext:
     def check_image(self, identity, image, digest=None):
         result = self.run(identity, "image", "inspect", "--format", "{{.Digest}}", image, capture=True)
         if result.returncode or result.stdout.strip() != (digest or image.rsplit("@", 1)[-1]).encode():
-            raise PermissionError("Exact digest absent from the Podman context")
+            raise ContextError("Exact digest absent from the Podman context")
 
     def require_import(self, identity, image):
         self.identity(identity)
         pin = self.root / "image"
         if private_file(pin).st_size != len(image) + 1 or pin.read_text() != image + "\n":
-            raise PermissionError("Fixture image was not imported into this context")
+            raise ContextError("Fixture image was not imported into this context")
         self.check_image(identity, image)
 
     def smoke(self, image):
@@ -254,8 +275,10 @@ def main():
         else:
             context.smoke(args.image)
             print("FIXTURE_IMAGE_COMPATIBILITY_PASS")
-    except (OSError, ValueError, KeyError, TypeError, AttributeError, subprocess.SubprocessError):
-        parser.exit(1, "PODMAN_CONTEXT_BLOCKED; inspect private context locally\n")
+    except ContextError as exc:
+        parser.exit(1, f"PODMAN_CONTEXT_BLOCKED: {exc}\n")
+    except (OSError, ValueError, KeyError, TypeError, AttributeError, subprocess.SubprocessError) as exc:
+        parser.exit(1, f"PODMAN_CONTEXT_BLOCKED during {args.operation} ({type(exc).__name__})\n")
 
 
 if __name__ == "__main__":
