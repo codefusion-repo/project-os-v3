@@ -38,7 +38,11 @@ def main():
     parser.add_argument("--root",type=Path,required=True)
     parser.add_argument("--prepare-service", action="store_true",
                         help="Prepare a new private HTTPS service for an existing instance")
+    parser.add_argument("--no-fixture", action="store_true",
+                        help="Disable fixture binding during service preparation")
     args=parser.parse_args()
+    if args.no_fixture and not args.prepare_service:
+        parser.error("--no-fixture requires --prepare-service")
     os.umask(0o077)
     if args.prepare_service:
         from .service_setup import interactive_prepare
