@@ -73,16 +73,40 @@ def commands(root):
     return bridge, tunnel_cmd, env, tunnel_env, context, verifier
 
 
-def stop_child(child, timeout):
+def request_stop(child):
+    if child is not None and child.poll() is None:
+        child.terminate()
+
+
+def wait_child(child, timeout):
     if child is None or child.poll() is not None:
         return
-    child.terminate()
     try:
         child.wait(timeout=timeout)
     except subprocess.TimeoutExpired:
         child.kill()
         child.wait(timeout=5)
         raise RuntimeError("Forced child termination; inspect local state")
+
+
+def stop_child(child, timeout):
+    request_stop(child)
+    wait_child(child, timeout)
+
+
+def stop_children(tunnel, bridge):
+    # Signal both before waiting: the worker must stop accepting new dispatch
+    # while a slow tunnel is exiting. Preserve tunnel-first signal ordering.
+    try:
+        request_stop(tunnel)
+    finally:
+        try:
+            request_stop(bridge)
+        finally:
+            try:
+                wait_child(tunnel, 10)
+            finally:
+                wait_child(bridge, 90)
 
 
 def supervise(bridge_cmd, tunnel_cmd, env, tunnel_env, context, verifier, stop):
@@ -118,10 +142,7 @@ def supervise(bridge_cmd, tunnel_cmd, env, tunnel_env, context, verifier, stop):
             if bridge.poll() is not None or tunnel.poll() is not None:
                 raise RuntimeError("Child exited; both services stopping")
     finally:
-        try:
-            stop_child(tunnel,10)
-        finally:
-            stop_child(bridge,90)
+        stop_children(tunnel, bridge)
 
 
 def run(root):

@@ -13,7 +13,7 @@ from .workos_auth import private_directory, private_file
 
 UNIT = "project-os-bridge.service"
 PROPERTIES = ("Id", "LoadState", "FragmentPath", "DropInPaths",
-              "NeedDaemonReload", "ActiveState", "UnitFileState")
+              "NeedDaemonReload", "ActiveState", "UnitFileState", "Job")
 
 
 def systemctl(*args):
@@ -72,10 +72,13 @@ def snapshot(unit, call=systemctl):
         fields[key] = value
     if set(fields) != set(PROPERTIES) or fields["Id"] != UNIT:
         raise RuntimeError("Unconfirmed unit status")
+    if not fields["Job"].isascii() or not fields["Job"].isdecimal():
+        raise RuntimeError("Unconfirmed systemd job status")
+    pending = int(fields["Job"]) != 0
     if (fields["LoadState"] == "not-found" and not fields["FragmentPath"]
             and not fields["DropInPaths"] and fields["ActiveState"] == "inactive"
-            and fields["UnitFileState"] in ("", "not-found")):
-        return {"linked": False, "active": "inactive", "enabled": False}
+            and fields["UnitFileState"] in ("", "not-found") and not pending):
+        return {"linked": False, "active": "inactive", "enabled": False, "pending_job": False}
     if result.returncode or fields["LoadState"] != "loaded" or not fields["FragmentPath"]:
         raise RuntimeError("Unit unavailable")
     fragment = Path(fields["FragmentPath"])
@@ -87,14 +90,14 @@ def snapshot(unit, call=systemctl):
     if fields["ActiveState"] not in ("active", "inactive", "failed", "activating", "deactivating"):
         raise RuntimeError("Unsupported active state")
     return {"linked": True, "active": fields["ActiveState"],
-            "enabled": fields["UnitFileState"] == "enabled"}
+            "enabled": fields["UnitFileState"] == "enabled", "pending_job": pending}
 
 
 def operate(unit, action, call=systemctl):
     before = snapshot(unit, call)
     if action == "status":
         return before
-    if before["active"] in ("activating", "deactivating"):
+    if before["pending_job"] or before["active"] in ("activating", "deactivating"):
         raise RuntimeError("Transition in progress; inspect status")
     if action == "link":
         if before["linked"]:
@@ -106,13 +109,20 @@ def operate(unit, action, call=systemctl):
             raise RuntimeError("Link first; inspect failed service before recovery")
         if before["active"] == "active":
             return before
-        args = ("start", UNIT)
+        args = ("start", "--job-mode=fail", UNIT)
         check = lambda state: state["linked"] and state["active"] == "active"
     elif action == "stop":
         if before["active"] == "inactive":
             return before
-        args = ("stop", UNIT)
+        args = ("stop", "--job-mode=fail", UNIT)
         check = lambda state: state["active"] == "inactive"
+    elif action == "reset-failed":
+        if not before["linked"] or before["active"] == "active":
+            raise RuntimeError("Only a stopped, identified unit can be reset")
+        if before["active"] == "inactive":
+            return before
+        args = ("reset-failed", UNIT)
+        check = lambda state: state["linked"] and state["active"] == "inactive"
     elif action == "enable":
         if not before["linked"] or before["active"] != "active":
             raise RuntimeError("Explicit successful start and live health review required before enable")
@@ -134,10 +144,12 @@ def operate(unit, action, call=systemctl):
         result = call(*args)
     except subprocess.TimeoutExpired:
         # A timeout does not mean systemd did not apply the operation.
-        snapshot(unit, call)
+        after = snapshot(unit, call)
+        if not after["pending_job"] and check(after):
+            return after
         raise RuntimeError("Lifecycle outcome unconfirmed; inspect status before retry") from None
     after = snapshot(unit, call)
-    if result.returncode or not check(after):
+    if result.returncode or after["pending_job"] or not check(after):
         raise RuntimeError("Lifecycle outcome unconfirmed; inspect status before retry")
     return after
 
@@ -145,13 +157,13 @@ def operate(unit, action, call=systemctl):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--root", required=True, type=Path)
-    parser.add_argument("action", choices=("link", "start", "stop", "status", "enable", "disable"))
+    parser.add_argument("action", choices=("link", "start", "stop", "status", "reset-failed", "enable", "disable"))
     args = parser.parse_args()
     try:
         unit = prepared_unit(args.root)
         with exclusive_lifecycle():
             state = operate(unit, args.action)
-        print(f"linked={state['linked']} active={state['active']} enabled={state['enabled']}")
+        print(f"linked={state['linked']} active={state['active']} enabled={state['enabled']} pending_job={state['pending_job']}")
     except (OSError, ValueError, RuntimeError, subprocess.SubprocessError):
         print("LIFECYCLE_BLOCKED_OR_UNCONFIRMED; inspect local status", file=sys.stderr)
         raise SystemExit(1)

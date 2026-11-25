@@ -88,9 +88,9 @@ local-bridge/.venv/bin/project-os-bridge-init --root "$ROOT" --prepare-service
 test ! -e "$ROOT/state/allow-authenticated-probe"
 systemd-analyze --user verify "$ROOT/service/project-os-bridge.service"
 # Use the reviewed installed bridge venv Python, not the system Python.
-python -I -m project_os_bridge.lifecycle --root "$ROOT" link
-python -I -m project_os_bridge.lifecycle --root "$ROOT" start
-python -I -m project_os_bridge.lifecycle --root "$ROOT" status
+local-bridge/.venv/bin/python -I -m project_os_bridge.lifecycle --root "$ROOT" link
+local-bridge/.venv/bin/python -I -m project_os_bridge.lifecycle --root "$ROOT" start
+local-bridge/.venv/bin/python -I -m project_os_bridge.lifecycle --root "$ROOT" status
 
 ```
 
@@ -134,13 +134,13 @@ PY
 Only with explicit permission for this NEW disposable probe, create its empty local opt-in using `(umask 077; set -o noclobber; : > "$ROOT/state/allow-authenticated-probe")`. Attach the separate OAuth connector, confirm health reports no real repository access and no fixture availability, submit a unique disposable probe, replay the same request key and compare job ID/evidence. Remove only that known empty marker to revoke access; expect FORBIDDEN, not a reconnect loop. Restore with the same noclobber command, check health and job evidence again. Verify fixed-schema local audit 403 without publishing identifiers. Stop if any unexpected behavior.
 
 ```bash
-python -I -m project_os_bridge.lifecycle --root "$ROOT" stop
-python -I -m project_os_bridge.lifecycle --root "$ROOT" status
-python -I -m project_os_bridge.lifecycle --root "$ROOT" start
-python -I -m project_os_bridge.lifecycle --root "$ROOT" status
+local-bridge/.venv/bin/python -I -m project_os_bridge.lifecycle --root "$ROOT" stop
+local-bridge/.venv/bin/python -I -m project_os_bridge.lifecycle --root "$ROOT" status
+local-bridge/.venv/bin/python -I -m project_os_bridge.lifecycle --root "$ROOT" start
+local-bridge/.venv/bin/python -I -m project_os_bridge.lifecycle --root "$ROOT" status
 ```
 
-Repeat TLS checks and MCP health/replay after restart. End by revoking only the new probe flag if present and stopping this unit. Preserve state, configuration and logs. No deletion, no enabling or migration of the pilot. If a forced stop occurred, reconcile jobs/containers before restarting.
+Repeat TLS checks and MCP health/replay after restart. End by revoking only the new probe flag if present and stopping this unit. Preserve state, configuration and logs. No deletion, no enabling or migration of the pilot. If a forced stop occurred, reconcile jobs/containers before restarting. Inspect lifecycle status: do not mutate while pending_job=True. If failed persists after diagnosis and reconciliation, use the same reviewed venv's lifecycle reset-failed explicitly; it does not start the service or clear durable effects. Issue a separate authorized start only when quiescence and recovery have been verified.
 
 ## 5. Separate fixture and production gates
 

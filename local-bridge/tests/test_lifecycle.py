@@ -18,11 +18,12 @@ class LifecycleTests(unittest.TestCase):
         self.unit = Path(directory.name) / UNIT
         self.unit.touch()
 
-    def status(self, *, linked=True, active="inactive", enabled=False, foreign=False, dropins=""):
+    def status(self, *, linked=True, active="inactive", enabled=False, foreign=False, dropins="", pending=False):
         fields = dict(Id=UNIT, LoadState="loaded" if linked else "not-found",
                       FragmentPath=str(self.unit.parent / "foreign") if foreign else str(self.unit) if linked else "",
                       DropInPaths=dropins, NeedDaemonReload="no", ActiveState=active,
-                      UnitFileState="enabled" if enabled else "linked" if linked else "")
+                      UnitFileState="enabled" if enabled else "linked" if linked else "",
+                      Job="42" if pending else "0")
         return SimpleNamespace(returncode=0, stdout="\n".join(f"{k}={v}" for k,v in fields.items()))
 
     def test_link_idempotent_and_no_implicit_start(self):
@@ -40,7 +41,7 @@ class LifecycleTests(unittest.TestCase):
         self.assertEqual(operate(self.unit, "start", call)["active"], "active")
         self.assertEqual(operate(self.unit, "stop", call)["active"], "inactive")
         self.assertEqual([c.args for c in call.call_args_list if c.args[0] != "show"],
-                         [("start", UNIT), ("stop", UNIT)])
+                         [("start", "--job-mode=fail", UNIT), ("stop", "--job-mode=fail", UNIT)])
 
     def test_enable_disable_are_separate_and_opt_in(self):
         call = Mock(side_effect=[self.status(active="active"), SimpleNamespace(returncode=0),
@@ -73,14 +74,36 @@ class LifecycleTests(unittest.TestCase):
         call = Mock(side_effect=[self.status(), SimpleNamespace(returncode=1), self.status()])
         with self.assertRaises(RuntimeError):
             operate(self.unit, "start", call)
-        self.assertEqual([c.args for c in call.call_args_list if c.args[0] != "show"], [("start", UNIT)])
+        self.assertEqual([c.args for c in call.call_args_list if c.args[0] != "show"], [("start", "--job-mode=fail", UNIT)])
 
     def test_timeout_reconciles_without_retry(self):
         call = Mock(side_effect=[self.status(), subprocess.TimeoutExpired("start", 1),
                                  self.status(active="active")])
+        self.assertEqual(operate(self.unit, "start", call)["active"], "active")
+        self.assertEqual([c.args for c in call.call_args_list if c.args[0] != "show"], [("start", "--job-mode=fail", UNIT)])
+
+    def test_timeout_pending_job_never_replayed(self):
+        call = Mock(side_effect=[self.status(), subprocess.TimeoutExpired("start", 1),
+                                 self.status(active="active", pending=True)])
         with self.assertRaisesRegex(RuntimeError, "unconfirmed"):
             operate(self.unit, "start", call)
-        self.assertEqual([c.args for c in call.call_args_list if c.args[0] != "show"], [("start", UNIT)])
+        self.assertEqual([c.args for c in call.call_args_list if c.args[0] != "show"],
+                         [("start", "--job-mode=fail", UNIT)])
+        call = Mock(return_value=self.status(pending=True))
+        self.assertTrue(operate(self.unit, "status", call)["pending_job"])
+        for action in ("link", "start", "stop", "reset-failed", "enable", "disable"):
+            call.reset_mock()
+            with self.assertRaisesRegex(RuntimeError, "Transition"):
+                operate(self.unit, action, call)
+            self.assertEqual(call.call_count, 1)
+
+    def test_reset_failed_is_explicit_and_never_starts(self):
+        call = Mock(side_effect=[self.status(active="failed"), SimpleNamespace(returncode=0),
+                                 self.status(), self.status()])
+        self.assertEqual(operate(self.unit, "reset-failed", call)["active"], "inactive")
+        self.assertEqual(operate(self.unit, "reset-failed", call)["active"], "inactive")
+        self.assertEqual([c.args for c in call.call_args_list if c.args[0] != "show"],
+                         [("reset-failed", UNIT)])
 
     def test_user_lifecycle_lock_excludes_second_controller(self):
         # Use only temporary synthetic state, not the actual user runtime directory.
