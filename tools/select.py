@@ -402,7 +402,9 @@ def render(operation, selected, context, locator, operations, skills, templates,
                 'En cada repositorio, lee su AGENTS.md principal si está disponible e identifica su versión declarada de Project OS. '
                 'La referencia de versión indicada es inicial: cada repositorio puede fijar otra versión; no mezcles sus instrucciones. '
                 'Recupera desde codefusion-repo/project-os-v3, en la versión aplicable, los documentos indicados abajo; '
-                'verifica la referencia y que los documentos sean accesibles. Si el proyecto no fija versión, '
+                'verifica la referencia y que los documentos sean accesibles. Lee PROJECT_OS.md como metodología obligatoria; '
+                'aplica el workflow, las skills, el adapter y los templates pertinentes de esa versión. '
+                'Si el proyecto no fija versión, '
                 'verifica la procedencia y disponibilidad del SHA indicado antes de aplicarlo. '
                 'Si faltan instrucciones o acceso, informa el límite sin inventar su contenido y continúa solo lo seguro.', '',
                 'Verifica por separado permisos, visibilidad, rama, cambios y autorización de cada repositorio; su inclusión en el proyecto no concede escritura. '
@@ -447,7 +449,7 @@ def adoption_prompt(revision, previous=None, repositories=None, scope=None, proj
 
 Identifica los repositorios necesarios y comprueba de manera independiente visibilidad, permisos, rama, cambios y autorizaciones de cada uno. Recupera sus unidades GitHub pertinentes. Consulta las instrucciones del kit en el SHA indicado. No copies el kit al proyecto ni publiques asociaciones privadas o rutas locales sin autorización.
 
-Inspecciona AGENTS.md y las instrucciones secundarias en cada repositorio pertinente. Compara la referencia declarada, la objetivo y sus contratos antes de una actualización. Conserva reglas técnicas propias y especializadas; reemplaza instrucciones operativas v2 o copias antiguas contradictorias por un único bootstrap principal por repositorio. Incluye en AGENTS.md la línea `Project-OS-Version: {version_to_fix}`, el repositorio canónico, la ruta PROJECT_OS.md, carga de workflows y skills pertinentes, seguridad, permisos y trazabilidad. No insertes rutas locales. No elimines archivos desconocidos; haz inventario de los componentes obsoletos y solicita autorización si retirarlos es destructivo.
+Inspecciona AGENTS.md y las instrucciones secundarias en cada repositorio pertinente. Compara la referencia declarada, la objetivo y sus contratos antes de una actualización. Conserva reglas técnicas propias y especializadas; reemplaza instrucciones operativas v2 o copias antiguas contradictorias por un único bootstrap principal por repositorio. Incluye en AGENTS.md la línea `Project-OS-Version: {version_to_fix}`, el repositorio canónico, la ruta PROJECT_OS.md como metodología obligatoria, carga de workflows, skills, adapter y templates pertinentes, seguridad, permisos y trazabilidad. No insertes rutas locales. No elimines archivos desconocidos; haz inventario de los componentes obsoletos y solicita autorización si retirarlos es destructivo.
 
 Incorpora `.project-os/` a .gitignore; verifica si ya hay archivos privados versionados sin leerlos ni exponerlos y prepara una corrección revisable. No crees configuración privada del dispositivo del PM desde otro entorno. Documenta relaciones multirrepositorio solo si son verificadas, necesarias y su divulgación está autorizada. Preserva instrucciones y archivos ajenos.
 

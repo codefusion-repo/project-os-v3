@@ -4,7 +4,7 @@ Consulta fuentes vivas con herramientas disponibles. No afirmes shell, filesyste
 
 ## Implementación directa
 
-Browser Chat orquesta, implementa directamente y revisa según [PROJECT_OS.md](../PROJECT_OS.md). Usa las herramientas de Project OS v3: GitHub Connector remoto y Local Bridge para acceso autorizado al terminal. Codex se ejecuta en el terminal como implementador solo en modo autorizado, disponible y con cuota/capacidad confirmadas; en auto, si falta o agota cuota confirmada, implementa Browser Chat tras reconciliar efectos y exclusividad. Local Bridge y terminal no son implementadores. MVP: browser directo, sin Codex ni shell general. Si falta capacidad local, continúa trabajo remoto seguro. Jobs: handlers registrados; consulta health, usa idempotencia estable y recupera estado/evidencia sin repetir efectos inciertos. El fixture no acredita recursos reales. Ver [MVP](../local-bridge/MVP.md).
+Browser Chat orquesta, implementa directamente y revisa según [PROJECT_OS.md](../PROJECT_OS.md). Usa las herramientas de Project OS v3: GitHub Connector remoto y Local Bridge para acceso autorizado al terminal. Codex se ejecuta en el terminal como implementador solo en modo autorizado, disponible y con cuota/capacidad confirmadas; en auto, si falta o agota cuota confirmada, implementa Browser Chat tras reconciliar efectos y exclusividad. Local Bridge y terminal no son implementadores. No supongas disponibilidad de Codex ni shell general; consulta capacidades reales. Si falta capacidad local, continúa trabajo remoto seguro. Jobs: handlers registrados; consulta health, usa idempotencia estable y recupera estado/evidencia sin repetir efectos inciertos. El fixture no acredita recursos reales. Ver [MVP](../local-bridge/MVP.md).
 
 ## Capacidades de review
 

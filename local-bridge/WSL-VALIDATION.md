@@ -1,6 +1,6 @@
 # Independent WSL production validation (operator runbook)
 
-Status: preparation only. Do not modify the existing pilot or enable real resources. The reference OCI gate remains blocked (53 HIGH records, 13 unique HIGH CVEs, run 45446812446). A separate image review is mandatory before any fixture execution with a replacement. Probe-only HTTPS validation can proceed independently once its own prerequisites pass.
+Status: preparation only. Do not modify the existing pilot or enable real resources. The reference image remains rejected (historical run 45446812446); CI accepts only the locked fixture-only digest under the policy in SECURITY.md. No local binding or execution is approved. A separate image review is mandatory before any fixture execution with a replacement. Probe-only HTTPS validation can proceed independently once its own prerequisites pass.
 
 ## 1. Dedicated environment (explicit operator decision)
 

@@ -117,7 +117,7 @@ In a clean independent checkout of the explicitly reviewed full commit, run `bas
 
 ## Independent WSL validation
 
-Follow [WSL-VALIDATION.md](WSL-VALIDATION.md) for the grouped operator procedure. Keep the current pilot intact. The reference OCI gate remains blocked; do not run a replacement without separate review and authorization.
+Follow [WSL-VALIDATION.md](WSL-VALIDATION.md) for the grouped operator procedure. Keep the current pilot intact. The reference image remains rejected; the exact fixture-only digest is accepted only in CI. See SECURITY.md for the historical negative control and fresh evidence policy. Do not bind or run locally without separate review and authorization.
 
 
 ### Production installation evidence (LB-01)

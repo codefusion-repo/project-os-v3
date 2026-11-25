@@ -86,7 +86,7 @@ def guide(mode, root, run=probe, out=print, ask=input, interactive=False, launch
         rc, _ = run([name, "--version"])
         out(name + ": " + ("AVAILABLE" if rc == 0 else "UNAVAILABLE_OR_FAILED"))
     out("GitHub: verifica identidad y alcance autorizado; no compartas tokens.")
-    out("Consulta README.md y docs/ADOPTION.md para instalación y adopción.")
+    out("Consulta README.md y docs/PRODUCT.md para instalación y adopción.")
     if mode in ("terminal", "both"):
         out("Terminal: utiliza un agente autorizado en el checkout; el selector no ejecuta workflows.")
     if mode in ("chatgpt", "both"):
