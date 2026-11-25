@@ -46,6 +46,36 @@ def execute(args):
     return subprocess.run(args, check=False).returncode
 
 
+def private_setup(root, sha, run, out, ask, launch):
+    """Delegate private configuration to the installed, reviewed Bridge."""
+    if not approved("¿Inicializar una instancia privada nueva de WorkOS?", ask):
+        return 0
+    value = ask("Ruta absoluta nueva fuera de Git (vacío cancela): ").strip()
+    if not value:
+        return 0
+    instance = Path(value)
+    if not instance.is_absolute() or os.path.lexists(instance):
+        out("BLOCKED: instancia existente o ruta no absoluta; se conserva.")
+        return 1
+    python = root / "local-bridge/.venv/bin/python"
+    if not reviewed_checkout(root, sha, run) or not python.is_file():
+        out("BLOCKED: instalación revisada no verificable.")
+        return 1
+    command = [str(python), "-I", "-m", "project_os_bridge.setup_instance", "--root", str(instance)]
+    if launch(command):
+        out("BLOCKED: inicialización fallida; conserva el estado parcial.")
+        return 1
+    if approved("¿Preparar HTTPS y túnel privado sin iniciar servicios ni activar acceso?", ask):
+        if not reviewed_checkout(root, sha, run):
+            out("BLOCKED: checkout cambió.")
+            return 1
+        if launch(command + ["--prepare-service", "--no-fixture"]):
+            out("BLOCKED: preparación fallida; conserva la instancia.")
+            return 1
+    out("Verifica el conector OAuth desde ChatGPT mediante health; no equivale a activar acceso.")
+    return 0
+
+
 def guide(mode, root, run=probe, out=print, ask=input, interactive=False, launch=execute):
     if mode not in MODES:
         raise ValueError("Modo inválido")
@@ -115,8 +145,7 @@ def guide(mode, root, run=probe, out=print, ask=input, interactive=False, launch
                 out("BLOCKED: preflight falló.")
                 return 1
         out("Configura WorkOS y el túnel mediante WORKOS.md; no copies secretos al chat.")
-        out("La inicialización privada y --bridge-setup requieren consentimiento separado; verifica health desde el conector.")
-        return 0
+        return private_setup(root, sha, run, out, ask, launch)
     except (EOFError, KeyboardInterrupt):
         out("Interrumpido: revisa el estado antes de reintentar; no se realiza rollback destructivo.")
         return 1

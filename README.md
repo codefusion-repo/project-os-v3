@@ -53,6 +53,8 @@ Sin Mode el wrapper conserva su comportamiento Bridge-only. El checkout debe exi
 
 Si se interrumpe la instalación, verifica HEAD, git status, launcher y entornos; conserva la configuración privada, no borres ni reutilices un entorno Bridge parcial. El instalador rechaza un entorno existente; para recuperación independiente usa el runbook y una nueva ubicación revisada, sin reemplazar el piloto. Para volver a una versión anterior del kit no fuerces main ni elimines datos: conserva el checkout y solicita una recuperación revisada con launcher separado. Desinstalación no destructiva: deja de usar el launcher y retíralo manualmente solo tras comprobar identidad y ownership; conserva checkout, preferencias, instancias y entornos. No se certifica rollback ejecutado ni prueba real Windows/WSL mediante el mock.
 
+Después de una instalación Bridge exitosa, la guía ofrece inicializar una instancia privada nueva mediante el inicializador existente y preparar HTTPS/túnel sin iniciar servicios ni habilitar fixtures. Cada acción tiene consentimiento independiente. El operador debe verificar previamente el binario del túnel y configurar WorkOS en su interfaz externa según WORKOS.md; la clave runtime se introduce únicamente en el terminal privado mediante getpass. La comprobación autenticada se realiza desde el conector ChatGPT con health, no mediante tokens copiados al selector. No se certifica conexión nueva ni rollback operativo hasta disponer de evidencia independiente.
+
 ### Actualización posterior
 
 Desde el **mismo checkout central** (no desde un proyecto adoptado):

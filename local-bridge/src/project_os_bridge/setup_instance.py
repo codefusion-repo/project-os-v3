@@ -42,7 +42,7 @@ def main():
     os.umask(0o077)
     if args.prepare_service:
         from .service_setup import interactive_prepare
-        interactive_prepare(args.root)
+        interactive_prepare(args.root, allow_fixture=not args.no_fixture)
         return
     initialize(args.root,input("Exact AuthKit issuer: ").strip(),
                input("Exact MCP resource: ").strip(),input("WorkOS subject: ").strip())

@@ -77,3 +77,25 @@ class GuidedActionsTests(unittest.TestCase):
             self.assertEqual(rc, 1)
             self.assertEqual(len(calls), 1)
             self.assertEqual(calls[0][-1], "a"*40)
+
+    def test_private_setup_delegates_without_fixture(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            python = root / "local-bridge/.venv/bin/python"
+            python.parent.mkdir(parents=True)
+            python.touch()
+            instance = root / "new-instance"
+            answers = iter(["s", str(instance), "s"])
+            calls = []
+            with patch.object(self.module, "reviewed_checkout", return_value=True):
+                result = self.module.private_setup(root, "a"*40, lambda a: (0, ""),
+                    lambda s: None, lambda q: next(answers), lambda a: calls.append(a) or 0)
+            self.assertEqual(result, 0)
+            self.assertEqual(len(calls), 2)
+            self.assertEqual(calls[1], calls[0] + ["--prepare-service", "--no-fixture"])
+
+    def test_private_setup_preserves_existing_instance(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            answers = iter(["s", tmp])
+            self.assertEqual(self.module.private_setup(ROOT, "a"*40, lambda a: (0, ""),
+                lambda s: None, lambda q: next(answers), lambda a: self.fail("unexpected action")), 1)
