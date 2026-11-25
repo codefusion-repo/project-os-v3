@@ -11,6 +11,8 @@ from starlette.testclient import TestClient
 from project_os_bridge.authenticated import build_http_app
 from project_os_bridge.workos_auth import Verifier, JWKS, SCOPE, CLIENT_ID, load_config
 from project_os_bridge.core import Jobs, Policy
+from project_os_bridge.security import Audit, MAX_AUDIT_BYTES
+from project_os_bridge.workos_auth import AuthOutcome, auth_outcome
 from project_os_bridge.github_fixture import SyntheticGitHubReader
 
 ISSUER="https://fixture.authkit.app"
@@ -130,6 +132,81 @@ class AuthTests(unittest.TestCase):
         self.assertFalse(self.verifier.enabled())
         self.assertIsNotNone(self.verify(self.token()))
         self.assertIsNone(self.verify(self.token({"exp":1})))
+
+    def test_local_auth_outcomes_and_unchanged_http_contract(self):
+        jobs = Jobs(self.root, Policy([(SUBJECT, "read", "disposable")]))
+        app = build_http_app(self.verifier, jobs)
+        now = int(time.time())
+        init = {"jsonrpc": "2.0", "id": 1, "method": "initialize",
+                "params": {"protocolVersion": "2025-11-25", "capabilities": {},
+                           "clientInfo": {"name": "test", "version": "1"}}}
+        base = {"Accept": "application/json, text/event-stream"}
+        cases = [
+            (None, "TOKEN_MISSING"),
+            ("Bearer not-a-token", "TOKEN_MALFORMED"),
+            ("Basic fixture", "TOKEN_MALFORMED"),
+            ("Bearer " + self.token({"iat": now - 600, "exp": now - 300}), "TOKEN_EXPIRED"),
+            ("Bearer " + self.token(key=self.other), "TOKEN_SIGNATURE_INVALID"),
+            ("Bearer " + self.token({"aud": "private-fixture-audience"}), "TOKEN_AUDIENCE_INVALID"),
+            ("Bearer " + self.token({"sub": "user_privatefixture"}), "TOKEN_CLAIMS_INVALID"),
+            ("Bearer " + self.token({"scope": "offline_access"}), "TOKEN_CLAIMS_INVALID"),
+        ]
+        tokens = [value for value, _ in cases if value is not None]
+        valid = "Bearer " + self.token()
+        tokens.append(valid)
+        with TestClient(app, base_url="http://127.0.0.1:8765") as client:
+            for value, outcome in cases:
+                headers = dict(base)
+                if value is not None:
+                    headers["Authorization"] = value
+                response = client.post("/mcp", headers=headers, json=init)
+                self.assertEqual(response.status_code, 401)
+                self.assertIn("www-authenticate", response.headers)
+                self.assertNotIn(outcome, response.text)
+                self.assertNotIn(outcome, str(response.headers))
+            with patch.object(self.jwks, "key", side_effect=OSError("private-fixture-network")):
+                response = client.post("/mcp", headers={**base, "Authorization": valid}, json=init)
+                self.assertEqual(response.status_code, 401)
+                self.assertNotIn("JWKS_UNAVAILABLE", response.text)
+            response = client.post("/mcp", headers={**base, "Authorization": valid}, json=init)
+            self.assertEqual(response.status_code, 200)
+            self.flag.unlink()
+            response = client.post("/mcp", headers={**base, "Authorization": valid}, json=init)
+            self.assertEqual(response.status_code, 403)
+            self.assertNotIn("www-authenticate", response.headers)
+            response = client.get("/.well-known/oauth-protected-resource")
+            self.assertEqual(response.status_code, 200)
+        raw = (self.root / "security-audit.jsonl").read_text()
+        events = [json.loads(line) for line in raw.splitlines()]
+        completion = [event for event in events if event["status"] != 100]
+        self.assertEqual([event.get("auth_outcome") for event in completion],
+                         [outcome for _, outcome in cases] +
+                         ["JWKS_UNAVAILABLE", "TOKEN_ACCEPTED", "TOKEN_ACCEPTED", None])
+        self.assertEqual([event["status"] for event in completion],
+                         [401] * 9 + [200, 403, 200])
+        for secret in tokens + ["private-fixture-audience", "user_privatefixture",
+                                "private-fixture-network", SUBJECT, RESOURCE, ISSUER]:
+            self.assertNotIn(secret, raw)
+        self.assertIsNone(auth_outcome.get())
+        with jobs.transaction() as conn:
+            self.assertEqual(conn.execute("SELECT count(*) FROM jobs").fetchone()[0], 0)
+
+    def test_auth_outcome_audit_validation_and_capacity(self):
+        audit = Audit(self.root)
+        with self.assertRaises(ValueError):
+            audit.record(401, outcome="arbitrary-private-value")
+        with self.assertRaises(ValueError):
+            audit.record(100, outcome=AuthOutcome.TOKEN_ACCEPTED)
+        audit.record(401, outcome=AuthOutcome.TOKEN_EXPIRED)
+        self.assertEqual(json.loads(audit.path.read_text())["auth_outcome"], "TOKEN_EXPIRED")
+        with audit.path.open("wb") as stream:
+            stream.truncate(MAX_AUDIT_BYTES)
+        jobs = Jobs(self.root, Policy([(SUBJECT, "read", "disposable")]))
+        app = build_http_app(self.verifier, jobs)
+        with TestClient(app, base_url="http://127.0.0.1:8765") as client:
+            self.assertEqual(client.post("/mcp", headers={"Authorization": "Bearer " + self.token()}).status_code, 503)
+        self.assertEqual(audit.path.stat().st_size, MAX_AUDIT_BYTES)
+        self.assertEqual(self.fetch.call_count, 0)
 
     def test_resource_discovery_excludes_refresh_scope(self):
         jobs = Jobs(self.root, Policy([(SUBJECT, "read", "disposable")]))
@@ -299,7 +376,10 @@ class AuthTests(unittest.TestCase):
         self.assertNotIn("synthetic-secret",raw)
         events=[json.loads(line) for line in raw.splitlines()]
         self.assertEqual([e["status"] for e in events],[100,401,100,401,429])
-        self.assertTrue(all(set(e)=={"at","event","status"} for e in events))
+        self.assertEqual([e.get("auth_outcome") for e in events],
+                         [None, "TOKEN_MALFORMED", None, "TOKEN_MALFORMED", None])
+        self.assertTrue(all(set(e) in ({"at","event","status"},
+                                      {"at","event","status","auth_outcome"}) for e in events))
 
     def test_opt_in_fixture_and_evidence(self):
         from project_os_bridge.vertical import OPERATIONS, bind_image

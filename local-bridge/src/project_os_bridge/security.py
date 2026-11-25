@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 
 from starlette.responses import JSONResponse
 
-from .workos_auth import private_directory
+from .workos_auth import private_directory, AuthOutcome, auth_outcome
 
 MAX_AUDIT_BYTES = 4 * 1024 * 1024
 
@@ -22,11 +22,16 @@ class Audit:
         self.path=root/"security-audit.jsonl"
         self.lock=threading.Lock()
 
-    def record(self,status):
+    def record(self,status, *, outcome=None):
         if type(status) is not int or not 100 <= status <= 599:
             raise ValueError("Invalid HTTP status")
-        data=(json.dumps({"at":datetime.now(timezone.utc).isoformat(),
-                          "event":"mcp_http","status":status})+"\n").encode()
+        event = {"at":datetime.now(timezone.utc).isoformat(),
+                 "event":"mcp_http","status":status}
+        if outcome is not None:
+            if not isinstance(outcome, AuthOutcome) or status < 200:
+                raise ValueError("Invalid authentication outcome")
+            event["auth_outcome"] = outcome.value
+        data = (json.dumps(event) + "\n").encode()
         with self.lock:
             private_directory(self.root)
             fd=os.open(self.path,os.O_WRONLY|os.O_CREAT|os.O_APPEND|os.O_NOFOLLOW|os.O_NONBLOCK,0o600)
@@ -90,10 +95,22 @@ class RequestGate:
                 self.active-=1
             await JSONResponse({"error":"audit_unavailable"},status_code=503)(scope,receive,send)
             return
+        # Only fixed MCP requests carry authentication categories. The SDK
+        # may authenticate before routing, including public metadata requests.
+        # Default is missing bearer; a presented but unprocessed credential
+        # is malformed/unsupported, never treated as verified.
+        initial = AuthOutcome.TOKEN_MISSING
+        if any(name.lower() == b"authorization" for name, _ in scope.get("headers", ())):
+            initial = AuthOutcome.TOKEN_MALFORMED
+        context = auth_outcome.set(initial if scope.get("path") == "/mcp" else None)
         async def audited_send(message):
             if message["type"]=="http.response.start":
                 try:
-                    self.audit.record(message["status"])
+                    outcome = auth_outcome.get()
+                    if outcome is None or message["status"] < 200:
+                        self.audit.record(message["status"])
+                    else:
+                        self.audit.record(message["status"], outcome=outcome)
                 except (OSError,ValueError):
                     # Do not claim an already performed side effect was undone.
                     pass
@@ -101,5 +118,6 @@ class RequestGate:
         try:
             await self.app(scope,receive,audited_send)
         finally:
+            auth_outcome.reset(context)
             with self.lock:
                 self.active-=1

@@ -1,5 +1,7 @@
 """WorkOS Connect user access-token verifier. No token or private key storage."""
 import asyncio
+from contextvars import ContextVar
+from enum import Enum
 import json
 import os
 import re
@@ -18,6 +20,29 @@ SCOPE = "openid"
 CLIENT_ID = "https://chatgpt.com/oauth/client.json"
 SCOPES = {"openid", "profile", "email", "offline_access"}
 MAX_JWKS = 65536
+
+
+class AuthOutcome(str, Enum):
+    TOKEN_MISSING = "TOKEN_MISSING"
+    TOKEN_MALFORMED = "TOKEN_MALFORMED"
+    TOKEN_EXPIRED = "TOKEN_EXPIRED"
+    TOKEN_SIGNATURE_INVALID = "TOKEN_SIGNATURE_INVALID"
+    TOKEN_AUDIENCE_INVALID = "TOKEN_AUDIENCE_INVALID"
+    TOKEN_CLAIMS_INVALID = "TOKEN_CLAIMS_INVALID"
+    JWKS_UNAVAILABLE = "JWKS_UNAVAILABLE"
+    TOKEN_ACCEPTED = "TOKEN_ACCEPTED"
+
+
+# Request-local diagnostic only; never consulted for authorization.
+# None outside the HTTP gate prevents standalone verifier calls from retaining
+# diagnostic state. The gate initializes and resets this for every request.
+auth_outcome: ContextVar[AuthOutcome | None] = ContextVar("auth_outcome", default=None)
+
+
+def observe_auth(outcome):
+    if auth_outcome.get() is not None:
+        auth_outcome.set(outcome)
+    return None
 
 
 def private_file(path):
@@ -132,38 +157,51 @@ class Verifier:
 
     async def verify_token(self, token):
         if not isinstance(token,str) or not 1 <= len(token) <= 16384:
-            return None
+            return observe_auth(AuthOutcome.TOKEN_MALFORMED)
         try:
             header = jwt.get_unverified_header(token)
             kid = header.get("kid")
             # WorkOS does not promise RFC 9068 typ. Distinguish access tokens
             # from ID/session tokens using exact audience, client, consent and scopes.
             if header.get("alg") != "RS256" or not isinstance(kid,str) or not 1 <= len(kid) <= 256:
-                return None
+                return observe_auth(AuthOutcome.TOKEN_MALFORMED)
             if header.get("typ") not in (None,"JWT","at+jwt","application/at+jwt"):
-                return None
+                return observe_auth(AuthOutcome.TOKEN_MALFORMED)
             if any(k in header for k in ("jku","jwk","x5u","crit")):
-                return None
-            key = await asyncio.to_thread(self.jwks.key,kid)
+                return observe_auth(AuthOutcome.TOKEN_MALFORMED)
+            try:
+                key = await asyncio.to_thread(self.jwks.key,kid)
+            except (jwt.PyJWTError,ValueError,TypeError,KeyError,OSError,httpx.HTTPError,OverflowError,RecursionError):
+                return observe_auth(AuthOutcome.JWKS_UNAVAILABLE)
             claims = jwt.decode(token,key,algorithms=["RS256"],issuer=self.issuer,audience=self.resource,
                 options={"require":["iss","aud","sub","client_id","sid","jti","scope","iat","exp"],"strict_aud":True})
             if claims["sub"] != self.subject or claims["client_id"] != CLIENT_ID:
-                return None
+                return observe_auth(AuthOutcome.TOKEN_CLAIMS_INVALID)
             if any(k in claims for k in ("act","sub_profile","org_id")):
-                return None
+                return observe_auth(AuthOutcome.TOKEN_CLAIMS_INVALID)
             if not all(isinstance(claims[k],str) and 0 < len(claims[k]) <= 512 for k in ("sid","jti")):
-                return None
+                return observe_auth(AuthOutcome.TOKEN_CLAIMS_INVALID)
             if not isinstance(claims["scope"],str):
-                return None
+                return observe_auth(AuthOutcome.TOKEN_CLAIMS_INVALID)
             scopes = set(claims["scope"].split())
             if SCOPE not in scopes or not scopes <= SCOPES:
-                return None
+                return observe_auth(AuthOutcome.TOKEN_CLAIMS_INVALID)
             if ("nbf" in claims and type(claims["nbf"]) is not int) or type(claims["exp"]) is not int or type(claims["iat"]) is not int or not 0 < claims["exp"]-claims["iat"] <= 3600:
-                return None
-            return AccessToken(token=token,client_id=CLIENT_ID,subject=self.subject,
+                return observe_auth(AuthOutcome.TOKEN_CLAIMS_INVALID)
+            result = AccessToken(token=token,client_id=CLIENT_ID,subject=self.subject,
                 scopes=sorted(scopes),expires_at=claims["exp"],resource=self.resource,claims={"iss":self.issuer})
+            observe_auth(AuthOutcome.TOKEN_ACCEPTED)
+            return result
+        except jwt.ExpiredSignatureError:
+            return observe_auth(AuthOutcome.TOKEN_EXPIRED)
+        except jwt.InvalidSignatureError:
+            return observe_auth(AuthOutcome.TOKEN_SIGNATURE_INVALID)
+        except jwt.InvalidAudienceError:
+            return observe_auth(AuthOutcome.TOKEN_AUDIENCE_INVALID)
+        except jwt.DecodeError:
+            return observe_auth(AuthOutcome.TOKEN_MALFORMED)
         except (jwt.PyJWTError,ValueError,TypeError,KeyError,OSError,httpx.HTTPError,OverflowError,RecursionError):
-            return None
+            return observe_auth(AuthOutcome.TOKEN_CLAIMS_INVALID)
 
 
 def load_config(path: Path, state_dir: Path):

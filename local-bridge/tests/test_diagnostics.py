@@ -112,6 +112,15 @@ class DiagnosticsTests(unittest.TestCase):
         path.touch(mode=0o600)
         path.write_text(json.dumps({"at": "private-time", "event": "mcp_http", "status": 403}) + "\n")
         self.assertEqual(self.diagnostics.audit()["http_status_counts"], {"403": 1})
+        with path.open("a") as stream:
+            stream.write(json.dumps({"at": "private-time", "event": "mcp_http",
+                                     "status": 401, "auth_outcome": "TOKEN_EXPIRED"}) + "\n")
+        self.assertEqual(self.diagnostics.audit(), {"audit": "observed",
+                                                   "http_status_counts": {"403": 1, "401": 1}})
+        with path.open("a") as stream:
+            stream.write(json.dumps({"at": "private-time", "event": "mcp_http",
+                                     "status": 401, "auth_outcome": "private-value"}) + "\n")
+        self.assertEqual(self.diagnostics.collect("audit")["status"], "unavailable")
         path.write_text(json.dumps({"at": "private-time", "event": "mcp_http", "status": 403, "secret": "private"}) + "\n")
         self.assertEqual(self.diagnostics.collect("audit")["status"], "unavailable")
 
