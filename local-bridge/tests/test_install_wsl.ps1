@@ -43,12 +43,20 @@ $uid = (& $wsl --distribution $distribution --exec id -u | Out-String).Trim()
 if ($LASTEXITCODE -ne 0 -or $uid -notmatch '^[1-9][0-9]*$') { throw 'Unprivileged test user not verified.' }
 Write-Output "WSL2_KERNEL=$linux UID_NONROOT=true"
 $archive = Join-Path $env:RUNNER_TEMP 'project-os-wsl-test-source.tar'
-& git archive --format=tar "--output=$archive" HEAD
+# Git archive honors working-tree EOL conversion, including Windows autocrlf.
+# Export canonical LF bytes rather than repairing scripts after extraction.
+& git -c core.autocrlf=false -c core.eol=lf archive --format=tar "--output=$archive" HEAD
 if ($LASTEXITCODE -ne 0) { throw 'Cannot archive tracked test source.' }
 $archiveWsl = (& $wsl --distribution $distribution --exec wslpath -a -u $archive | Out-String).Trim()
 if ($LASTEXITCODE -ne 0 -or !$archiveWsl.StartsWith('/')) { throw 'Cannot resolve fixture archive path.' }
 Invoke-Wsl -Arguments @('--distribution', $distribution, '--exec', 'mkdir', '-m', '700', $source, $fixture)
 Invoke-Wsl -Arguments @('--distribution', $distribution, '--exec', 'tar', '-xf', $archiveWsl, '-C', $source)
+$expectedBlob = (& git rev-parse HEAD:install.sh | Out-String).Trim()
+if ($LASTEXITCODE -ne 0 -or $expectedBlob -notmatch '^[a-f0-9]{40}$') { throw 'Cannot identify canonical installer blob.' }
+$actualBlob = (& $wsl --distribution $distribution --exec git hash-object --no-filters "$source/install.sh" | Out-String).Trim()
+if ($LASTEXITCODE -ne 0 -or $actualBlob -ne $expectedBlob) { throw 'Transferred installer differs from reviewed Git blob.' }
+Invoke-Wsl -Arguments @('--distribution', $distribution, '--exec', 'test', '-x', "$source/install.sh")
+Write-Output 'WSL_SOURCE_INSTALLER_BLOB_PASS'
 Invoke-Wsl -Arguments @('--distribution', $distribution, '--exec', 'python3', '--version')
 Invoke-Wsl -Arguments @('--distribution', $distribution, '--exec', 'git', '--version')
 # Run the existing real Git/launcher regression suite inside WSL2.
