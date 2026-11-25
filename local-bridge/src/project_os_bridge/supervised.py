@@ -157,6 +157,8 @@ def run(root):
                 or info.st_nlink != 1 or info.st_mode & 0o077):
             raise PermissionError("Unsafe supervisor lock")
         fcntl.flock(fd,fcntl.LOCK_EX|fcntl.LOCK_NB)
+        from .maintenance_guard import require_no_installation
+        require_no_installation(Path(sys.executable))
         bridge_cmd, tunnel_cmd, env, tunnel_env, context, verifier = commands(root)
         stop = threading.Event()
         for sig in (signal.SIGINT, signal.SIGTERM):
