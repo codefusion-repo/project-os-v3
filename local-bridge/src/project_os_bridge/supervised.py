@@ -10,13 +10,14 @@ import subprocess
 import sys
 import threading
 import time
-import http.client
+import stat
 from pathlib import Path
 
 from .workos_auth import load_config, private_directory, private_file
 from .authenticated import tls_options
 from .isolated import IMAGE
 from .service_setup import checked_path
+from .readiness import read_metadata, verify_metadata
 
 
 def read_private(path, limit):
@@ -61,7 +62,8 @@ def commands(root):
            "XDG_RUNTIME_DIR":f"/run/user/{os.getuid()}"}
     bridge = [sys.executable, "-I", "-m", "project_os_bridge.authenticated",
               "--config",str(root/"oauth.json"),"--state-dir",str(root/"state"),
-              "--port","8765","--tls-cert",str(cert),"--tls-key",str(cert_key)]
+              "--port","8765","--tls-cert",str(cert),"--tls-key",str(cert_key),
+              "--supervised-ca",str(ca)]
     if image:
         bridge += ["--fixture-image", image]
     tunnel_cmd = [str(tunnel),"run","--config",str(service/"tunnel.yaml"),
@@ -83,25 +85,6 @@ def stop_child(child, timeout):
         raise RuntimeError("Forced child termination; inspect local state")
 
 
-def read_metadata(context):
-    # No redirect following, proxy inheritance or external destinations.
-    connection = http.client.HTTPSConnection("127.0.0.1",8765,timeout=2,context=context)
-    try:
-        connection.request("GET","/.well-known/oauth-protected-resource/mcp")
-        response = connection.getresponse()
-        if response.status != 200:
-            raise RuntimeError("Unexpected readiness HTTP status")
-        data = response.read(16385)
-        if len(data)>16384:
-            raise RuntimeError("Oversized readiness metadata")
-        result = json.loads(data)
-        if not isinstance(result,dict):
-            raise RuntimeError("Invalid readiness metadata")
-        return result
-    finally:
-        connection.close()
-
-
 def supervise(bridge_cmd, tunnel_cmd, env, tunnel_env, context, verifier, stop):
     bridge = tunnel = None
     # Check the port before starting the child; never reuse an existing listener.
@@ -120,8 +103,7 @@ def supervise(bridge_cmd, tunnel_cmd, env, tunnel_env, context, verifier, stop):
                 raise RuntimeError("Local TLS readiness failed")
             try:
                 metadata = read_metadata(context)
-                if metadata["resource"] != verifier.resource or metadata["authorization_servers"] != [verifier.issuer]:
-                    raise RuntimeError("Unexpected protected resource metadata")
+                verify_metadata(metadata, verifier)
                 break
             except (OSError, ValueError):
                 stop.wait(0.25)
@@ -149,7 +131,10 @@ def run(root):
     private_directory(root / "service")
     fd = os.open(root/"service"/"supervisor.lock",os.O_CREAT|os.O_RDWR|os.O_NOFOLLOW|os.O_NONBLOCK,0o600)
     try:
-        private_file(root/"service"/"supervisor.lock")
+        info = os.fstat(fd)
+        if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
+                or info.st_nlink != 1 or info.st_mode & 0o077):
+            raise PermissionError("Unsafe supervisor lock")
         fcntl.flock(fd,fcntl.LOCK_EX|fcntl.LOCK_NB)
         bridge_cmd, tunnel_cmd, env, tunnel_env, context, verifier = commands(root)
         stop = threading.Event()

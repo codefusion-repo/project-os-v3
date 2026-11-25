@@ -66,6 +66,27 @@ def generate_tls(directory):
         write_new(directory / path, data)
 
 
+def render_unit(root, python):
+    return f"""[Unit]
+Description=Project OS disposable authenticated bridge
+After=network-online.target
+StartLimitIntervalSec=300
+StartLimitBurst=3
+
+[Service]
+Type=simple
+ExecStart={python} -I -m project_os_bridge.supervised --root {root}
+UMask=0077
+KillMode=mixed
+TimeoutStopSec=120
+Restart=no
+Delegate=yes
+
+[Install]
+WantedBy=default.target
+"""
+
+
 def prepare_service(root, tunnel, runtime_key, image=None):
     if os.getuid() == 0:
         raise PermissionError("Unprivileged account required")
@@ -99,24 +120,7 @@ def prepare_service(root, tunnel, runtime_key, image=None):
         "tunnel":str(tunnel), "tunnel_id":verifier.resource.rsplit("/",1)[-1], "image":image
     }).encode())
     write_new(service / "tunnel.yaml", b"{}\n")
-    unit = f"""[Unit]
-Description=Project OS disposable authenticated bridge
-After=network-online.target
-StartLimitIntervalSec=300
-StartLimitBurst=3
-
-[Service]
-Type=simple
-ExecStart={python} -I -m project_os_bridge.supervised --root {root}
-UMask=0077
-KillMode=mixed
-TimeoutStopSec=120
-Restart=no
-Delegate=yes
-
-[Install]
-WantedBy=default.target
-"""
+    unit = render_unit(root, python)
     write_new(service / "runtime-key", runtime_key.encode("ascii"))
     write_new(service / "project-os-bridge.service", unit.encode())
     return service

@@ -98,16 +98,16 @@ The disposable authenticated Git/Podman lifecycle passed live, including replay,
 
 Use the existing selector with `project-os-v3 --bridge-setup /absolute/private/instance` or its existing installed bridge initializer with `--root /absolute/private/instance --prepare-service`. The dedicated bridge venv must already be installed. The local wizard asks for the verified tunnel-client executable, optional previously bound image and runtime key using a hidden prompt. It creates only a new owner-private service subdirectory, never overwrites existing files or modifies the OAuth configuration, SQLite or opt-in. It generates a private local CA and a loopback leaf certificate valid for 90 days; the CA signing key is not persisted. Rotation requires a separately prepared replacement and operator approval. A partial preparation is retained for inspection; do not automatically delete it.
 
-The generated user-systemd unit is not installed, enabled or started automatically. Inspect it locally, ensure the original bridge and tunnel are stopped, then explicitly link and start:
+The generated user-systemd unit is not linked, enabled or started automatically. From the same reviewed installed virtual environment, as the dedicated unprivileged operator, inspect the unit and confirm the prior bridge and tunnel are stopped. Run only the explicitly authorized local operation:
 
 ```bash
-systemctl --user link /absolute/private/instance/service/project-os-bridge.service
-systemctl --user daemon-reload
-systemctl --user start project-os-bridge.service
-systemctl --user stop project-os-bridge.service
+python -I -m project_os_bridge.lifecycle --root "$ROOT" link
+python -I -m project_os_bridge.lifecycle --root "$ROOT" start
+python -I -m project_os_bridge.lifecycle --root "$ROOT" status
+python -I -m project_os_bridge.lifecycle --root "$ROOT" stop
 ```
 
-Enable at login only if desired, after a successful live test, with `systemctl --user enable project-os-bridge.service`. WSL startup and lingering are separate OS decisions. The supervisor uses fixed arguments and sanitized child environments, waits for verified loopback TLS metadata before launching the tunnel, and stops the tunnel before the bridge. It stops both if either exits; it does not automatically restart or retry uncertain effects. Local child output is suppressed to avoid accidental credential logging; only fixed supervisor status is emitted. Remote readiness requires live MCP health. A forced stop may require container reconciliation. The runtime key is owner-private at rest, not encrypted, and supplied only to the tunnel child environment; same-user processes remain outside the trust boundary. Do not share personal credentials with the service account.
+The controller rejects foreign units, drop-ins, changed unit definitions and ambiguous state. Use one operator at a time; same-user concurrent configuration changes are outside the trust boundary. Active is systemd process state, not verified tunnel health. Only after independently checking live MCP health, opt in to login startup using the explicit `enable` action; it does not start a unit. Stop explicitly before `disable`; disabling may remove the link, so check status and link explicitly again if needed. WSL startup and lingering are separate OS decisions. For failed startup or uncertain results, inspect status and sanitized supervisor journal locally, stop the identified unit if necessary, reconcile durable effects using the existing local reconciliation procedure, then explicitly start only after successful review. Never automate restart or replay. Retain the instance, keys and SQLite for rollback; do not delete the pilot. The supervisor uses fixed arguments and sanitized child environments, waits for verified loopback TLS metadata before launching the tunnel; the supervised worker independently verifies the same metadata before dispatch, and stops the tunnel before the bridge. It stops both if either exits; it does not automatically restart or retry uncertain effects. Local child output is suppressed to avoid accidental credential logging; only fixed supervisor status is emitted. Remote readiness requires live MCP health. A forced stop may require container reconciliation. The runtime key is owner-private at rest, not encrypted, and supplied only to the tunnel child environment; same-user processes remain outside the trust boundary. Do not share personal credentials with the service account.
 
 ## Hash-verified Linux/WSL installation
 

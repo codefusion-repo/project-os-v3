@@ -87,15 +87,11 @@ local-bridge/.venv/bin/project-os-bridge-init --root "$ROOT"
 local-bridge/.venv/bin/project-os-bridge-init --root "$ROOT" --prepare-service
 test ! -e "$ROOT/state/allow-authenticated-probe"
 systemd-analyze --user verify "$ROOT/service/project-os-bridge.service"
-# Refuse an existing unit rather than replacing it.
-if systemctl --user cat project-os-bridge.service >/dev/null 2>&1; then
-  echo 'Existing unit; stop and review' >&2
-  exit 1
-fi
-systemctl --user link "$ROOT/service/project-os-bridge.service"
-systemctl --user daemon-reload
-systemctl --user start project-os-bridge.service
-systemctl --user is-active project-os-bridge.service
+# Use the reviewed installed bridge venv Python, not the system Python.
+python -I -m project_os_bridge.lifecycle --root "$ROOT" link
+python -I -m project_os_bridge.lifecycle --root "$ROOT" start
+python -I -m project_os_bridge.lifecycle --root "$ROOT" status
+
 ```
 
 No enabling at login, no automatic restart, no plaintext exception. On startup failure, stop this unit only and inspect locally; do not repeatedly restart an uncertain operation.
@@ -138,10 +134,10 @@ PY
 Only with explicit permission for this NEW disposable probe, create its empty local opt-in using `(umask 077; set -o noclobber; : > "$ROOT/state/allow-authenticated-probe")`. Attach the separate OAuth connector, confirm health reports no real repository access and no fixture availability, submit a unique disposable probe, replay the same request key and compare job ID/evidence. Remove only that known empty marker to revoke access; expect FORBIDDEN, not a reconnect loop. Restore with the same noclobber command, check health and job evidence again. Verify fixed-schema local audit 403 without publishing identifiers. Stop if any unexpected behavior.
 
 ```bash
-systemctl --user stop project-os-bridge.service
-test "$(systemctl --user show -p ActiveState --value project-os-bridge.service)" = inactive
-systemctl --user start project-os-bridge.service
-systemctl --user is-active project-os-bridge.service
+python -I -m project_os_bridge.lifecycle --root "$ROOT" stop
+python -I -m project_os_bridge.lifecycle --root "$ROOT" status
+python -I -m project_os_bridge.lifecycle --root "$ROOT" start
+python -I -m project_os_bridge.lifecycle --root "$ROOT" status
 ```
 
 Repeat TLS checks and MCP health/replay after restart. End by revoking only the new probe flag if present and stopping this unit. Preserve state, configuration and logs. No deletion, no enabling or migration of the pilot. If a forced stop occurred, reconcile jobs/containers before restarting.

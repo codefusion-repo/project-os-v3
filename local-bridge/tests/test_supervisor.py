@@ -5,7 +5,7 @@ from project_os_bridge.supervised import read_metadata
 
 class ReadinessTests(unittest.TestCase):
     def test_no_redirect(self):
-        with patch("project_os_bridge.supervised.http.client.HTTPSConnection") as cls:
+        with patch("project_os_bridge.readiness.http.client.HTTPSConnection") as cls:
             conn=cls.return_value
             conn.getresponse.return_value.status=302
             with self.assertRaises(RuntimeError):
@@ -14,7 +14,7 @@ class ReadinessTests(unittest.TestCase):
             conn.close.assert_called_once()
 
     def test_reject_oversized_response(self):
-        with patch("project_os_bridge.supervised.http.client.HTTPSConnection") as cls:
+        with patch("project_os_bridge.readiness.http.client.HTTPSConnection") as cls:
             conn=cls.return_value
             conn.getresponse.return_value.status=200
             conn.getresponse.return_value.read.return_value=b"x"*16385
@@ -57,3 +57,12 @@ class LifecycleTests(unittest.TestCase):
 
     def test_requested_stop_orders_cleanup(self):
         self.assertEqual(self.invoke({"resource":"expected","authorization_servers":["issuer"]},stop_after_launch=True),["bridge","tunnel","stop-tunnel","stop-bridge"])
+
+    def test_occupied_port_never_spawns(self):
+        from threading import Event
+        from project_os_bridge.supervised import supervise
+        with patch("socket.socket") as sock, patch("project_os_bridge.supervised.subprocess.Popen") as spawn:
+            sock.return_value.__enter__.return_value.bind.side_effect = OSError("occupied")
+            with self.assertRaises(OSError):
+                supervise(["bridge"], ["tunnel"], {}, {}, Mock(), Mock(), Event())
+            spawn.assert_not_called()
