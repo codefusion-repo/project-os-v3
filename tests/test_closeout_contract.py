@@ -13,7 +13,7 @@ Also exercise an identified issue with explicit close GO, already-closed issue,
 open issue without GO, missing identification and unavailable close capability.
 For one scoped authorization verify review, ready, guarded merge and completed
 issue happen in one operation, without a second prompt. Verify PASS alone has no
-mutation; failed CI, findings or changed HEAD yield BLOCKED. For missing connector
+closeout mutation; review intent permits its technical comment unless read-only; failed CI, findings or changed HEAD yield BLOCKED. For missing connector
 inspect guarded fallback; for already merged/closed and ambiguous timeouts verify
 no duplicated action. Check cleanup ancestry and preservation of unrelated data.
 """
@@ -52,6 +52,13 @@ class BrowserCloseoutContract(unittest.TestCase):
                 self.assertIn(phrase, self.shared)
         for phrase in ('expected_head_sha', '--match-head-commit', 'ancestry'):
             self.assertIn(phrase, self.adapter)
+
+    def test_intent_authorization(self):
+        for phrase in ('autorización por intención', 'acciones inherentes',
+                       'restricciones explícitas prevalecen', 'sin confirmaciones redundantes',
+                       'incluso NO GO', 'salvo solo lectura', 'Continuar hereda',
+                       'Un PASS no concede autorización de closeout'):
+            self.assertIn(phrase, self.shared)
 
     def test_branch_cleanup_safe_command_is_distinct_from_prohibition(self):
         # Do not case-fold: git branch -D is force deletion, not git branch -d.

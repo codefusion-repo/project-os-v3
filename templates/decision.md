@@ -1,6 +1,6 @@
-# Decisión pendiente — {{decision_material}}
+# Decisión — {{decision_material}}
 
-Preparar una decisión material con evidencia y opciones.
+Preparar o registrar una decisión material con evidencia y opciones. Si está ratificada, indicar fuente, alcance, exclusiones y estado; omitir campos pendientes que no apliquen.
 
 **Acción específica bloqueada:** {{accion}}
 **Motivo y riesgo:** {{impacto_concreto}}
