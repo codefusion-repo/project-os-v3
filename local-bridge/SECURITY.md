@@ -31,6 +31,8 @@ Use a reviewed full Git SHA, a dedicated venv, pinned direct dependencies, pip c
 
 ## Gate matrix
 
+Apply the [capability gate sequence](WSL-VALIDATION.md#capability-gate-sequence-both-profiles) for both host profiles. Before probe-only startup require effective host/credential review and verified fresh private state/configuration with no fixture or opt-in; after startup require live host/transport controls before authenticated opt-in. Only the fixed disposable probe and synthetic context may be exposed; verify exact caller/resource/scope, revocation and lifecycle. Live OCI isolation is a separate execution gate before fixture or untrusted execution, not a prerequisite to the bounded transport probe. All matrix controls, including actual job denial of unauthorized host paths, Exchange, personal credentials and sockets, remain required before LB-05 completion or real resources; no image acquisition, binding or execution without the separate authorizations and audit gates. This is not a host review or grant by itself.
+
 1. Live OAuth and local revocation/restore (401 vs 403), including persistence across restart.
 2. Exact-subject denial and ownership checks; no real providers registered remotely.
 3. Disposable Git change and trusted digest-pinned Python validation.
