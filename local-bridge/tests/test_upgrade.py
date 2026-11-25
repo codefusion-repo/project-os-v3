@@ -173,6 +173,127 @@ class UpgradeTests(unittest.TestCase):
         self.restore()
         require_no_installation(self.bound)
 
+    def test_interpreter_symlink_swap_blocks_restore(self):
+        executable = self.venv / "bin/python"
+        executable.rename(executable.with_name("python3"))
+        executable.symlink_to("python3")
+        self.interrupted()
+        old = self.backup / "previous"
+        self.assertEqual(upgrade.identity(old), upgrade.read_json(self.active)["prior"]["identity"])
+        link = old / "bin/python"
+        link.unlink()
+        alternative = link.with_name("other")
+        alternative.write_bytes(b"other interpreter")
+        alternative.chmod(0o700)
+        link.symlink_to("other")
+        with self.assertRaises(ValueError):
+            self.restore()
+        self.assertFalse(self.venv.exists())
+
+    def test_interpreter_bytes_changed_blocks_restore(self):
+        self.interrupted()
+        (self.backup / "previous/bin/python").write_bytes(b"changed")
+        with self.assertRaises(ValueError):
+            self.restore()
+        self.assertFalse(self.venv.exists())
+
+    def test_legacy_fallback_interpreter_change_blocks_restore(self):
+        (self.venv / upgrade.RECEIPT).unlink()
+        other = self.kit / "separate/local-bridge/.venv"
+        other.parent.mkdir(parents=True, mode=0o700)
+        self.make_venv(other, "certified")
+        bound = other / "bin/python"
+        with patch.object(upgrade, "verify_checkout"):
+            prior = upgrade.prior_identity(self.venv, bound, self.old_sha, self.old_wheel, True)
+            self.backup.mkdir(mode=0o700)
+            tx = upgrade.new_transaction(self.venv, self.sha, self.wheel, prior)
+            upgrade.save_json(self.active, tx)
+            self.venv.rename(self.backup / "previous")
+            bound.write_bytes(b"changed fallback")
+            with self.assertRaises(ValueError):
+                upgrade.restore(self.venv, self.backup, self.active, self.sha, bound)
+        self.assertFalse(self.venv.exists())
+
+    def test_host_interpreter_link_identity_survives_relocation(self):
+        path = self.venv / "bin/python"
+        path.unlink()
+        path.symlink_to(Path(sys._base_executable).resolve())
+        self.interrupted()
+        self.assertTrue(self.restore())
+
+    def test_fence_rejects_legacy_lifecycle_and_requires_loaded_barrier(self):
+        from project_os_bridge import lifecycle
+        root = self.kit / "instance"
+        root.mkdir(mode=0o700)
+        service = root / "service"
+        service.mkdir(mode=0o700)
+        unit = service / upgrade.UNIT
+        unit.touch(mode=0o600)
+        unit.write_text(render_unit(root, self.bound))
+        loaded = {"fenced": False}
+        def manager(args, **kwargs):
+            if args[-1] == "daemon-reload":
+                loaded["fenced"] = unit.read_text() == upgrade.fenced_unit_text(root, self.bound)
+                return SimpleNamespace(returncode=0, stdout="")
+            on_disk = unit.read_text() == upgrade.fenced_unit_text(root, self.bound)
+            fields = dict(Id=upgrade.UNIT, LoadState="loaded", FragmentPath=str(unit),
+                          DropInPaths="", NeedDaemonReload="no" if loaded["fenced"] == on_disk else "yes",
+                          ActiveState="inactive", UnitFileState="linked", Job="", MainPID="0",
+                          ControlPID="0", RefuseManualStart="yes" if loaded["fenced"] else "no")
+            return SimpleNamespace(returncode=0, stdout="\n".join(f"{k}={v}" for k,v in fields.items()))
+        upgrade.write_unit(root, self.bound, fenced=True)
+        with self.assertRaises(RuntimeError):
+            upgrade.check_unit(root, self.bound, manager, fenced=True)
+        upgrade.fence_unit(root, self.bound, manager)
+        self.assertTrue(loaded["fenced"])
+        self.assertIn("ExecStart=/usr/bin/false\n", unit.read_text())
+        self.assertNotIn("ExecStart=" + str(self.bound), unit.read_text())
+        # prepared_unit is unchanged from the legacy lifecycle. Assert that
+        # normal CLI entry rejects before reaching operate, not just new guard.
+        with patch.object(lifecycle.sys, "executable", str(self.bound)), \
+             patch.object(lifecycle.sys, "argv", ["legacy", "--root", str(root), "start"]), \
+             patch.object(lifecycle, "operate") as operate, \
+             patch.object(lifecycle, "exclusive_lifecycle") as lock:
+            with self.assertRaises(SystemExit):
+                lifecycle.main()
+            operate.assert_not_called()
+            lock.assert_not_called()
+        self.interrupted()
+        with self.assertRaises(RuntimeError):
+            upgrade.check_release(self.kit, self.sha, self.guard, self.bound)
+        self.assertTrue(loaded["fenced"])
+        self.restore()
+        upgrade.check_release(self.kit, self.sha, self.guard, self.bound)
+        upgrade.release_unit(root, self.bound, manager)
+        self.assertFalse(loaded["fenced"])
+        self.assertEqual(unit.read_text(), render_unit(root, self.bound))
+
+    def test_restore_waits_for_real_writer_group(self):
+        self.interrupted()
+        child = subprocess.Popen([sys.executable, "-I", "-c",
+            "import sys; sys.stdout.write('ready\\n'); sys.stdout.flush(); sys.stdin.read(1)"],
+            start_new_session=True, stdin=subprocess.PIPE, stdout=subprocess.PIPE)
+        try:
+            self.assertEqual(child.stdout.readline(), b"ready\n")
+            tx = upgrade.read_json(self.active)
+            tx.update(group=child.pid, phase="writing")
+            upgrade.save_json(self.active, tx)
+            with self.assertRaises(RuntimeError):
+                self.restore()
+            self.assertFalse(self.venv.exists())
+            self.assertTrue((self.backup / "previous").exists())
+            child.stdin.write(b"x")
+            child.stdin.flush()
+            self.assertEqual(child.wait(timeout=5), 0)
+            self.assertTrue(self.restore())
+            self.assertEqual((self.venv / "identity").read_text(), "old")
+        finally:
+            if child.poll() is None:
+                child.kill()
+                child.wait(timeout=5)
+            child.stdin.close()
+            child.stdout.close()
+
     def test_exact_unit_and_quiescence(self):
         root = self.kit / "instance"
         root.mkdir(mode=0o700)
@@ -185,7 +306,7 @@ class UpgradeTests(unittest.TestCase):
         unit.write_text(render_unit(root, python))
         fields = dict(Id=upgrade.UNIT, LoadState="loaded", FragmentPath=str(unit),
                       DropInPaths="", NeedDaemonReload="no", ActiveState="inactive",
-                      UnitFileState="linked", Job="", MainPID="0", ControlPID="0")
+                      UnitFileState="linked", Job="", MainPID="0", ControlPID="0", RefuseManualStart="no")
         def response(**changes):
             return SimpleNamespace(returncode=0, stdout="\n".join(
                 f"{k}={v}" for k, v in (fields | changes).items()))
