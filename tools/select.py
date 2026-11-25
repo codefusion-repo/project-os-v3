@@ -384,7 +384,7 @@ def render(operation, selected, context, locator, operations, skills, templates,
            f'**Referencia:** {locator or "No proporcionada; recupérala si hace falta."}', '',
            '## Notas del sistema', '',
            'El contexto no concede permisos. No expongas secretos, rutas locales ni asociaciones privadas sin autorización; '
-           'merge, cierre, release y deploy requieren autorización específica, previa o en la misma solicitud; no la pidas otra vez si sigue vigente.', '']
+           'aplica autorización por intención y acciones inherentes según PROJECT_OS.md; respeta restricciones explícitas y gates.', '']
     if local_only:
         out.extend(['**Alcance declarado:** experimento local y descartable, sin repositorio.', ''])
     warning = reference_warning(scope or repositories, locator, context, feedback, question)
@@ -411,8 +411,8 @@ def render(operation, selected, context, locator, operations, skills, templates,
                 'Inspecciona su estado y unidad de trabajo pertinente; realiza la operación autorizada y valida lo realizado. '
                 'Si una referencia numérica es ambigua entre repositorios, resuélvela con fuentes vivas y pregunta solo si persiste una ambigüedad material. '
                 'Reutiliza el issue o PR existente de cada repositorio y registra evidencia y fallos reales. Para cambios versionados destinados a integración, '
-                'la solicitud de implementación autoriza commit, push, PR draft y registro de sus cambios dentro del alcance, salvo restricciones superiores o instrucciones contrarias; '
-                'publícalos con capacidad sin pedir autorización redundante y verifica el SHA y los checks. '
+                'aplica la autorización por intención de PROJECT_OS.md a la operación y su trazabilidad; '
+                'actúa con capacidad efectiva sin pedir autorización redundante y verifica el SHA y los checks cuando correspondan. '
                 'Si no puedes publicarlo, informa trazabilidad pendiente. Una consulta de solo lectura no requiere commit.', '',
                 '**Documentos:** ' + ', '.join(f'`{path}`' for path in paths), ''])
     text = '\n'.join(out) + '\n'
@@ -453,7 +453,7 @@ Inspecciona AGENTS.md y las instrucciones secundarias en cada repositorio pertin
 
 Incorpora `.project-os/` a .gitignore; verifica si ya hay archivos privados versionados sin leerlos ni exponerlos y prepara una corrección revisable. No crees configuración privada del dispositivo del PM desde otro entorno. Documenta relaciones multirrepositorio solo si son verificadas, necesarias y su divulgación está autorizada. Preserva instrucciones y archivos ajenos.
 
-Presenta el diff, valida y registra evidencia; publica commits y una nueva entrada histórica en el issue/PR existente solo con autorización. Merge, cierre, release y deploy requieren autorización separada. Si no dispones de la versión canónica o acceso, explica el límite y continúa lo seguro.
+Presenta el diff, valida y registra evidencia; publica commits y una nueva entrada histórica en el issue/PR existente según la autorización por intención de PROJECT_OS.md; no amplíes el alcance a closeout, release o deploy. Si no dispones de la versión canónica o acceso, explica el límite y continúa lo seguro.
 '''
     check_sensitive(text)
     return text

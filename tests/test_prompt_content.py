@@ -62,9 +62,9 @@ class PromptContent(unittest.TestCase):
             self.assertIn('adapter y los templates pertinentes de esa versión', text)
             self.assertNotIn('docs/PRODUCT.md', text)
             self.assertIn('informa el límite sin inventar', text)
-            self.assertIn('la solicitud de implementación autoriza commit, push, PR draft', text)
+            self.assertIn('aplica la autorización por intención de PROJECT_OS.md a la operación y su trazabilidad', text)
             self.assertIn('sin pedir autorización redundante', text)
-            self.assertIn('merge, cierre, release y deploy requieren autorización específica', text)
+            self.assertIn('respeta restricciones explícitas y gates', text)
             self.assertIn('Documentos locales distintos de la referencia:** PROJECT_OS.md', text)
             self.assertNotIn('Cambio local para prueba.', text)
 
