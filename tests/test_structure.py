@@ -1,5 +1,6 @@
 import re
 import unittest
+import unicodedata
 from pathlib import Path
 from urllib.parse import unquote, urlsplit
 
@@ -13,11 +14,11 @@ TEMPLATES = {'task', 'issue', 'pull-request', 'review', 'execution', 'decision',
 
 class Structure(unittest.TestCase):
     def test_required_files(self):
-        for path in ['AGENTS.md', 'PROJECT_OS.md', 'README.md', 'docs/V3_SPEC.md',
-                     'docs/ADOPTION.md', 'docs/IMPLEMENTATION_TASK.md', 'adapters/terminal-agent.md', 'adapters/browser-chat.md',
+        for path in ['AGENTS.md', 'PROJECT_OS.md', 'README.md', 'docs/PRODUCT.md', 'adapters/terminal-agent.md', 'adapters/browser-chat.md',
                      'tools/select.py', 'tests/test_select.py', 'tests/test_structure.py',
                      '.github/workflows/selector-ci.yml']:
             self.assertTrue((ROOT / path).is_file(), path)
+        self.assertEqual({p.name for p in (ROOT / 'docs').iterdir()}, {'PRODUCT.md'})
         self.assertEqual({p.stem for p in (ROOT / 'workflows').glob('*.md')}, WORKFLOWS)
         self.assertEqual({p.parent.name for p in (ROOT / 'skills').glob('*/SKILL.md')}, SKILLS)
         self.assertEqual({p.stem for p in (ROOT / 'templates').glob('*.md')}, TEMPLATES)
@@ -49,9 +50,26 @@ class Structure(unittest.TestCase):
         for adapter in ('terminal-agent.md', 'browser-chat.md'):
             content = (ROOT / 'adapters' / adapter).read_text().lower()
             self.assertIn('../project_os.md#selección-de-templates', content)
-            self.assertIn('evidencia real', content)
-            self.assertRegex(content, r'om(?:ite|itir)')
-            self.assertRegex(content, r'(?:no|nunca) invent')
+        self.assertIn('evidencia real', shared)
+        self.assertRegex(shared, r'om(?:ite|itir)')
+        self.assertRegex(shared, r'(?:no|nunca) invent')
+
+    def test_adapters_reference_central_policy_and_keep_surface_mechanisms(self):
+        shared = (ROOT / 'PROJECT_OS.md').read_text()
+        for name in ('browser-chat.md', 'terminal-agent.md'):
+            content = (ROOT / 'adapters' / name).read_text()
+            for anchor in ('trazabilidad-github-obligatoria', 'selección-de-templates',
+                           'instalación-adopción-y-versión-del-proyecto', 'seguridad-transversal-y-límites'):
+                self.assertIn('../PROJECT_OS.md#' + anchor, content)
+            self.assertNotIn('Conserva sus secciones sustantivas', content)
+            self.assertNotIn('PASS / CLOSEOUT PENDIENTE DE AUTORIZACIÓN', content)
+        self.assertIn('PASS / CLOSEOUT PENDIENTE DE AUTORIZACIÓN', shared)
+        browser = (ROOT / 'adapters/browser-chat.md').read_text()
+        for mechanism in ('expected_head_sha', '--match-head-commit', 'git branch -d'):
+            self.assertIn(mechanism, browser)
+        terminal = (ROOT / 'adapters/terminal-agent.md').read_text()
+        for mechanism in ('git status', 'git check-ignore', 'git ls-files', 'sandbox'):
+            self.assertIn(mechanism, terminal)
 
     def test_direct_markdown_bootstrap_links_both_base_skills(self):
         for filename in ('AGENTS.md', 'PROJECT_OS.md'):
@@ -98,23 +116,51 @@ class Structure(unittest.TestCase):
             content = (ROOT / path).read_text().lower()
             self.assertIn('selección-de-templates', content, path)
             self.assertIn('obligatori', content, path)
-            self.assertIn('secciones sustantivas', content, path)
-            self.assertIn('relee', content, path)
+        self.assertIn('secciones sustantivas', shared)
+        self.assertIn('relee', shared)
+        skill = (ROOT / 'skills/github-traceability/SKILL.md').read_text()
+        self.assertIn('secciones sustantivas', skill)
+        self.assertIn('relee', skill)
         self.assertIn('template pull-request', (ROOT / 'workflows/implement.md').read_text())
         self.assertIn('## Methodology invariant', (ROOT / 'local-bridge/MVP.md').read_text())
 
     def test_adaptive_execution_roles_are_distinct(self):
+        product = (ROOT / 'docs/PRODUCT.md').read_text()
+        self.assertIn('Existen dos implementadores', product)
+        self.assertIn('Codex, que se ejecuta en el terminal', product)
+        self.assertIn('Local Bridge y terminal no son implementadores', product)
+        self.assertIn('LB-ARCH-20261124-29', product)
         shared = (ROOT / 'PROJECT_OS.md').read_text()
-        self.assertIn('existen dos implementadores', shared)
-        self.assertIn('Codex, que se ejecuta en el terminal', shared)
-        self.assertIn('Local Bridge y terminal no son implementadores', shared)
-        self.assertIn('LB-ARCH-20261124-29', shared)
+        for marker in ('LB-ARCH', 'LB-PLAN', 'LB-0', 'codefusion-repo/', 'docs/PRODUCT.md', 'Codex', 'Local Bridge'):
+            self.assertNotIn(marker, shared)
+        self.assertNotRegex(shared, r'#\d+\b')
         browser = (ROOT / 'adapters/browser-chat.md').read_text()
         self.assertIn('Codex se ejecuta en el terminal como implementador', browser)
         self.assertIn('Local Bridge y terminal no son implementadores', browser)
         self.assertLessEqual(len(browser), 7500)
         self.assertIn('Codex running in the terminal, or ChatGPT Browser', 
                       (ROOT / 'local-bridge/MVP.md').read_text())
+
+    def test_cold_start_has_direct_operational_path(self):
+        bootstrap = (ROOT / 'AGENTS.md').read_text()
+        shared = (ROOT / 'PROJECT_OS.md').read_text()
+        self.assertIn('[PROJECT_OS.md](PROJECT_OS.md)', bootstrap)
+        self.assertIn('workflows/continue.md', bootstrap)
+        for name in WORKFLOWS:
+            self.assertIn(f'workflows/{name}.md', shared)
+        for name in SKILLS:
+            self.assertIn(f'skills/{name}/SKILL.md', shared)
+        self.assertIn('adapters/browser-chat.md', shared)
+        self.assertIn('adapters/terminal-agent.md', shared)
+        self.assertIn('sin depender del chat', shared)
+        self.assertIn('revisión integrada de base verificada', bootstrap)
+        self.assertIn('instrucciones candidatas son objeto de revisión', shared)
+
+    def test_workflows_require_templates_for_github_artifacts(self):
+        for workflow in ('create', 'implement', 'review_for_close', 'release'):
+            content = (ROOT / 'workflows' / f'{workflow}.md').read_text()
+            self.assertIn('../PROJECT_OS.md#selección-de-templates', content)
+            self.assertNotRegex(content, r'(?i)\]\(\.\./templates/[^)]+\) (?:es opcional|son opcionales)')
 
     def test_relative_markdown_links(self):
         for path in ROOT.rglob('*.md'):
@@ -123,12 +169,26 @@ class Structure(unittest.TestCase):
             content = re.sub(r'```.*?```', '', path.read_text(), flags=re.S)
             for target in re.findall(r'(?<!!)\[[^\]]+\]\(([^\s)]+)(?:\s+[^)]*)?\)', content):
                 parsed = urlsplit(target)
-                if parsed.scheme or target.startswith('#'):
+                if parsed.scheme:
                     continue
-                resolved = (path.parent / unquote(parsed.path)).resolve()
+                resolved = (path.parent / unquote(parsed.path)).resolve() if parsed.path else path.resolve()
                 with self.subTest(file=str(path.relative_to(ROOT)), target=target):
                     self.assertTrue(resolved.is_relative_to(ROOT), target)
                     self.assertTrue(resolved.exists(), target)
+                    if parsed.fragment and resolved.suffix == '.md':
+                        headings = re.sub(r'```.*?```', '', resolved.read_text(), flags=re.S)
+                        # ATX headings used by this kit; preserve Unicode letters and hyphens.
+                        anchors = set()
+                        for heading in re.findall(r'^#{1,6}[ \t]+(.+?)[ \t]*#*[ \t]*$', headings, re.M):
+                            heading = unicodedata.normalize('NFC', heading.lower())
+                            slug = re.sub(r'[^\w\s-]', '', heading).replace(' ', '-')
+                            candidate = slug
+                            index = 1
+                            while candidate in anchors:
+                                candidate = f'{slug}-{index}'
+                                index += 1
+                            anchors.add(candidate)
+                        self.assertIn(unquote(parsed.fragment), anchors, target)
 
 
 if __name__ == '__main__':

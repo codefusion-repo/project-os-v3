@@ -58,12 +58,38 @@ class PromptContent(unittest.TestCase):
             self.assertIn('workflows/review_for_close.md', text)
             self.assertIn('lee su AGENTS.md', text)
             self.assertIn('verifica la referencia', text)
+            self.assertIn('PROJECT_OS.md como metodología obligatoria', text)
+            self.assertIn('adapter y los templates pertinentes de esa versión', text)
+            self.assertNotIn('docs/PRODUCT.md', text)
             self.assertIn('informa el límite sin inventar', text)
-            self.assertIn('la solicitud de implementación autoriza commit, push, PR draft', text)
+            self.assertIn('aplica la autorización por intención de PROJECT_OS.md a la operación y su trazabilidad', text)
             self.assertIn('sin pedir autorización redundante', text)
-            self.assertIn('merge, cierre, release y deploy requieren autorización específica', text)
+            self.assertIn('respeta restricciones explícitas y gates', text)
+            self.assertIn('Recupera la fuente, alcance y restricciones de la autorización vigente', text)
+            self.assertIn('aplica la resolución automática de review/closeout autorizada', text)
+            self.assertIn('preserva esos datos al reanudar, sin introducir nuevas barreras', text)
             self.assertIn('Documentos locales distintos de la referencia:** PROJECT_OS.md', text)
             self.assertNotIn('Cambio local para prueba.', text)
+
+    def test_continue_preserves_explicit_scope_and_exclusions(self):
+        with tempfile.TemporaryDirectory() as temp:
+            base = Path(temp)
+            kit, project, _, _ = fixture(base)
+            folder = base / 'out'
+            request = 'Retoma outcome autorizado en PR #42. Sin deploy ni cambios de permisos.'
+            feedback = 'Política vigente registrada en issue #41: GO closeout; NO GO review.'
+            result = subprocess.run([sys.executable, str(kit / 'tools/select.py'),
+                                     '--project', str(project), '--workflow', 'continue',
+                                     '--locator', '#42', '--objective', request,
+                                     '--feedback', feedback, '--output-dir', str(folder)],
+                                    text=True, capture_output=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            text = outputs(folder)[0].read_text()
+            self.assertIn(request, text)
+            self.assertIn(feedback, text)
+            self.assertIn('preserva esos datos al reanudar, sin introducir nuevas barreras', text)
+            self.assertNotIn('este mensaje no la concede', text)
+            self.assertNotIn('solicita una nueva autorización', text)
 
     def test_wizard_has_no_format_switch_and_preserves_fields(self):
         with tempfile.TemporaryDirectory() as temp:

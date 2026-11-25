@@ -1,6 +1,6 @@
 # Ejecución — {{outcome}}
 
-Resumir cambios, comandos ejecutados y resultados observados.
+Resumir cambios, comandos ejecutados y resultados observados. Identificar si es checkpoint material, interrupción técnica o resultado final; indicar outcome pendiente y estado recuperable cuando corresponda. Aplicar [Respuesta y continuidad](../PROJECT_OS.md#respuesta-y-continuidad).
 
 **Unidad viva:** {{issue_pr_commit_si_existen}}
 
@@ -18,7 +18,7 @@ Resumir cambios, comandos ejecutados y resultados observados.
 **Trazabilidad remota:** {{sha_o_url_verificados_y_pr_checks_disponibles_o_trazabilidad_pendiente_con_bloqueo}}
 **Comentario nuevo de ejecución:** {{url_verificada_o_borrador_pendiente_con_motivo}}
 
-> Cuando exista unidad y esté autorizado publicar, crear una entrada nueva por ejecución material; incluir también intentos, bloqueos y validaciones fallidas. No editar entradas históricas.
+> Cuando exista unidad y la intención autorizada incluya trazabilidad, sin restricción de publicación, crear una entrada nueva por ejecución material; incluir también intentos, bloqueos y validaciones fallidas. No editar entradas históricas.
 
 > Un commit local sin push no acredita publicación; una consulta read-only no requiere commit.
 
