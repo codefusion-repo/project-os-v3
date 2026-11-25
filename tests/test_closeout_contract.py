@@ -60,6 +60,11 @@ class BrowserCloseoutContract(unittest.TestCase):
                        'Un PASS no concede autorización de closeout'):
             self.assertIn(phrase, self.shared)
 
+    def test_review_does_not_authorize_code_changes(self):
+        self.assertIn('La intención de review por sí sola no autoriza modificar código', self.shared)
+        self.assertIn('solo si la intención autorizada comprende implementación o corrección', self.shared)
+        self.assertIn('BLOCKED: informa la corrección requerida', self.shared)
+
     def test_branch_cleanup_safe_command_is_distinct_from_prohibition(self):
         # Do not case-fold: git branch -D is force deletion, not git branch -d.
         prohibition = self.shared.split('No uses `git reset --hard`', 1)[1].split('por defecto.', 1)[0]
