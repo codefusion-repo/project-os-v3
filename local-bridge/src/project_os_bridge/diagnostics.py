@@ -137,6 +137,27 @@ class Diagnostics:
                 "interop_observed": Path("/proc/sys/fs/binfmt_misc/WSLInterop").exists()
                     or bool(os.environ.get("WSL_INTEROP"))}
 
+    def subordinate_ids(self):
+        import pwd
+        uid = os.getuid()
+        username = pwd.getpwuid(uid).pw_name
+        result = {}
+        for kind in ("subuid", "subgid"):
+            entries = []
+            for line in bounded_text(Path("/etc") / kind, 65536).splitlines():
+                if not line or line.startswith("#"):
+                    continue
+                owner, start, count = line.split(":")
+                start, count = int(start), int(count)
+                if not 0 < start < start + count <= 2**32:
+                    raise ValueError("Invalid subordinate range")
+                entries.append((owner, start, start + count))
+            own = [i for i, row in enumerate(entries) if row[0] in (username, str(uid))]
+            overlap = any(entries[i][1] < row[2] and row[1] < entries[i][2]
+                          for i in own for j, row in enumerate(entries) if i != j)
+            result[kind] = {"assigned_ranges": len(own), "overlap_observed": overlap}
+        return result
+
     def security(self):
         from grp import getgrgid
         privileged = {"sudo", "wheel", "docker", "lxd", "libvirt", "disk", "root", "adm", "podman", "incus", "shadow"}
@@ -151,7 +172,8 @@ class Diagnostics:
                     ("/run/docker.sock", "/run/podman/podman.sock", "/run/containerd/containerd.sock")),
                 "sudo_polkit_effective_policy": "not_assessed",
                 "windows_acl_firewall": "not_assessed",
-                "job_isolation": "not_assessed"}
+                "job_isolation": "not_assessed",
+                "subordinate_ids": self.subordinate_ids()}
 
     def runtime(self):
         return {"python": ".".join(map(str, sys.version_info[:3])),

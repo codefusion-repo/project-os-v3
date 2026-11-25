@@ -235,3 +235,85 @@ class AuthTests(unittest.TestCase):
             evidence=json.loads(tool(client,"get_job_evidence",job_id=job)["content"][0]["text"])
             self.assertEqual(evidence["state"],"BLOCKED")
             self.assertEqual([e["state"] for e in evidence["events"]],["QUEUED","RUNNING","BLOCKED"])
+
+
+    def test_operational_diagnostics_auth_and_revocation(self):
+        from unittest.mock import Mock
+        from project_os_bridge.diagnostics import Diagnostics, FLAG
+        state = self.root / "state"
+        state.mkdir(mode=0o700)
+        probe = state / "allow-authenticated-probe"
+        probe.touch(mode=0o600)
+        verifier = Verifier(ISSUER, RESOURCE, SUBJECT, state, jwks=self.jwks)
+        policy = Policy([(SUBJECT, "diagnostics_read", "host")])
+        jobs = Jobs(state, policy)
+        diagnostics = Diagnostics(verifier, self.root)
+        collect = Mock(return_value={"section": "host", "status": "observed", "data": {"wsl": True}})
+        diagnostics.collect = collect
+        flag = state / FLAG
+        app = build_http_app(verifier, jobs, diagnostics=diagnostics)
+        headers = {"Accept": "application/json, text/event-stream", "Authorization": "Bearer " + self.token()}
+        def call(client, method, params, auth=None):
+            return client.post("/mcp", headers=headers if auth is None else auth,
+                               json={"jsonrpc": "2.0", "id": 1, "method": method, "params": params})
+        args = {"name": "operational_diagnostics", "arguments": {"section": "host"}}
+        with TestClient(app, base_url="http://127.0.0.1:8765") as client:
+            init = call(client, "initialize", {"protocolVersion": "2025-11-25", "capabilities": {},
+                                             "clientInfo": {"name": "test", "version": "1"}})
+            headers["MCP-Protocol-Version"] = init.json()["result"]["protocolVersion"]
+            listing = call(client, "tools/list", {}).json()["result"]["tools"]
+            self.assertIn("operational_diagnostics", {t["name"] for t in listing})
+            denied = call(client, "tools/call", args).json()["result"]
+            self.assertTrue(denied["isError"])
+            collect.assert_not_called()
+            flag.touch(mode=0o600)
+            for invalid in ({"sub": "user_other"}, {"aud": "wrong"}, {"scope": "profile"}):
+                self.assertEqual(call(client, "tools/call", args,
+                    dict(headers, Authorization="Bearer " + self.token(invalid))).status_code, 401)
+            collect.assert_not_called()
+            good = call(client, "tools/call", args).json()["result"]
+            self.assertFalse(good.get("isError", False))
+            collect.assert_called_once_with("host")
+            collect.reset_mock()
+            invalid = call(client, "tools/call", {"name": args["name"], "arguments": {"section": "../../etc/shadow"}}).json()
+            self.assertTrue("error" in invalid or invalid["result"].get("isError"))
+            collect.assert_not_called()
+            flag.unlink()
+            self.assertTrue(call(client, "tools/call", args).json()["result"]["isError"])
+            collect.assert_not_called()
+            flag.touch(mode=0o600)
+            def revoke(_):
+                flag.unlink()
+                return {"private": "should-not-return"}
+            collect.side_effect = revoke
+            revoked = call(client, "tools/call", args).json()
+            self.assertTrue(revoked["result"]["isError"])
+            self.assertNotIn("should-not-return", json.dumps(revoked))
+            probe.unlink()
+            self.assertEqual(call(client, "tools/call", args).status_code, 403)
+        with jobs.transaction() as conn:
+            self.assertEqual(conn.execute("SELECT count(*) FROM jobs").fetchone()[0], 0)
+
+    def test_diagnostics_no_grant_or_fixture_exposure(self):
+        from unittest.mock import Mock
+        diagnostics = Mock()
+        jobs = Jobs(self.root, Policy([]))
+        for fixture in (None, "example/python@sha256:" + "a" * 64):
+            app = build_http_app(self.verifier, jobs, diagnostics=diagnostics, fixture_image=fixture)
+            headers = {"Accept": "application/json, text/event-stream", "Authorization": "Bearer " + self.token()}
+            def call(client, method, params):
+                return client.post("/mcp", headers=headers, json={"jsonrpc": "2.0", "id": 1,
+                                                                 "method": method, "params": params}).json()
+            with TestClient(app, base_url="http://127.0.0.1:8765") as client:
+                init = call(client, "initialize", {"protocolVersion": "2025-11-25", "capabilities": {},
+                                                 "clientInfo": {"name": "test", "version": "1"}})
+                headers["MCP-Protocol-Version"] = init["result"]["protocolVersion"]
+                names = {t["name"] for t in call(client, "tools/list", {})["result"]["tools"]}
+                if fixture:
+                    self.assertNotIn("operational_diagnostics", names)
+                else:
+                    self.assertIn("operational_diagnostics", names)
+                    result = call(client, "tools/call", {"name": "operational_diagnostics",
+                                                          "arguments": {"section": "host"}})
+                    self.assertTrue(result["result"]["isError"])
+        diagnostics.collect.assert_not_called()
