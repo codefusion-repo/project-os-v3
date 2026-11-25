@@ -28,6 +28,7 @@ from .vertical import OPERATIONS, bind_image
 from .isolated import IMAGE
 from .workos_auth import private_file, private_directory
 from .readiness import read_metadata, verify_metadata
+from .diagnostics import Diagnostics, Section
 
 
 def fixture_enabled(verifier, image):
@@ -40,7 +41,7 @@ def fixture_enabled(verifier, image):
         return False
 
 
-def build_server(verifier, jobs, fixture_reader=None, *, fixture_image=None):
+def build_server(verifier, jobs, fixture_reader=None, *, fixture_image=None, diagnostics=None):
     mcp = MCPServer("Project OS authenticated disposable jobs",
                     token_verifier=verifier,
                     auth=AuthSettings(issuer_url=AnyHttpUrl(verifier.issuer),
@@ -61,6 +62,20 @@ def build_server(verifier, jobs, fixture_reader=None, *, fixture_image=None):
         principal()
         return {"status":"ready","caller_identity_verified":True,"repository_access":False,"mode":"authenticated-disposable",
                 "git_fixture_available":fixture_enabled(verifier, fixture_image)}
+
+    if diagnostics is not None and fixture_image is None:
+        @mcp.tool(annotations=read)
+        def operational_diagnostics(section: Section) -> dict:
+            """Read a fixed sanitized operational section; no paths, commands or URLs."""
+            actor = principal()
+            jobs.policy.require(actor, "diagnostics_read", "host")
+            if not diagnostics.enabled():
+                raise PermissionError("DENIED")
+            evidence = diagnostics.collect(section)
+            if principal() != actor or not diagnostics.enabled():
+                raise PermissionError("DENIED")
+            jobs.policy.require(actor, "diagnostics_read", "host")
+            return evidence
 
     @mcp.tool(annotations=write)
     def submit_probe_job(request_key: str) -> dict:
@@ -126,9 +141,9 @@ class LocalAuthorizationMiddleware:
         await self.app(scope, receive, send)
 
 
-def build_http_app(verifier, jobs, fixture_reader=None, *, audit=None, limit=120, fixture_image=None):
+def build_http_app(verifier, jobs, fixture_reader=None, *, audit=None, limit=120, fixture_image=None, diagnostics=None):
     """Use the same authenticated ASGI stack in production and HTTP tests."""
-    server = build_server(verifier, jobs, fixture_reader, fixture_image=fixture_image)
+    server = build_server(verifier, jobs, fixture_reader, fixture_image=fixture_image, diagnostics=diagnostics)
     app = server.streamable_http_app(
         stateless_http=True, json_response=True, max_request_body_size=65536,
         host="127.0.0.1",
@@ -252,6 +267,7 @@ def main():
         parser.error("Invalid private TLS certificate/key configuration")
     verifier = load_config(args.config, args.state_dir)
     readiness = None
+    diagnostics = None
     if args.supervised_ca is not None:
         if not tls or not args.supervised_ca.is_absolute() or args.supervised_ca.resolve(strict=True) != args.supervised_ca:
             parser.error("Supervised readiness requires canonical private TLS configuration")
@@ -259,6 +275,13 @@ def main():
         context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
         context.load_verify_locations(cafile=str(args.supervised_ca))
         readiness = lambda: verify_metadata(read_metadata(context, args.port), verifier)
+        root = args.config.parent
+        if (args.fixture_image is None and args.port == 8765
+                and args.config == root / "oauth.json" and args.state_dir == root / "state"
+                and args.supervised_ca == root / "service" / "ca.pem"
+                and args.tls_cert == root / "service" / "server.pem"
+                and args.tls_key == root / "service" / "server-key.pem"):
+            diagnostics = Diagnostics(verifier, root, tls_context=context)
     if os.getuid()==0 or os.path.lexists(args.state_dir/"local-fixture-mode"):
         parser.error("Unprivileged dedicated HTTP state required")
     if args.fixture_image is not None and not IMAGE.fullmatch(args.fixture_image):
@@ -266,13 +289,16 @@ def main():
     with exclusive_http_service(args.state_dir):
         operations = OPERATIONS if args.fixture_image else ("submit","read","cancel")
         workflows = ("probe_check","git_fixture_check") if args.fixture_image else ("probe_check",)
-        jobs = Jobs(args.state_dir,Policy((verifier.subject,op,"disposable") for op in operations),workflows=workflows)
+        grants = [(verifier.subject, op, "disposable") for op in operations]
+        if diagnostics is not None:
+            grants.append((verifier.subject, "diagnostics_read", "host"))
+        jobs = Jobs(args.state_dir, Policy(grants), workflows=workflows)
         if jobs.pending_effects():
             parser.error("RECONCILIATION_REQUIRED; stop and use local reconciliation")
         if args.fixture_image:
             bind_image(jobs,args.fixture_image)
         fixture = SyntheticGitHubReader(Policy([(verifier.subject,"github_read","disposable")]),args.state_dir)
-        app = build_http_app(verifier,jobs,fixture,fixture_image=args.fixture_image)
+        app = build_http_app(verifier,jobs,fixture,fixture_image=args.fixture_image,diagnostics=diagnostics)
         import uvicorn
         server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=args.port,
                                               access_log=False, **tls))
