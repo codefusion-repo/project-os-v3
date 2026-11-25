@@ -166,6 +166,9 @@ def main():
     try:
         unit = prepared_unit(args.root)
         with exclusive_lifecycle():
+            if args.action in ("start", "enable"):
+                from .maintenance_guard import require_no_installation
+                require_no_installation(Path(sys.executable))
             state = operate(unit, args.action)
         print(f"linked={state['linked']} active={state['active']} enabled={state['enabled']} pending_job={state['pending_job']}")
     except (OSError, ValueError, RuntimeError, subprocess.SubprocessError):
