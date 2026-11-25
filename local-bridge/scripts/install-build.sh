@@ -8,13 +8,27 @@ umask 077
 # transaction group before any writes. This is coordination, not a UID sandbox.
 lock_fd="${1-}"
 host_python="${2-}"
-shift 2
+expected_host="${3-}"
+shift 3
 [[ "$host_python" = /* ]] || exit 1
 KIT="$(cd -- "$(dirname -- "$0")/../.." && pwd -P)"
-"$host_python" -I - "$KIT" "$lock_fd" "${1-}" "${2-}" <<'PY'
-import fcntl, json, os, stat, sys
+"$host_python" -I - "$KIT" "$lock_fd" "$expected_host" "${1-}" "${2-}" <<'PY'
+import fcntl, hashlib, json, os, stat, sys
 from pathlib import Path
-kit, raw_fd, sha, wheel = sys.argv[1:]
+kit, raw_fd, expected_host, sha, wheel = sys.argv[1:]
+# Check the executable actually running this worker before any build writes.
+# Later invocations use the same canonical, checked host path.
+with open("/proc/self/exe", "rb") as stream:
+    before = os.fstat(stream.fileno())
+    digest = hashlib.file_digest(stream, "sha256").hexdigest()
+    after = os.fstat(stream.fileno())
+    if (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns, before.st_ctime_ns) != (
+            after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns, after.st_ctime_ns):
+        raise SystemExit("Host interpreter changed during worker inspection")
+observed = {"dev": before.st_dev, "ino": before.st_ino, "uid": before.st_uid,
+            "mode": stat.S_IMODE(before.st_mode), "size": before.st_size, "sha256": digest}
+if observed != json.loads(expected_host):
+    raise SystemExit("Host interpreter identity mismatch")
 fd = int(raw_fd)
 guard = Path(kit) / "local-bridge/.venv-install.guard"
 info = os.fstat(fd)

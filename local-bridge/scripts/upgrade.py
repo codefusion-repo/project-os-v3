@@ -33,6 +33,7 @@ PROPERTIES = ("Id", "LoadState", "FragmentPath", "DropInPaths",
 SAFE_PATH = re.compile(r"/[A-Za-z0-9_./-]+")
 SHA = re.compile(r"[0-9a-f]{40}")
 DIGEST = re.compile(r"[0-9a-f]{64}")
+INTERPRETER_FIELDS = ("dev", "ino", "uid", "mode", "size", "sha256")
 
 
 def directory(path, *, private=True):
@@ -268,67 +269,112 @@ def interpreter_identity(venv, *, executable=None):
         return ("venv:" + str(path.relative_to(venv)) if venv is not None and path.is_relative_to(venv)
                 else "host:" + str(path))
 
+    def parent_policy(item, info, in_venv):
+        if not stat.S_ISDIR(info.st_mode) or info.st_uid not in (0, os.getuid()):
+            raise PermissionError("Unsafe host interpreter parent")
+        if info.st_mode & 0o022:
+            # A root-owned sticky ancestor of the canonical private venv
+            # (e.g. /tmp in tests) protects existing trusted-owned children.
+            # Each child is checked before following it. Never extend this
+            # exception to host interpreter paths or directories in the venv.
+            if not (in_venv and item != venv and venv.is_relative_to(item)
+                    and info.st_uid == 0 and info.st_mode & stat.S_ISVTX):
+                raise PermissionError("Unsafe host interpreter parent")
+
     path = venv / "bin/python" if executable is None else executable
-    if not path.is_absolute():
-        raise ValueError("Absolute interpreter path required")
     links = []
     seen = set()
-    for _ in range(16):
-        parent = path.parent.resolve(strict=True)
-        if venv is not None and path.is_relative_to(venv):
-            if parent != path.parent:
-                raise PermissionError("Unexpected venv interpreter parent link")
-        else:
-            for item in (parent, *parent.parents):
-                st = item.lstat()
-                if not stat.S_ISDIR(st.st_mode) or st.st_uid not in (0, os.getuid()) or st.st_mode & 0o022:
-                    raise PermissionError("Unsafe host interpreter parent")
-        actual = parent / path.name
-        key = label(actual)
-        if key in seen:
-            raise ValueError("Interpreter link cycle")
-        seen.add(key)
-        info = actual.lstat()
-        if info.st_uid not in (0, os.getuid()):
-            raise PermissionError("Untrusted interpreter owner")
-        if stat.S_ISLNK(info.st_mode):
-            target = os.readlink(actual)
-            target_path = Path(target)
-            if ".." in target_path.parts:
-                raise ValueError("Unsupported interpreter link traversal")
-            if target_path.is_absolute():
-                if venv is not None and target_path.is_relative_to(venv):
-                    raise ValueError("Absolute link into relocated venv")
-                next_path = target_path
-            else:
-                next_path = actual.parent / target_path
-            links.append({"path": label(path), "resolved_parent": label(parent),
-                          "target": target, "uid": info.st_uid})
-            path = next_path
-            continue
-        if (not stat.S_ISREG(info.st_mode) or info.st_mode & 0o6022
-                or not info.st_mode & 0o111 or info.st_size > 128 * 1024 * 1024):
-            raise PermissionError("Unsafe interpreter executable")
-        fd = os.open(actual, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
-        with os.fdopen(fd, "rb") as stream:
-            before = os.fstat(stream.fileno())
-            if before != info:
-                raise RuntimeError("Interpreter changed during inspection")
-            digest = hashlib.file_digest(stream, "sha256").hexdigest()
-            after = os.fstat(stream.fileno())
-            if (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns, before.st_ctime_ns) != (
-                    after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns, after.st_ctime_ns):
-                raise RuntimeError("Interpreter changed during inspection")
-        return {"links": links, "path": label(path), "resolved": label(actual),
-                "dev": info.st_dev, "ino": info.st_ino, "uid": info.st_uid,
-                "mode": stat.S_IMODE(info.st_mode), "size": info.st_size, "sha256": digest}
-    raise ValueError("Interpreter link limit exceeded")
+    while True:
+        if path.anchor != "/" or ".." in path.parts or len(path.parts) < 2:
+            raise ValueError("Absolute interpreter path required without traversal")
+        in_venv = venv is not None and path.is_relative_to(venv)
+        parent = Path("/")
+        parent_policy(parent, parent.lstat(), in_venv)
+        # Inspect each lexical component before traversing it. On every
+        # directory or file link, restart at root for the destination chain.
+        parts = path.parts[1:]
+        for index, part in enumerate(parts):
+            actual = parent / part
+            info = actual.lstat()
+            remaining = parts[index + 1:]
+            if stat.S_ISLNK(info.st_mode):
+                if info.st_uid not in (0, os.getuid()):
+                    raise PermissionError("Untrusted interpreter owner")
+                if remaining and in_venv:
+                    raise PermissionError("Unexpected venv interpreter parent link")
+                if actual in seen:
+                    raise ValueError("Interpreter link cycle")
+                if len(links) >= 16:
+                    raise ValueError("Interpreter link limit exceeded")
+                seen.add(actual)
+                target = os.readlink(actual)
+                target_path = Path(target)
+                if (".." in target_path.parts or target_path.anchor not in ("", "/")
+                        or (not remaining and (target.endswith("/") or target_path.name in ("", ".")))):
+                    raise ValueError("Unsupported interpreter link traversal")
+                next_path = target_path if target_path.is_absolute() else parent / target_path
+                path = next_path.joinpath(*remaining)
+                if (venv is not None and path.is_relative_to(venv)
+                        and (target_path.is_absolute() or not actual.is_relative_to(venv))):
+                    raise ValueError("Absolute or external link into relocated venv")
+                links.append({"path": label(actual), "resolved_parent": label(parent),
+                              "target": target, "uid": info.st_uid})
+                break
+            if remaining:
+                parent_policy(actual, info, in_venv)
+                parent = actual
+                continue
+            if info.st_uid not in (0, os.getuid()):
+                raise PermissionError("Untrusted interpreter owner")
+            if (not stat.S_ISREG(info.st_mode) or info.st_mode & 0o6022
+                    or not info.st_mode & 0o111 or info.st_size > 128 * 1024 * 1024):
+                raise PermissionError("Unsafe interpreter executable")
+            fd = os.open(actual, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+            with os.fdopen(fd, "rb") as stream:
+                before = os.fstat(stream.fileno())
+                if before != info:
+                    raise RuntimeError("Interpreter changed during inspection")
+                digest = hashlib.file_digest(stream, "sha256").hexdigest()
+                after = os.fstat(stream.fileno())
+                if (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns, before.st_ctime_ns) != (
+                        after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns, after.st_ctime_ns):
+                    raise RuntimeError("Interpreter changed during inspection")
+            return {"links": links, "path": label(actual), "resolved": label(actual),
+                    "dev": info.st_dev, "ino": info.st_ino, "uid": info.st_uid,
+                    "mode": stat.S_IMODE(info.st_mode), "size": info.st_size, "sha256": digest}
 
 
 def host_interpreter_identity(executable=None):
     # Same policy as the installed venv target, before creating a journal or
     # moving the previous environment. Do not resolve away launcher links.
     return interpreter_identity(None, executable=Path(sys.executable) if executable is None else executable)
+
+
+def validated_host_python(expected):
+    # Revalidate the original launcher and canonical target, and bind both
+    # to the running coordinator. The trusted root/current UID boundary
+    # excludes concurrent mutation by those principals.
+    if host_interpreter_identity() != expected:
+        raise RuntimeError("Host interpreter identity changed")
+    canonical = Path(expected["resolved"].removeprefix("host:"))
+    current = host_interpreter_identity(canonical)
+    if current["links"] or any(current[key] != expected[key] for key in INTERPRETER_FIELDS):
+        raise RuntimeError("Host interpreter identity changed")
+    running = os.stat("/proc/self/exe")
+    if (running.st_dev, running.st_ino, running.st_uid, stat.S_IMODE(running.st_mode), running.st_size) != (
+            expected["dev"], expected["ino"], expected["uid"], expected["mode"], expected["size"]):
+        raise RuntimeError("Running host interpreter identity mismatch")
+    return canonical
+
+
+def build_runner():
+    expected = host_interpreter_identity()
+    validated_host_python(expected)
+
+    def run(kit, sha, wheel, active, tx, fds):
+        launch_build(kit, sha, wheel, active, tx, fds, host=expected)
+
+    return run
 
 
 def identity(path):
@@ -475,12 +521,14 @@ def verify_transaction(tx, venv, sha, root=None):
     no_writers(tx)
 
 
-def launch_build(kit, sha, wheel, active, tx, fds):
+def launch_build(kit, sha, wheel, active, tx, fds, *, host):
     # The session leader waits for a byte until the group identity is durable.
     # If the coordinator dies before that, EOF prevents any installation.
     # If it dies later, inherited flock descriptions and the recorded process
     # group fence recovery. Reviewed build descendants must not daemonize or
     # leave the session/process group; this is not a sandbox against same UID.
+    host_python = validated_host_python(host)
+    expected_host = json.dumps({key: host[key] for key in INTERPRETER_FIELDS}, sort_keys=True)
     reader, writer = os.pipe()
     child = None
     try:
@@ -488,7 +536,7 @@ def launch_build(kit, sha, wheel, active, tx, fds):
                'IFS= read -r -n 1 -u "$1" permit && [ "$permit" = Y ] || exit 1; '
                'shift; exec /bin/bash "$@"',
                "bridge-build", str(reader), str(kit / "local-bridge/scripts/install-build.sh"),
-               str(fds[0]), sys.executable, sha]
+               str(fds[0]), str(host_python), expected_host, sha]
         if wheel is not None:
             cmd.append(wheel)
         child = subprocess.Popen(cmd, start_new_session=True,
@@ -579,7 +627,9 @@ def restore(venv, backup, active, sha, bound_python, root=None):
 
 
 def replace(kit, sha, wheel, guard, fds, bound_python,
-            previous_sha, previous_wheel, legacy=False, run=launch_build, root=None):
+            previous_sha, previous_wheel, legacy=False, run=None, root=None):
+    if run is None:
+        run = build_runner()
     venv = kit / "local-bridge" / ".venv"
     backup = venv.parent / BACKUP
     active = guard / ACTIVE
@@ -610,7 +660,9 @@ def replace(kit, sha, wheel, guard, fds, bound_python,
     print("BRIDGE UPGRADE PASS; previous venv retained offline; unit remains fenced", flush=True)
 
 
-def initial_install(kit, sha, wheel, guard, fd):
+def initial_install(kit, sha, wheel, guard, fd, run=None):
+    if run is None:
+        run = build_runner()
     venv = kit / "local-bridge" / ".venv"
     active = guard / ACTIVE
     if os.path.lexists(active) or os.path.lexists(venv.parent / BACKUP):
@@ -619,7 +671,7 @@ def initial_install(kit, sha, wheel, guard, fd):
         raise ValueError("Existing bridge environment preserved.")
     tx = new_transaction(venv, sha, wheel)
     save_json(active, tx)
-    launch_build(kit, sha, wheel, active, tx, (fd,))
+    run(kit, sha, wheel, active, tx, (fd,))
     observed = identity(venv)["receipt"]
     if observed is None or observed["sha"] != sha or (wheel is not None and observed["wheel_sha256"] != wheel):
         raise ValueError("Installation receipt mismatch")
@@ -669,14 +721,13 @@ def main():
         verify_checkout(kit, args.reviewed_sha)
         if args.expected_wheel is not None and not DIGEST.fullmatch(args.expected_wheel):
             raise ValueError("Invalid expected wheel digest")
-        if args.action in ("install", "upgrade"):
-            host_interpreter_identity()
+        run = build_runner() if args.action in ("install", "upgrade") else None
         with checkout_guard(kit) as (guard, fd):
             verify_checkout(kit, args.reviewed_sha)
             if args.action == "install":
                 if any((args.root, args.bound_python, args.previous_sha, args.previous_wheel, args.legacy_consolidation)):
                     raise ValueError("Initial install has no maintenance parameters")
-                initial_install(kit, args.reviewed_sha, args.expected_wheel, guard, fd)
+                initial_install(kit, args.reviewed_sha, args.expected_wheel, guard, fd, run=run)
                 return
             if args.root is None or args.bound_python is None:
                 raise ValueError("Exact instance and bound Python required")
@@ -697,7 +748,7 @@ def main():
                         raise ValueError("Expected CI wheel SHA-256 required")
                     replace(kit, args.reviewed_sha, args.expected_wheel, guard,
                             (fd, *service_fds), args.bound_python, args.previous_sha,
-                            args.previous_wheel, args.legacy_consolidation, root=args.root)
+                            args.previous_wheel, args.legacy_consolidation, run=run, root=args.root)
                 else:
                     if any((args.expected_wheel, args.previous_sha, args.previous_wheel, args.legacy_consolidation)):
                         raise ValueError("Restore uses recorded transaction")
