@@ -17,7 +17,7 @@ Keep the existing selector and central installation. Two entrypoints (Linux/WSL 
 ## Capability boundary
 
 - GitHub Connector: authorized reads, commits, PR and checks; explicit separate closeout authorization.
-- Authenticated bridge: fixed probe, synthetic GitHub batch, job status/evidence/cancel; optional fixed Git/Podman fixture with local image binding. No remote commands, paths, image choice, arbitrary patches, real GitHub provider or device tools.
+- Authenticated bridge: fixed probe, synthetic GitHub batch, job status/evidence/cancel; optional fixed Git/Podman fixture with local image binding. LB-05 adds [operational diagnostics](README.md#operational-diagnostics-lb-05), fixed sanitized sections on the reviewed supervised HTTPS instance without fixture, separately opt-in and revocable. No remote commands, paths, image choice, arbitrary patches, real GitHub provider or device tools.
 - SQLite stores owner, request key, workflow, resource, result and transitions. Replay returns the same job; interruption is not auto-retried.
 - The operator's real repo work can proceed directly via GitHub Connector while local real-resource capability is blocked. Do not pretend a local test ran or use an agent fallback without authorization.
 

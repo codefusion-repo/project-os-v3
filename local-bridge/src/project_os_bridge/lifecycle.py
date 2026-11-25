@@ -16,7 +16,7 @@ PROPERTIES = ("Id", "LoadState", "FragmentPath", "DropInPaths",
               "NeedDaemonReload", "ActiveState", "UnitFileState", "Job")
 
 
-def systemctl(*args):
+def systemctl(*args, timeout=150):
     uid = os.getuid()
     env = {"PATH": "/usr/bin:/bin", "HOME": str(Path.home()), "LC_ALL": "C",
            "XDG_RUNTIME_DIR": f"/run/user/{uid}",
@@ -24,7 +24,7 @@ def systemctl(*args):
     return subprocess.run(
         ["/usr/bin/systemctl", "--user", "--no-pager", *args],
         env=env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-        stderr=subprocess.DEVNULL, text=True, timeout=150, check=False)
+        stderr=subprocess.DEVNULL, text=True, timeout=timeout, check=False)
 
 
 @contextmanager
