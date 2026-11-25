@@ -1,5 +1,4 @@
 import importlib.util
-from contextlib import contextmanager
 import json
 import os
 import shutil
@@ -226,10 +225,10 @@ class UpgradeTests(unittest.TestCase):
         self.assertTrue(self.restore())
 
     def test_host_preflight_uses_same_strict_parent_policy(self):
-        host = self.kit / "untrusted-preflight"
-        host.mkdir(mode=0o700)
+        host = self.trusted_host_fixture()
         launcher = host / "python3"
         launcher.symlink_to(Path("/usr/bin/false").resolve(strict=True))
+        upgrade.host_interpreter_identity(launcher)
         host.chmod(0o777)
         with self.assertRaisesRegex(PermissionError, "Unsafe host interpreter parent"):
             upgrade.host_interpreter_identity(launcher)
@@ -239,77 +238,78 @@ class UpgradeTests(unittest.TestCase):
     def test_untrusted_host_interpreter_parent_blocks_before_rename(self):
         path = self.venv / "bin/python"
         path.unlink()
-        host = self.kit / "untrusted-host"
-        host.mkdir(mode=0o700)
+        host = self.trusted_host_fixture()
         target = host / "python"
         target.write_bytes(b"fixture")
         target.chmod(0o700)
-        host.chmod(0o777)
         path.symlink_to(target)
+        upgrade.identity(self.venv)
+        host.chmod(0o777)
         with self.assertRaises(PermissionError):
             self.interrupted()
         self.assertFalse(self.backup.exists())
         self.assertFalse(self.active.exists())
         self.assertTrue(self.venv.exists())
 
-    @contextmanager
-    def trusted_fixture_ancestors(self):
-        # Isolate host policy tests from tempfile's shared /tmp ancestor.
-        # Do not mask the actual fixture, its links or their destinations.
-        real_lstat = Path.lstat
-        parents = set(self.kit.parents)
-
-        def lstat(path):
-            info = real_lstat(path)
-            if path in parents and info.st_mode & 0o022:
-                fields = list(info)
-                fields[0] &= ~0o022
-                return os.stat_result(fields)
-            return info
-
-        with patch.object(Path, "lstat", lstat):
-            yield
+    def trusted_host_fixture(self):
+        # Use real permissions under a trusted home rather than masking /tmp
+        # with a mock. A writable host ancestor must fail the positive control.
+        temp = tempfile.TemporaryDirectory(dir=Path.home())
+        self.addCleanup(temp.cleanup)
+        return Path(temp.name)
 
     def directory_alias(self):
-        shared = self.kit / "shared"
-        shared.mkdir(mode=0o700)
+        shared = self.trusted_host_fixture()
         (shared / "bin").symlink_to("target", target_is_directory=True)
         (shared / "target").symlink_to("/usr/bin", target_is_directory=True)
         return shared, shared / "bin/false"
 
     def test_lexical_host_parents_and_every_directory_link(self):
         shared, launcher = self.directory_alias()
-        with self.trusted_fixture_ancestors():
-            observed = upgrade.host_interpreter_identity(launcher)
-            self.assertEqual(observed["resolved"], "host:" + str(Path("/usr/bin/false").resolve()))
-            self.assertEqual([entry["path"] for entry in observed["links"]][:2],
-                             ["host:" + str(shared / "bin"), "host:" + str(shared / "target")])
-            shared.chmod(0o777)
-            with self.assertRaisesRegex(PermissionError, "Unsafe host interpreter parent"):
-                upgrade.host_interpreter_identity(launcher)
+        observed = upgrade.host_interpreter_identity(launcher)
+        self.assertEqual(observed["resolved"], "host:" + str(Path("/usr/bin/false").resolve()))
+        self.assertEqual([entry["path"] for entry in observed["links"]][:2],
+                         ["host:" + str(shared / "bin"), "host:" + str(shared / "target")])
+        shared.chmod(0o777)
+        with self.assertRaisesRegex(PermissionError, "Unsafe host interpreter parent"):
+            upgrade.host_interpreter_identity(launcher)
         self.assertFalse(self.active.exists())
         self.assertFalse(self.backup.exists())
 
     def test_directory_alias_cannot_hide_unsafe_destination(self):
         shared, launcher = self.directory_alias()
-        destination = self.kit / "destination"
-        destination.mkdir(mode=0o700)
+        destination = self.trusted_host_fixture()
         (destination / "false").symlink_to("/usr/bin/false")
         (shared / "target").unlink()
         (shared / "target").symlink_to(destination, target_is_directory=True)
-        with self.trusted_fixture_ancestors():
+        upgrade.host_interpreter_identity(launcher)
+        destination.chmod(0o777)
+        with self.assertRaisesRegex(PermissionError, "Unsafe host interpreter parent"):
             upgrade.host_interpreter_identity(launcher)
-            destination.chmod(0o777)
-            with self.assertRaisesRegex(PermissionError, "Unsafe host interpreter parent"):
-                upgrade.host_interpreter_identity(launcher)
 
     def test_directory_alias_cycle_rejected(self):
         shared, launcher = self.directory_alias()
         (shared / "target").unlink()
         (shared / "target").symlink_to("bin", target_is_directory=True)
-        with self.trusted_fixture_ancestors():
-            with self.assertRaisesRegex(ValueError, "Interpreter link cycle"):
-                upgrade.host_interpreter_identity(launcher)
+        with self.assertRaisesRegex(ValueError, "Interpreter link cycle"):
+            upgrade.host_interpreter_identity(launcher)
+
+    def test_file_link_preserves_directory_requirements(self):
+        root = self.trusted_host_fixture()
+        launcher = root / "python"
+        for target in ("/usr/bin/false/", "/usr/bin/false/.", "/usr/bin/../bin/false"):
+            with self.subTest(target=target):
+                launcher.symlink_to(target)
+                with self.assertRaisesRegex(ValueError, "Unsupported interpreter link traversal"):
+                    upgrade.host_interpreter_identity(launcher)
+                launcher.unlink()
+
+    def test_directory_and_file_link_budget(self):
+        root = self.trusted_host_fixture()
+        for i in range(17):
+            (root / str(i)).symlink_to(str(i + 1) if i < 16 else "/usr/bin")
+        with self.assertRaisesRegex(ValueError, "Interpreter link limit exceeded"):
+            upgrade.host_interpreter_identity(root / "0/false")
 
     def test_unsafe_venv_ancestor_rejected_before_backup(self):
         self.kit.chmod(0o777)
@@ -323,11 +323,10 @@ class UpgradeTests(unittest.TestCase):
         shared, launcher = self.directory_alias()
         self.bound.unlink()
         self.bound.symlink_to(launcher)
-        with self.trusted_fixture_ancestors():
-            self.interrupted()
-            shared.chmod(0o777)
-            with self.assertRaisesRegex(PermissionError, "Unsafe host interpreter parent"):
-                self.restore()
+        self.interrupted()
+        shared.chmod(0o777)
+        with self.assertRaisesRegex(PermissionError, "Unsafe host interpreter parent"):
+            self.restore()
         self.assertFalse(self.venv.exists())
         self.assertTrue((self.backup / "previous").is_dir())
         self.assertTrue(self.active.exists())
@@ -341,7 +340,7 @@ class UpgradeTests(unittest.TestCase):
         bound = other / "bin/python"
         bound.unlink()
         bound.symlink_to(launcher)
-        with self.trusted_fixture_ancestors(), patch.object(upgrade, "verify_checkout"):
+        with patch.object(upgrade, "verify_checkout"):
             prior = upgrade.prior_identity(self.venv, bound, self.old_sha, self.old_wheel, True)
             self.backup.mkdir(mode=0o700)
             tx = upgrade.new_transaction(self.venv, self.sha, self.wheel, prior)
@@ -373,12 +372,26 @@ class UpgradeTests(unittest.TestCase):
 
     def test_host_preflight_rejects_identity_change(self):
         shared, launcher = self.directory_alias()
-        with self.trusted_fixture_ancestors(), patch.object(upgrade.sys, "executable", str(launcher)):
+        with patch.object(upgrade.sys, "executable", str(launcher)):
             expected = upgrade.host_interpreter_identity()
             (shared / "target").unlink()
             (shared / "target").symlink_to("/bin", target_is_directory=True)
             with self.assertRaisesRegex(RuntimeError, "Host interpreter identity changed"):
                 upgrade.validated_host_python(expected)
+
+    def test_worker_rejects_mismatched_identity_before_build(self):
+        expected = upgrade.host_interpreter_identity()
+        canonical = upgrade.validated_host_python(expected)
+        mismatched = {key: expected[key] for key in upgrade.INTERPRETER_FIELDS}
+        mismatched["sha256"] = "0" * 64
+        worker = Path(__file__).resolve().parents[1] / "scripts/install-build.sh"
+        result = subprocess.run(
+            ["/bin/bash", str(worker), "3", str(canonical), json.dumps(mismatched), self.sha],
+            capture_output=True, text=True, timeout=10)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Host interpreter identity mismatch", result.stderr)
+        self.assertFalse(self.active.exists())
+        self.assertFalse(self.backup.exists())
 
     def test_fence_rejects_legacy_lifecycle_and_requires_loaded_barrier(self):
         from project_os_bridge import lifecycle

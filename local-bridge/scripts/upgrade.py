@@ -310,7 +310,7 @@ def interpreter_identity(venv, *, executable=None):
                 target = os.readlink(actual)
                 target_path = Path(target)
                 if (".." in target_path.parts or target_path.anchor not in ("", "/")
-                        or (not remaining and (target.endswith("/") or target_path.name in ("", ".")))):
+                        or (not remaining and target.rsplit("/", 1)[-1] in ("", "."))):
                     raise ValueError("Unsupported interpreter link traversal")
                 next_path = target_path if target_path.is_absolute() else parent / target_path
                 path = next_path.joinpath(*remaining)
@@ -380,6 +380,7 @@ def build_runner():
 def identity(path):
     # Bind the directory inode and receipt/config bytes without executing a
     # relocated interpreter. Not tamper resistance against the trusted UID.
+    interpreter = interpreter_identity(path)
     validate_venv(path)
     st = path.lstat()
     receipt = path / RECEIPT
@@ -393,7 +394,7 @@ def identity(path):
             raise ValueError("Invalid previous installation receipt")
     return {"dev": st.st_dev, "ino": st.st_ino,
             "config_sha256": hashlib.sha256((path / "pyvenv.cfg").read_bytes()).hexdigest(),
-            "receipt": value, "interpreter": interpreter_identity(path)}
+            "receipt": value, "interpreter": interpreter}
 
 
 def prior_identity(venv, bound_python, previous_sha, previous_wheel, legacy):

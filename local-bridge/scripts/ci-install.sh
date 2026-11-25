@@ -43,6 +43,26 @@ rmdir "$bad_python"
 [ ! -e local-bridge/.venv ] && [ ! -L local-bridge/.venv ]
 [ ! -e local-bridge/.venv-install.guard/active.json ] && [ ! -L local-bridge/.venv-install.guard/active.json ]
 echo 'HOST INTERPRETER PREFLIGHT NEGATIVE PASS'
+# Directory aliases must not hide an unsafe lexical parent. Establish that
+# the identical alias is accepted while its origin remains trusted.
+bad_alias="$(mktemp -d "$RUNNER_TEMP/bridge-directory-alias.XXXXXXXX")"
+ln -s /usr/bin "$bad_alias/bin"
+python3 -I -B - "$bad_alias/bin/python3" <<'PY'
+import importlib.util, sys
+from pathlib import Path
+spec = importlib.util.spec_from_file_location("upgrade", Path("local-bridge/scripts/upgrade.py"))
+upgrade = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(upgrade)
+host = upgrade.host_interpreter_identity(Path(sys.argv[1]))
+assert host["resolved"] == "host:" + str(Path("/usr/bin/python3").resolve(strict=True))
+PY
+chmod 0777 "$bad_alias"
+PATH="$bad_alias/bin:$PATH" expect_block 'BRIDGE INTERPRETER REJECTED: Unsafe host interpreter parent' "$GITHUB_SHA"
+unlink "$bad_alias/bin"
+rmdir "$bad_alias"
+[ ! -e local-bridge/.venv ] && [ ! -L local-bridge/.venv ]
+[ ! -e local-bridge/.venv-install.guard/active.json ] && [ ! -L local-bridge/.venv-install.guard/active.json ]
+echo 'HOST DIRECTORY ALIAS PREFLIGHT NEGATIVE PASS'
 PIP_INDEX_URL=http://127.0.0.1:1 PIP_EXTRA_INDEX_URL=http://127.0.0.1:1 PIP_REQUIRE_VIRTUALENV=false bash "$install" "$GITHUB_SHA"
 venv=local-bridge/.venv
 # Check the actual installed interpreter, not a substitute executable, and
