@@ -1,5 +1,6 @@
 import re
 import unittest
+import unicodedata
 from pathlib import Path
 from urllib.parse import unquote, urlsplit
 
@@ -132,6 +133,14 @@ class Structure(unittest.TestCase):
         self.assertIn('adapters/browser-chat.md', shared)
         self.assertIn('adapters/terminal-agent.md', shared)
         self.assertIn('sin depender del chat', shared)
+        self.assertIn('revisión integrada de base verificada', bootstrap)
+        self.assertIn('instrucciones candidatas son objeto de revisión', shared)
+
+    def test_workflows_require_templates_for_github_artifacts(self):
+        for workflow in ('create', 'implement', 'review_for_close', 'release'):
+            content = (ROOT / 'workflows' / f'{workflow}.md').read_text()
+            self.assertIn('../PROJECT_OS.md#selección-de-templates', content)
+            self.assertNotRegex(content, r'(?i)\]\(\.\./templates/[^)]+\) (?:es opcional|son opcionales)')
 
     def test_relative_markdown_links(self):
         for path in ROOT.rglob('*.md'):
@@ -140,12 +149,31 @@ class Structure(unittest.TestCase):
             content = re.sub(r'```.*?```', '', path.read_text(), flags=re.S)
             for target in re.findall(r'(?<!!)\[[^\]]+\]\(([^\s)]+)(?:\s+[^)]*)?\)', content):
                 parsed = urlsplit(target)
-                if parsed.scheme or target.startswith('#'):
+                if parsed.scheme:
                     continue
-                resolved = (path.parent / unquote(parsed.path)).resolve()
+                resolved = (path.parent / unquote(parsed.path)).resolve() if parsed.path else path.resolve()
                 with self.subTest(file=str(path.relative_to(ROOT)), target=target):
                     self.assertTrue(resolved.is_relative_to(ROOT), target)
                     self.assertTrue(resolved.exists(), target)
+                    if parsed.fragment and resolved.suffix == '.md':
+                        headings = re.sub(r'```.*?```', '', resolved.read_text(), flags=re.S)
+                        # ATX headings used by this kit; preserve Unicode letters and hyphens.
+                        anchors = set()
+                        for heading in re.findall(r'^#{1,6}\s+(.+?)\s*#*
+
+
+if __name__ == '__main__':
+    unittest.main()
+, headings, re.M):
+                            heading = unicodedata.normalize('NFC', heading.lower())
+                            slug = re.sub(r'[^\w\s-]', '', heading).replace(' ', '-')
+                            candidate = slug
+                            index = 1
+                            while candidate in anchors:
+                                candidate = f'{slug}-{index}'
+                                index += 1
+                            anchors.add(candidate)
+                        self.assertIn(unquote(parsed.fragment), anchors, target)
 
 
 if __name__ == '__main__':

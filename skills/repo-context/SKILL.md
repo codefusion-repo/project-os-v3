@@ -22,6 +22,6 @@ Refs, archivos y comandos observados; siguiente acción y límites de acceso. No
 No exponer configuración ni secretos. Leer solo lo necesario para la tarea.
 
 ## Adopción y contexto multirrepositorio
-Leer el `AGENTS.md` principal y su `Project-OS-Version: <SHA>`; obtener instrucciones del repositorio canónico en esa referencia y verificar la integridad de los archivos efectivos. No usar HEAD modificado como si fuera el commit. La instalación del kit es central y no se copia a los proyectos.
+Leer el `AGENTS.md` principal y su `Project-OS-Version: <SHA>`; obtener instrucciones del repositorio canónico en esa referencia y verificar la integridad de los archivos efectivos. No usar HEAD modificado como si fuera el commit. Si no existe pin, recuperar la referencia explícita o integrada verificable según PROJECT_OS.md; distinguir instrucciones candidatas de las aplicables. La instalación del kit es central y no se copia a los proyectos.
 
 Para repositorios equivalentes, aplicar el alcance, comprobaciones independientes y protección de relaciones privadas de [PROJECT_OS.md](../../PROJECT_OS.md#instalación-adopción-y-versión-del-proyecto). Recuperar relaciones desde documentación versionada accesible, no desde preferencias privadas inexistentes para el agente remoto.

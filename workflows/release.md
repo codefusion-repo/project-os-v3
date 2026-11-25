@@ -13,6 +13,6 @@ Evaluación de publicación, versión o despliegue.
 ## Evidencia y validación
 Usa checks y controles observados; indica los no disponibles. Skills sugeridas: [security-review](../skills/security-review/SKILL.md), [documentation](../skills/documentation/SKILL.md).
 ## Salida
-Ref, readiness, riesgos, rollback y pendientes; [release](../templates/release.md) es opcional.
+Ref, readiness, riesgos, rollback y pendientes. Aplica [release](../templates/release.md) obligatoriamente al artefacto GitHub correspondiente, conforme a [selección de templates](../PROJECT_OS.md#selección-de-templates); no crees una publicación solo para completar el template.
 ## Escalación localizada
 La preparación no autoriza publicar, desplegar, cambiar configuración o hacer merge.

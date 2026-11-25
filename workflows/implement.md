@@ -14,6 +14,6 @@ Feature, corrección, refactor acotado o idea que necesita un slice vertical.
 ## Evidencia y validación
 Muestra demo o pruebas reales y exit codes. Aplica [github-traceability](../skills/github-traceability/SKILL.md): sin publicación verificable informa trazabilidad pendiente; solo un experimento expresamente local y descartable se exceptúa. Skills sugeridas: [implement-change](../skills/implement-change/SKILL.md), [rapid-prototype](../skills/rapid-prototype/SKILL.md), [debug](../skills/debug/SKILL.md), [testing](../skills/testing/SKILL.md), [security-review](../skills/security-review/SKILL.md).
 ## Salida
-Rutas, resultado observable, validación, SHA/URL remotos verificados o trazabilidad pendiente con bloqueo, riesgos y próximo paso; [prototype](../templates/prototype.md) y [comment](../templates/comment.md) ayudan si se necesita una demo o actualización en el issue/PR existente.
+Rutas, resultado observable, validación, SHA/URL remotos verificados o trazabilidad pendiente con bloqueo, riesgos y próximo paso; usa [prototype](../templates/prototype.md) si hay prototipo y [execution](../templates/execution.md) o [comment](../templates/comment.md) para el registro material autorizado en el issue/PR existente, conforme a [selección de templates](../PROJECT_OS.md#selección-de-templates).
 ## Escalación localizada
 Detén solo acciones sensibles no autorizadas; no confundas datos simulados con producción.

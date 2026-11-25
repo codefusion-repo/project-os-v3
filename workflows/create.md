@@ -13,6 +13,6 @@ Idea ambigua, oportunidad o nueva unidad de trabajo.
 ## Evidencia y validación
 Contrasta criterios con el repo y hechos disponibles. Skills sugeridas: [rapid-prototype](../skills/rapid-prototype/SKILL.md), [documentation](../skills/documentation/SKILL.md).
 ## Salida
-Outcome, criterios, referencias y próximo paso; [task](../templates/task.md) o [issue](../templates/issue.md) son opcionales.
+Outcome, criterios, referencias y próximo paso. No es obligatorio crear un issue; si se crea o actualiza uno en GitHub, aplica obligatoriamente [issue](../templates/issue.md). Usa [task](../templates/task.md) para un brief cuando aporte valor. Sigue [selección de templates](../PROJECT_OS.md#selección-de-templates).
 ## Escalación localizada
 Aclara solo decisiones materiales que no puedan inferirse y no detengas trabajo independiente.
