@@ -86,7 +86,7 @@ Keep the state directory private. Reusing the same request key retrieves the ori
 
 ## Independent self-hosted installations
 
-See [SECURITY.md](SECURITY.md) for the threat model, gates, private setup and service account guidance. Each installation has its own identity, tunnel, local credentials and databases. No shared Project OS service or collaborative RBAC. The source repository is public; a redistribution license is a separate maintainer decision.
+See [SECURITY.md](SECURITY.md) for the threat model, gates, private setup and service account guidance. Different operators have separate identities, tunnels, local credentials and databases. A same-operator exclusive staging transition may reuse the existing OAuth identity, tunnel, restricted key and connector under [WSL-VALIDATION.md](WSL-VALIDATION.md#exclusive-same-operator-staging-transition), but must retain separate private runtime state/TLS and prove exclusive cutover and fresh live checks. No shared Project OS service or collaborative RBAC. The source repository is public; a redistribution license is a separate maintainer decision.
 
 `project-os-bridge-init --root /absolute/private/new-directory` initializes a new disposable HTTP instance interactively. It never starts a server, grants access, provisions credentials or modifies OS permissions. Keep existing installations unchanged. Install from a reviewed full commit using the hash-verified installer below. Independent clean-device validation remains required.
 

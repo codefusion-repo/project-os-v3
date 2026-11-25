@@ -4,7 +4,7 @@ Only disposable jobs and synthetic GitHub fixtures. No adopted repos, real gh ca
 
 ## Configure
 
-For new independent validation use [WSL-VALIDATION.md](WSL-VALIDATION.md) and its private initializer/supervised HTTPS path. The plaintext commands below document the earlier staging pilot only; do not use them for a new production-readiness run.
+For new independent validation use [WSL-VALIDATION.md](WSL-VALIDATION.md) and its private initializer/supervised HTTPS path. The plaintext commands below document the earlier staging pilot only; do not use them for a new production-readiness run. For the same operator, the existing staging identity, tunnel, restricted runtime key and OAuth connector may be retained only through the [exclusive transition](WSL-VALIDATION.md#exclusive-same-operator-staging-transition), with fresh private state, TLS, quiescence, verified scope and fresh live evidence. Do not duplicate resources or rotate uncompromised scoped keys just to repeat setup; do not inherit pilot grants or allow concurrent tunnel use.
 
 In AuthKit Staging keep email/password and MFA enabled, public signup and unused social login disabled. Enable CIMD under Connect, leave DCR disabled. The issuer is the exact hosted AuthKit HTTPS domain from public OAuth metadata (no trailing slash). Register the exact public MCP tunnel URL as the sole Resource Indicator, not localhost or the WorkOS client ID. For the default OpenAI tunnel base the documented candidate is https://api.openai.com/v1/mcp/<tunnel_id>. Verify the actual connector URL and protected-resource metadata before granting access; this document does not attest any live tunnel. Do not configure wildcards or fallback audiences.
 
