@@ -72,6 +72,15 @@ class BrowserCloseoutContract(unittest.TestCase):
                        'una interrupción no equivale a finalización'):
             self.assertIn(phrase, self.shared)
 
+    def test_resume_control_is_not_authorization(self):
+        for phrase in ('La reanudación no constituye nueva autorización',
+                       'No detengas checkpoints internos',
+                       'Sin controles interactivos'):
+            self.assertIn(phrase, self.shared)
+        for phrase in ('botón de continuación', 'botón de siguiente operación recomendada',
+                       'Si no hay botones', 'No esperes clics en checkpoints internos'):
+            self.assertIn(phrase, self.adapter)
+
     def test_branch_cleanup_safe_command_is_distinct_from_prohibition(self):
         # Do not case-fold: git branch -D is force deletion, not git branch -d.
         prohibition = self.shared.split('No uses `git reset --hard`', 1)[1].split('por defecto.', 1)[0]

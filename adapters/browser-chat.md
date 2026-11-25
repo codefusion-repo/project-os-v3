@@ -23,3 +23,5 @@ En éxito entrega resultado, enlaces verificados y comandos locales restantes; e
 Aplica obligatoriamente la [selección de templates](../PROJECT_OS.md#selección-de-templates), [github-traceability](../skills/github-traceability/SKILL.md) y [adopción y versión](../PROJECT_OS.md#instalación-adopción-y-versión-del-proyecto). Si el conector no permite leer o verificar un artefacto, declara el límite.
 
 Si la superficie interrumpe la ejecución, aplica [Respuesta y continuidad](../PROJECT_OS.md#respuesta-y-continuidad); distingue límite técnico de decisión del PM y no presentes un checkpoint como resultado final.
+
+Cuando una interrupción técnica obligue a devolver el control, ofrece un botón de continuación si la interfaz lo permite; al finalizar, ofrece un botón de siguiente operación recomendada cuando aporte valor. El botón envía un prompt contextualizado según el contrato central de continuidad, sin ejecutar mutaciones por sí mismo ni conceder autorización. Si no hay botones, entrega el prompt breve listo para usar. No esperes clics en checkpoints internos.
