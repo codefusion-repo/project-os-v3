@@ -248,7 +248,12 @@ class AuthTests(unittest.TestCase):
         policy = Policy([(SUBJECT, "diagnostics_read", "host")])
         jobs = Jobs(state, policy)
         diagnostics = Diagnostics(verifier, self.root)
-        collect = Mock(return_value={"section": "host", "status": "observed", "data": {"wsl": True}})
+        def observe(_):
+            # Collectors must not block the ASGI event loop (network calls loop back).
+            with self.assertRaises(RuntimeError):
+                asyncio.get_running_loop()
+            return {"section": "host", "status": "observed", "data": {"wsl": True}}
+        collect = Mock(side_effect=observe)
         diagnostics.collect = collect
         flag = state / FLAG
         app = build_http_app(verifier, jobs, diagnostics=diagnostics)

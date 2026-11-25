@@ -1,5 +1,6 @@
 """Authenticated disposable MCP tools; no real resources."""
 import argparse
+import asyncio
 import fcntl
 import stat
 from contextlib import contextmanager
@@ -65,13 +66,14 @@ def build_server(verifier, jobs, fixture_reader=None, *, fixture_image=None, dia
 
     if diagnostics is not None and fixture_image is None:
         @mcp.tool(annotations=read)
-        def operational_diagnostics(section: Section) -> dict:
+        async def operational_diagnostics(section: Section) -> dict:
             """Read a fixed sanitized operational section; no paths, commands or URLs."""
             actor = principal()
             jobs.policy.require(actor, "diagnostics_read", "host")
             if not diagnostics.enabled():
                 raise PermissionError("DENIED")
-            evidence = diagnostics.collect(section)
+            # Network diagnostics call the same loopback listener; never block its event loop.
+            evidence = await asyncio.to_thread(diagnostics.collect, section)
             if principal() != actor or not diagnostics.enabled():
                 raise PermissionError("DENIED")
             jobs.policy.require(actor, "diagnostics_read", "host")
