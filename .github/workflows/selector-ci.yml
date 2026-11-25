@@ -64,7 +64,7 @@ jobs:
 
   powershell-wrapper:
     runs-on: windows-latest
-    timeout-minutes: 5
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
         with:
@@ -72,6 +72,9 @@ jobs:
       - name: Test wrapper argument forwarding and failure propagation
         shell: pwsh
         run: ./local-bridge/tests/test_install_wrapper.ps1
+      - name: Test real Windows WSL2 installer with disposable Git fixture
+        shell: pwsh
+        run: ./local-bridge/tests/test_install_wsl.ps1
 
   oci-audit:
     # Retain the legacy check name; it cannot pass unless both candidate replicas pass.
