@@ -61,6 +61,8 @@ The PM-authorized correction in [#14](https://github.com/codefusion-repo/project
 
 ## 2. Independent installation and boundary checks
 
+The clean independent procedure below is initial certification, not a new checkout per update. For an existing certified instance use [single-installation maintenance](README.md#single-installation-maintenance), which retains the original checkout, verified artifact, prior state and rollback; do not repeat initial setup or create new credentials.
+
 Run as the new service account. Replace REVIEWED_SHA with the full explicitly reviewed Git commit (not a tag, merge preview or abbreviated SHA). Stop at any failure. Before this step, verify the reviewed SHA and passing artifact-specific bootstrap applicability gate described in SECURITY.md; the PM-approved disposition is limited to the exact wheel and three advisories, not an override of scanner failures or other security gates. Verify host Python 3.12, distribution package provenance, OS/curl CA trust and security updates locally. The installer skips ensurepip, verifies the pinned pip wheel before execution and uses the reviewed Git tree and offline wheel installs. It requires direct HTTPS access to PyPI and files.pythonhosted.org; do not disable TLS or substitute a mirror/wheel on failure. Two independent source-tree builds must match SHA-256 before installation. Preserve the old installation and its state for rollback; a failed fresh installation is not activated or migrated. Record host Python/OS, OpenSSL, Git/curl and CA provenance locally, as well as the reviewed SHA, wheel digest and tests. No requirement to run CI-only scripts locally.
 
 ```bash

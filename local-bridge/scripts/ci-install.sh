@@ -56,6 +56,14 @@ PY
 before="$(sha256sum "$venv/pyvenv.cfg")"
 expect_block 'Existing bridge environment preserved.' "$GITHUB_SHA"
 [ "$before" = "$(sha256sum "$venv/pyvenv.cfg")" ]
+"$venv/bin/python" -I - "$GITHUB_SHA" <<'PY'
+import json, re, sys
+from pathlib import Path
+receipt = json.loads(Path("local-bridge/.venv/.project-os-bridge-install.json").read_text())
+assert set(receipt) == {"sha", "wheel_sha256"} and receipt["sha"] == sys.argv[1]
+assert re.fullmatch(r"[0-9a-f]{64}", receipt["wheel_sha256"])
+print("INSTALL_RECEIPT_PASS")
+PY
 [ -z "$(git status --porcelain --untracked-files=normal)" ]
 echo 'CI INSTALL AND NEGATIVE CONTROLS PASS'
 # Compare installed retained source files with the exact publishing commit
