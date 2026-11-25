@@ -114,16 +114,6 @@ def build_server(verifier, jobs, fixture_reader=None, *, fixture_image=None, dia
             """Aggregate synthetic issue fixtures only; never contacts GitHub."""
             return fixture_reader.batch_issues(principal(), "disposable", numbers)
 
-    # Tunnel discovery may request the local endpoint path rather than the public path.
-    from starlette.responses import JSONResponse
-    from urllib.parse import urlsplit
-    public_path = "/.well-known/oauth-protected-resource" + urlsplit(verifier.resource).path
-    for route in ("/.well-known/oauth-protected-resource", "/.well-known/oauth-protected-resource/mcp"):
-        if route != public_path:
-            async def metadata(request):
-                return JSONResponse({"resource": verifier.resource, "authorization_servers": [verifier.issuer],
-                                     "scopes_supported": [SCOPE, "offline_access"], "bearer_methods_supported": ["header"]})
-            mcp.custom_route(route, methods=["GET"])(metadata)
     return mcp
 
 
@@ -150,6 +140,41 @@ def build_http_app(verifier, jobs, fixture_reader=None, *, audit=None, limit=120
         stateless_http=True, json_response=True, max_request_body_size=65536,
         host="127.0.0.1",
     )
+    # SDK v2.3.0 derives discovery scopes from required_scopes. Renewal
+    # must be advertised without requiring offline_access on every access token.
+    # Keep the SDK's canonical route, method and CORS handling, but use the
+    # same metadata endpoint for the canonical path and the two tunnel aliases.
+    from urllib.parse import urlsplit
+    from starlette.responses import JSONResponse
+    from starlette.routing import Route
+    from starlette.middleware.cors import CORSMiddleware
+
+    prefix = "/.well-known/oauth-protected-resource"
+    canonical = prefix + urlsplit(verifier.resource).path
+
+    async def metadata(request):
+        return JSONResponse({
+            "resource": verifier.resource,
+            "authorization_servers": [verifier.issuer],
+            "scopes_supported": [SCOPE, "offline_access"],
+            "bearer_methods_supported": ["header"],
+        })
+
+    routes = app.router.routes
+    matches = [route for route in routes if getattr(route, "path", None) == canonical]
+    if len(matches) != 1 or not isinstance(matches[0], Route):
+        raise RuntimeError("Expected exactly one SDK protected resource metadata route")
+    # Preserve discovery CORS for GET/OPTIONS on the fixed public endpoints.
+    for path in dict.fromkeys((canonical, prefix, prefix + "/mcp")):
+        if path != canonical and any(getattr(route, "path", None) == path for route in routes):
+            raise RuntimeError("Unexpected protected resource metadata alias")
+        route = Route(path, endpoint=metadata, methods=["GET", "OPTIONS"])
+        route.app = CORSMiddleware(route.app, allow_origins=["*"], allow_methods=["GET", "OPTIONS"])
+        if path == canonical:
+            routes[routes.index(matches[0])] = route
+        else:
+            routes.append(route)
+
     # SDK v2.3.0 authenticates before routing. Insert the local policy gate
     # immediately after that middleware; fail closed if the stack changes.
     positions = [i for i, m in enumerate(app.user_middleware)
