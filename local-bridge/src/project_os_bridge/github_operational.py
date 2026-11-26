@@ -102,28 +102,33 @@ def load_operational_provider(verifier, *, supervised, project_config=None):
         return subprocess.run(["git", "-C", str(path.parent.parent), *args], env=env,
                               stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                               stderr=subprocess.DEVNULL, timeout=5, check=False)
-    tracked = git("ls-files", "--", ".project-os/")
-    ignored = git("check-ignore", "--", PROJECT_CONFIG)
+    try:
+        tracked = git("ls-files", "--", ".project-os/")
+        ignored = git("check-ignore", "--", PROJECT_CONFIG)
+    except subprocess.TimeoutExpired:
+        raise PermissionError("Project configuration exclusion could not be verified") from None
     if tracked.returncode != 0 or tracked.stdout or ignored.returncode != 0:
         raise PermissionError("Project configuration must be excluded from Git")
-    original = _private_bytes(path, MAX_BINDING)
-    data = json.loads(original, object_pairs_hook=_unique_object)
-    if not isinstance(data, dict) or type(data.get("version")) is not int or data["version"] != 2:
-        raise ValueError("Invalid project configuration")
-    config = data.get("github_context")
-    if not isinstance(config, dict) or set(config) != {"project", "repository", "repository_id"}:
-        raise ValueError("Invalid GitHub context binding")
-    project, repo, repo_id = (config[key] for key in ("project", "repository", "repository_id"))
-    repositories = data.get("repositories")
-    if (not isinstance(repositories, list) or not all(isinstance(v, str) for v in repositories)
-            or not isinstance(repo, str) or repo.casefold() not in {v.casefold() for v in repositories}):
-        raise ValueError("GitHub context repository not in project")
+    def read_binding():
+        data = json.loads(_private_bytes(path, MAX_BINDING), object_pairs_hook=_unique_object)
+        if not isinstance(data, dict) or type(data.get("version")) is not int or data["version"] != 2:
+            raise ValueError("Invalid project configuration")
+        config = data.get("github_context")
+        if not isinstance(config, dict) or set(config) != {"project", "repository", "repository_id"}:
+            raise ValueError("Invalid GitHub context binding")
+        project, repo, repo_id = (config[key] for key in ("project", "repository", "repository_id"))
+        repositories = data.get("repositories")
+        if (not isinstance(repositories, list) or not all(isinstance(v, str) for v in repositories)
+                or not isinstance(repo, str) or repo.casefold() not in {v.casefold() for v in repositories}
+                or not isinstance(project, str) or not PROJECT.fullmatch(project)
+                or not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repo)
+                or any(part in {".", ".."} for part in repo.split("/"))
+                or type(repo_id) is not int or not 0 < repo_id <= 2**63 - 1):
+            raise ValueError("Invalid GitHub context binding")
+        return project, repo, repo_id
+
+    project, repo, repo_id = read_binding()
     actor = verifier.subject
-    if (actor != verifier.subject or not isinstance(project, str) or not PROJECT.fullmatch(project)
-            or not isinstance(repo, str) or not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repo)
-            or any(part in {".", ".."} for part in repo.split("/"))
-            or type(repo_id) is not int or not 0 < repo_id <= 2**63 - 1):
-        raise ValueError("Invalid GitHub context binding")
     config_dir = state.parent / CONFIG_DIR
     private_directory(config_dir)
     initial_dir = config_dir.stat()
@@ -137,7 +142,7 @@ def load_operational_provider(verifier, *, supervised, project_config=None):
             return (verifier.enabled() and (current_dir.st_dev, current_dir.st_ino) ==
                     (initial_dir.st_dev, initial_dir.st_ino)
                     and _private_bytes(flag, 0) == b""
-                    and _private_bytes(path, MAX_BINDING) == original)
+                    and read_binding() == (project, repo, repo_id))
         except (OSError, ValueError):
             return False
 

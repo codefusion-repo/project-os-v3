@@ -52,6 +52,22 @@ class ServiceSetupTests(unittest.TestCase):
             self.assertEqual(context.verify_mode,ssl.CERT_REQUIRED)
             self.assertTrue(context.check_hostname)
             self.assertEqual((service/"runtime-key").stat().st_mode&0o777,0o600)
+            self.assertNotIn("--project-config", bridge)
+            project = root / "project" / ".project-os"
+            project.mkdir(parents=True, mode=0o700)
+            locator = project / "config.json"
+            write_new(locator, b"{}")
+            runtime_path = service / "runtime.json"
+            runtime = json.loads(runtime_path.read_text())
+            runtime_path.write_text(json.dumps({**runtime, "project_config": str(locator)}))
+            bridge, cmd, env, tenv, context, _ = commands(root)
+            self.assertEqual(bridge[bridge.index("--project-config") + 1], str(locator))
+            self.assertNotIn(str(locator), cmd)
+            self.assertNotIn(key, " ".join(bridge + cmd))
+            runtime_path.write_text(json.dumps({**runtime, "project_config": "relative/config.json"}))
+            with self.assertRaises(ValueError):
+                commands(root)
+            runtime_path.write_text(json.dumps(runtime))
             with self.assertRaises(FileExistsError):
                 with patch("project_os_bridge.service_setup.os.path.lexists",return_value=False), patch.object(sys,"base_prefix","/synthetic-base"):
                     prepare_service(root,tunnel,key)

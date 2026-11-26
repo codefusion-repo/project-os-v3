@@ -84,6 +84,19 @@ class OperationalGitHubTests(unittest.TestCase):
                 provider.read("user_fixture", "demo", [1])
             request.assert_called_once()
 
+    def test_unrelated_project_preferences_do_not_revoke_binding(self):
+        provider = self.provider()
+        self.binding.write_text(json.dumps({**self.config, "name": "Updated demo",
+                                            "prompt_dir": ".project-os/other-prompts"}, indent=2))
+        with patch.object(provider.reader, "_request", side_effect=self.response) as request:
+            result = provider.read("user_fixture", "demo", [1])
+            self.assertTrue(result["complete"])
+            self.assertEqual(request.call_count, 3)
+            self.binding.write_text(json.dumps({**self.config, "repositories": ["example/other"]}))
+            with self.assertRaises(PermissionError):
+                provider.read("user_fixture", "demo", [1])
+            self.assertEqual(request.call_count, 3)
+
     def test_binding_change_and_other_project_denied(self):
         provider = self.provider()
         with patch.object(provider.reader, "_request") as request:
