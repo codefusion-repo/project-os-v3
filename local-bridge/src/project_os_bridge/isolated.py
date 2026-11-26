@@ -49,7 +49,10 @@ require(int(quota) <= int(period), 16)
 spec = json.loads(sys.argv[3])
 require(all(os.readlink('/proc/self/ns/' + name) != identity
             for name, identity in spec['namespaces'].items()), 17)
-require(allowed_mounts([parse_mount(line) for line in Path('/proc/self/mountinfo').read_text().splitlines()], spec), 18)
+violation = mount_violation([parse_mount(line) for line in Path('/proc/self/mountinfo').read_text().splitlines()], spec)
+if violation:
+    print(violation)
+    sys.exit(18)
 require(all(not os.path.lexists(path) for path in spec['forbidden']), 19)
 """
 CHECKS = ["exact_content","fixture_write_denied","synthetic_host_path_absent",
@@ -111,15 +114,20 @@ def validate_in_container(repo: GitFixture, principal, expected_revision, image,
                     "--volume", f"{mount}:/fixture:ro", "--entrypoint", "python", image, "-I", "-B", "-c", SCRIPT,
                     str(sentinel), f"/run/user/{os.getuid()}/podman/podman.sock", json.dumps(probes)]
             attempted=True
-            result = context.run(identity, *args, timeout=30)
+            result = context.run(identity, *args, timeout=30, capture=True)
             if not container_absent(context, identity, token):
                 return {"status":"BLOCKED","reason":"CLEANUP_UNVERIFIED"}
-            return {"status":"SUCCEEDED" if result.returncode==0 else "FAILED",
+            observed = {"status":"SUCCEEDED" if result.returncode==0 else "FAILED",
                     "exit_code":result.returncode,"revision":expected_revision,
                     "profile":"fixture-python","cleanup_verified":True,
                     "checks":CHECKS if result.returncode==0 else [],
                     "isolation_checks":ISOLATION_CHECKS if result.returncode==0 else [],
                     "host_lsm":{"apparmor":security.get("apparmorEnabled") is True,
                                 "selinux":security.get("selinuxEnabled") is True}}
+            if result.returncode == 18 and isinstance(result.stdout, bytes) and len(result.stdout) <= 96:
+                diagnostic = result.stdout.strip().decode("ascii", errors="replace")
+                if re.fullmatch(r"(?:missing-required-mount|(?:duplicate|host-filesystem|denied):[/.a-z_-]+:[a-z0-9_.-]+)", diagnostic):
+                    observed["mount_check"] = diagnostic
+            return observed
     except (OSError,subprocess.TimeoutExpired,ValueError,KeyError,TypeError,AttributeError):
         return {"status":"BLOCKED","reason":"CLEANUP_UNVERIFIED" if attempted else "ISOLATION_UNAVAILABLE_OR_TIMEOUT", "container_absent":not attempted}

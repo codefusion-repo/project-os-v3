@@ -25,7 +25,7 @@ def parse_mount(line):
     return fields[2], decode_mount(fields[3]), decode_mount(fields[4]), fields[5].split(','), right.split()[0]
 
 
-def allowed_mounts(mounts, spec):
+def mount_violation(mounts, spec):
     pseudo = {'/proc': 'proc', '/sys': 'sysfs', '/sys/fs/cgroup': 'cgroup2',
               '/dev': 'tmpfs', '/dev/pts': 'devpts', '/dev/shm': 'tmpfs',
               '/dev/mqueue': 'mqueue', '/run/secrets': 'tmpfs'}
@@ -35,10 +35,18 @@ def allowed_mounts(mounts, spec):
               '/sys/devices/virtual/powercap', '/sys/firmware', '/sys/fs/selinux'}
     generated = {'/etc/hosts': 'hosts', '/etc/hostname': 'hostname', '/etc/resolv.conf': 'resolv.conf',
                  '/run/.containerenv': '.containerenv'}
+    known = (set(pseudo) | readonly | masked | set(generated) | {'/', '/fixture', '/etc/passwd', '/etc/group',
+             '/proc/interrupts', '/proc/schedstat', '/proc/self/fd', '/run', '/tmp', '/var/tmp', '/dev/null',
+             '/dev/ptmx', '/dev/console', '/sys/fs/cgroup/systemd'})
     seen = set()
     for device, root, target, options, fs in mounts:
-        if target in seen or fs in spec['host_filesystems']:
-            return False
+        target_label = target if target in known else 'unlisted'
+        filesystem = fs if fs in {'overlay', 'fuse.overlayfs', 'proc', 'sysfs', 'cgroup2', 'tmpfs', 'devtmpfs',
+                                   'devpts', 'mqueue', 'ext4', 'xfs', 'btrfs'} else 'other'
+        if target in seen:
+            return f'duplicate:{target_label}:{filesystem}'
+        if fs in spec['host_filesystems']:
+            return f'host-filesystem:{target_label}:{filesystem}'
         seen.add(target)
         if target == '/':
             ok = fs in {'overlay', 'fuse.overlayfs'} and root == '/' and 'ro' in options
@@ -57,8 +65,12 @@ def allowed_mounts(mounts, spec):
         else:
             ok = False
         if not ok:
-            return False
-    return {'/', '/fixture', '/proc', '/sys/fs/cgroup'} <= seen
+            return f'denied:{target_label}:{filesystem}'
+    return None if {'/', '/fixture', '/proc', '/sys/fs/cgroup'} <= seen else 'missing-required-mount'
+
+
+def allowed_mounts(mounts, spec):
+    return mount_violation(mounts, spec) is None
 """
 
 
