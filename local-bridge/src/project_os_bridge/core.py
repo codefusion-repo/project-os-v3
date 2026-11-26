@@ -156,7 +156,7 @@ class Jobs:
             if workflow == "fixture_package" and c.execute(
                     "SELECT count(*) FROM jobs WHERE workflow='fixture_package'").fetchone()[0] >= 8:
                 raise QueueLimitError("FIXTURE_STORAGE_LIMIT")
-            if workflow == "workspace_execute" and c.execute(
+            if workflow == "workspace_execute" and "context_id" not in json.loads(workspace) and c.execute(
                     "SELECT 1 FROM jobs WHERE workflow='workspace_execute' LIMIT 1").fetchone():
                 raise QueueLimitError("DISPOSABLE_EXECUTION_ALREADY_USED")
             if workflow in {"workspace_prepare", "workspace_execute"} and c.execute(
@@ -194,7 +194,10 @@ class Jobs:
                     "result":json.loads(row["result"]) if row["result"] else None,
                     "events":[dict(event) for event in events]}
 
-    def claim(self, *, fixture_context=None):
+    def claim(self, *, fixture_context=None, workspace_context=None):
+        if workspace_context is not None and (not isinstance(workspace_context, str)
+                or not re.fullmatch(r"[0-9a-f]{64}", workspace_context)):
+            raise ValueError("Invalid workspace context")
         if fixture_context is not None and (not isinstance(fixture_context, str)
                 or not re.fullmatch(r"[0-9a-f]{64}", fixture_context)):
             raise ValueError("Invalid fixture context")
@@ -227,6 +230,9 @@ class Jobs:
                                               execute=row["workflow"] == "workspace_execute")
                         except (ValueError, TypeError):
                             raise PermissionError("Invalid workspace request") from None
+                    if row["workflow"] == "workspace_execute":
+                        if workspace.get("context_id") != workspace_context:
+                            raise PermissionError("Workspace context unavailable")
                     if row["workflow"] == "git_fixture_check":
                         self.policy.require(row["principal"], "git_workflow", row["resource"])
                         if fixture_context is None:
@@ -241,11 +247,13 @@ class Jobs:
                     claimed["workspace"] = workspace
                 if row["workflow"] == "fixture_package":
                     claimed["expected_sha"] = parameters["expected_sha"]
-                if row["workflow"] == "git_fixture_check":
+                if row["workflow"] == "git_fixture_check" or (
+                        row["workflow"] == "workspace_execute" and workspace_context is not None):
+                    effect_context = fixture_context if row["workflow"] == "git_fixture_check" else workspace_context
                     token = uuid.uuid4().hex
                     c.execute("INSERT INTO fixture_effects(job_id,token,context_id) VALUES(?,?,?)",
-                              (row["id"],token,fixture_context))
-                    claimed.update(effect_token=token, effect_context=fixture_context)
+                              (row["id"],token,effect_context))
+                    claimed.update(effect_token=token, effect_context=effect_context)
                 return claimed
 
     def transition(self,c,job_id,old,new,result=None):

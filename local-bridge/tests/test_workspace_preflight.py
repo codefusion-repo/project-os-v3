@@ -302,3 +302,85 @@ class WorkspacePreflightTests(unittest.TestCase):
         from project_os_bridge.core import QueueLimitError
         with self.assertRaises(QueueLimitError):
             submit_workspace(jobs, "operator", "demo", self.sha, "expo-test", "new", image_id=image)
+
+    def test_podman_candidate_fence_and_reconciliation(self):
+        from project_os_bridge.workspace_podman import WorkspacePodman
+        from project_os_bridge.podman_context import PodmanContext
+        from project_os_bridge.reconcile import reconcile
+        from unittest.mock import Mock
+        from subprocess import CompletedProcess, TimeoutExpired
+        jobs = self.workspace_queue()
+        policy = Policy([*jobs.policy.grants, ("operator", "workspace_execute", "demo")])
+        jobs = Jobs(jobs.probe.root, policy, workflows=("workspace_execute", "workspace_prepare"))
+        context = Mock(spec=PodmanContext)
+        identity = "c" * 64
+        context.identity.return_value = identity
+        image = "localhost/project-os-alpine-ci@sha256:" + "a" * 64
+        backend = WorkspacePodman(context, {"expo-test": image})
+        launched = []
+        def run(expected, *args, **kwargs):
+            self.assertEqual(expected, identity)
+            if args[0] == "container":
+                return CompletedProcess(args, 1)
+            if args[0] == "ps":
+                return CompletedProcess(args, 0, stdout=b"")
+            self.assertEqual(args[0], "run")
+            self.assertEqual(len(jobs.pending_effects()), 1)
+            self.assertIn("--network=none", args)
+            self.assertIn("--pull=never", args)
+            self.assertIn("--cap-drop=ALL", args)
+            self.assertEqual(args[args.index("--volume") + 1].split(":")[-1], "ro")
+            launched.append(args)
+            raise TimeoutExpired(args, 900)
+        context.run.side_effect = run
+        first = submit_workspace(jobs, "operator", "demo", self.sha, "expo-test", "one", backend=backend)
+        other = submit_workspace(jobs, "operator", "demo", self.sha, "expo-test", "two", backend=backend)
+        run_pending(jobs, workspace_backend=backend)
+        self.assertEqual(jobs.get("operator", first)["state"], "BLOCKED")
+        self.assertEqual(jobs.get("operator", other)["state"], "QUEUED")
+        self.assertEqual(len(launched), 1)
+        effects = jobs.pending_effects()
+        self.assertEqual(effects[0]["job_id"], first)
+        self.assertEqual(effects[0]["context_id"], identity)
+        self.assertIn("io.project-os.fixture=" + effects[0]["token"], launched[0])
+        reopened = Jobs(jobs.probe.root, policy, workflows=("workspace_execute", "workspace_prepare"))
+        run_pending(reopened, workspace_backend=backend)
+        self.assertEqual(len(launched), 1)
+        # Local reconciliation refuses uncertain absence, then clears only the
+        # exact effect. The test double stands in for operator-proven quiescence.
+        with patch("project_os_bridge.reconcile.container_absent", return_value=False):
+            with self.assertRaises(PermissionError):
+                reconcile(reopened, first, context)
+        self.assertEqual(reopened.pending_effects(), effects)
+        reconcile(reopened, first, context)
+        self.assertEqual(reopened.pending_effects(), [])
+        self.assertEqual(reopened.get("operator", first)["state"], "BLOCKED")
+        self.assertEqual(first, submit_workspace(reopened, "operator", "demo", self.sha,
+                         "expo-test", "one", backend=backend))
+        def success(expected, *args, **kwargs):
+            if args[0] == "run":
+                self.assertEqual(len(reopened.pending_effects()), 1)
+                return CompletedProcess(args, 0)
+            return run(expected, *args, **kwargs)
+        context.run.side_effect = success
+        run_pending(reopened, workspace_backend=backend)
+        self.assertEqual(reopened.get("operator", other)["state"], "SUCCEEDED")
+        self.assertEqual(reopened.pending_effects(), [])
+
+    def test_context_bound_execution_cannot_use_ci_executor(self):
+        from project_os_bridge.workspace_podman import WorkspacePodman
+        from project_os_bridge.podman_context import PodmanContext
+        from unittest.mock import Mock
+        jobs = self.workspace_queue()
+        policy = Policy([*jobs.policy.grants, ("operator", "workspace_execute", "demo")])
+        jobs = Jobs(jobs.probe.root, policy, workflows=("workspace_execute",))
+        context = Mock(spec=PodmanContext)
+        context.identity.return_value = "c" * 64
+        backend = WorkspacePodman(context, {"flutter-test":
+                                  "localhost/project-os-alpine-ci@sha256:" + "a" * 64})
+        job = submit_workspace(jobs, "operator", "demo", self.sha, "flutter-test", "one", backend=backend)
+        executor = Mock()
+        run_pending(jobs, workspace_executor=executor)
+        executor.assert_not_called()
+        self.assertEqual(jobs.get("operator", job)["state"], "BLOCKED")
+        self.assertEqual(jobs.pending_effects(), [])

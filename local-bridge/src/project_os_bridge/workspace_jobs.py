@@ -36,6 +36,8 @@ def authorize_request(policy, principal, request, *, execute=False):
     fields = {"project", "profile", "expected_sha", "binding"}
     if execute:
         fields.add("image_id")
+        if isinstance(request, dict) and "context_id" in request:
+            fields.add("context_id")
     if (not isinstance(request, dict)
             or set(request) != fields
             or any(not isinstance(value, str) for value in request.values())
@@ -48,13 +50,21 @@ def authorize_request(policy, principal, request, *, execute=False):
     if execute:
         if not re.fullmatch(r"sha256:[0-9a-f]{64}", request["image_id"]):
             raise ValueError("INVALID_EXECUTION_IMAGE")
+        if "context_id" in request and not re.fullmatch(r"[0-9a-f]{64}", request["context_id"]):
+            raise ValueError("INVALID_EXECUTION_CONTEXT")
         policy.require(principal, "workspace_execute", project)
     for op in ("workspace_prepare", "workspace_materialize", request["profile"]):
         policy.require(principal, op, project)
 
 
 def submit_workspace(jobs, principal, project, expected_sha, profile, request_key, *, image_id=None,
-                     authorize=lambda: None):
+                     authorize=lambda: None, backend=None):
+    if backend is not None:
+        if image_id is not None:
+            raise ValueError("Use backend-selected image only")
+        image_id, context_id = backend.binding(profile)
+    else:
+        context_id = None
     runtime = local_runtime(jobs.probe.root)
     jobs.policy.require(principal, "submit", "disposable")
     jobs.policy.require(principal, "workspace_materialize", project)
@@ -65,6 +75,8 @@ def submit_workspace(jobs, principal, project, expected_sha, profile, request_ke
     execute = image_id is not None
     if execute:
         request["image_id"] = image_id
+        if context_id is not None:
+            request["context_id"] = context_id
     authorize_request(jobs.policy, principal, request, execute=execute)
     # Admission checks the mapping and immutable commit before queueing.
     prepare_workspace(*args)
@@ -120,6 +132,10 @@ def run_workspace(jobs, row, *, executor=None):
             raise PermissionError("WORKSPACE_BINDING_CHANGED")
         # Trusted internal caller only; production service supplies no executor.
         execution = executor(jobs.probe.root / ("workspace-" + row["id"]), row, snapshot)
+        if "context_id" in request and (execution.get("cleanup_verified") is not True
+                or execution.get("image_id") != request["image_id"]):
+            return "BLOCKED", {**result, **snapshot, "operation": "execute",
+                               "reason": "CLEANUP_OR_EXECUTION_UNVERIFIED"}
         if type(execution.get("exit_code")) is not int:
             raise ValueError("EXECUTION_EVIDENCE_INVALID")
         return ("SUCCEEDED" if execution["exit_code"] == 0 else "FAILED",

@@ -27,7 +27,8 @@ def exclusive_worker(jobs: Jobs):
 
 
 def run_pending(jobs: Jobs, *, fixture_image=None, podman_context=None, context_id=None,
-                enabled=lambda: True, fixture_allowed=lambda: True, workspace_executor=None):
+                enabled=lambda: True, fixture_allowed=lambda: True, workspace_executor=None,
+                workspace_backend=None):
     """Drain queued disposable jobs, no shell, no repo access."""
     from .vertical import bound_context, run_git_fixture
 
@@ -40,16 +41,21 @@ def run_pending(jobs: Jobs, *, fixture_image=None, podman_context=None, context_
         except (OSError, ValueError):
             return False
 
+    if workspace_backend is not None and workspace_executor is not None:
+        raise ValueError("Choose one workspace backend")
     with exclusive_worker(jobs):
         jobs.recover_interrupted()
         if jobs.pending_effects():
             return
         while enabled():
-            row = jobs.claim(fixture_context=context_id if fixture_ready() else None)
+            workspace_context = workspace_backend.identity() if workspace_backend is not None else None
+            row = jobs.claim(fixture_context=context_id if fixture_ready() else None,
+                             workspace_context=workspace_context)
             if row is None:
                 return
             if not enabled():
-                jobs.finish(row["id"], "BLOCKED", {"reason": "DISPATCH_DISABLED"}, fixture_absent=True, fixture_context=context_id)
+                jobs.finish(row["id"], "BLOCKED", {"reason": "DISPATCH_DISABLED"}, fixture_absent=True,
+                            fixture_context=row.get("effect_context", context_id))
                 return
             fixture_absent = False
             try:
@@ -60,7 +66,12 @@ def run_pending(jobs: Jobs, *, fixture_image=None, podman_context=None, context_
                     state = "SUCCEEDED"
                 elif row["workflow"] in {"workspace_prepare", "workspace_execute"}:
                     from .workspace_jobs import run_workspace
-                    state, result = run_workspace(jobs, row, executor=workspace_executor)
+                    executor = workspace_executor
+                    if workspace_backend is not None:
+                        executor = workspace_backend.execute
+                    state, result = run_workspace(jobs, row, executor=executor)
+                    if row.get("effect_context") is not None:
+                        fixture_absent = result.get("execution", {}).get("cleanup_verified") is True
                 elif row["workflow"] == "fixture_package":
                     from .workspace_fixture import run_package
                     state, result = run_package(jobs, row)
@@ -76,4 +87,7 @@ def run_pending(jobs: Jobs, *, fixture_image=None, podman_context=None, context_
             except Exception:
                 jobs.finish(row["id"], "FAILED", {"error": "HANDLER_FAILED"})
             else:
-                jobs.finish(row["id"], state, result, fixture_absent=fixture_absent, fixture_context=context_id)
+                jobs.finish(row["id"], state, result, fixture_absent=fixture_absent,
+                            fixture_context=row.get("effect_context", context_id))
+            if jobs.pending_effects():
+                return
