@@ -58,6 +58,9 @@ def run_pending(jobs: Jobs, *, fixture_image=None, podman_context=None, context_
                 if row["workflow"] == "probe_check":
                     result = jobs.probe.read()
                     state = "SUCCEEDED"
+                elif row["workflow"] == "workspace_prepare":
+                    from .workspace_jobs import run_workspace
+                    state, result = run_workspace(jobs, row)
                 elif row["workflow"] == "fixture_package":
                     from .workspace_fixture import run_package
                     state, result = run_package(jobs, row)

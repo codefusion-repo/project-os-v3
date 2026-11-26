@@ -38,6 +38,12 @@ def _binding(runtime, policy, principal, project, expected_sha, profile):
     return descriptor, entry, root
 
 
+def binding_digest(entry, root):
+    info = root.stat()
+    return hashlib.sha256(json.dumps([entry, info.st_dev, info.st_ino], sort_keys=True,
+                                     separators=(",", ":")).encode()).hexdigest()
+
+
 def _entries(raw):
     for item in raw.split(b"\0"):
         if not item:
@@ -91,7 +97,7 @@ def _safe_path(path):
 
 
 def materialize_workspace(runtime, policy, principal, project, expected_sha, profile,
-                          private_parent, job_id):
+                          private_parent, job_id, *, expected_binding=None):
     """Internal local-only materialization; caller holds the existing worker lock.
 
     The parent and job id are trusted local locators, not MCP inputs. No checkout,
@@ -104,10 +110,14 @@ def materialize_workspace(runtime, policy, principal, project, expected_sha, pro
     args = (runtime, policy, principal, project, expected_sha, profile)
     policy.require(principal, "workspace_materialize", project)
     descriptor, entry, root = _binding(*args)
+    binding = binding_digest(entry, root)
+    if expected_binding is not None and expected_binding != binding:
+        raise PermissionError("WORKSPACE_BINDING_CHANGED")
     if private_parent == root or root in private_parent.parents or private_parent in root.parents:
         raise PermissionError("WORKSPACE_MUST_BE_SEPARATE")
     result = prepare_workspace(*args)
-    if _binding(*args) != (descriptor, entry, root):
+    if (_binding(*args) != (descriptor, entry, root)
+            or binding_digest(entry, root) != binding):
         raise PermissionError("DENIED")
     # Validate metadata and limits for every file before reading any blobs.
     raw = git(root, "ls-tree", "-r", "-z", result["tree"])
@@ -116,12 +126,18 @@ def materialize_workspace(runtime, policy, principal, project, expected_sha, pro
     entries = list(_entries(raw))
     if not entries or len(entries) > MAX_FILES:
         raise ValueError("WORKSPACE_LIMIT")
-    planned, total, names = [], 0, set()
+    planned, total, names, directories = [], 0, set(), {}
     for path, mode, blob in entries:
         parts = _safe_path(path)
         folded = path.casefold()
-        if folded in names:
+        if folded in names or folded in directories:
             raise ValueError("WORKSPACE_PATH_COLLISION")
+        for index in range(1, len(parts)):
+            directory = "/".join(parts[:index])
+            key = directory.casefold()
+            if key in names or (key in directories and directories[key] != directory):
+                raise ValueError("WORKSPACE_PATH_COLLISION")
+            directories[key] = directory
         names.add(folded)
         size = int(git(root, "cat-file", "-s", blob))
         total += size
@@ -129,7 +145,8 @@ def materialize_workspace(runtime, policy, principal, project, expected_sha, pro
             raise ValueError("WORKSPACE_LIMIT")
         planned.append((path, parts, mode, blob, size))
     policy.require(principal, "workspace_materialize", project)
-    if _binding(*args) != (descriptor, entry, root):
+    if (_binding(*args) != (descriptor, entry, root)
+            or binding_digest(entry, root) != binding):
         raise PermissionError("DENIED")
     target = private_parent / ("workspace-" + job_id)
     target.mkdir(mode=0o700)
@@ -148,7 +165,8 @@ def materialize_workspace(runtime, policy, principal, project, expected_sha, pro
             os.fsync(out.fileno())
         manifest.append([path, mode, hashlib.sha256(data).hexdigest(), size])
     policy.require(principal, "workspace_materialize", project)
-    if _binding(*args) != (descriptor, entry, root):
+    if (_binding(*args) != (descriptor, entry, root)
+            or binding_digest(entry, root) != binding):
         raise PermissionError("DENIED")
     result.update(workspace_materialized=True, files=len(manifest), bytes=total,
                   workspace_sha256=hashlib.sha256(json.dumps(manifest, separators=(",", ":"),

@@ -5,7 +5,9 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from project_os_bridge.core import Policy
+from project_os_bridge.core import Jobs, Policy
+from project_os_bridge.workspace_jobs import submit_workspace, MARKER, RUNTIME
+from project_os_bridge.worker import run_pending, exclusive_worker
 from project_os_bridge.workspace_preflight import FLUTTER_PROFILES, prepare_workspace, materialize_workspace
 from project_os_bridge.workspace_profiles import PROFILES, artifact_identity
 
@@ -191,3 +193,69 @@ class WorkspacePreflightTests(unittest.TestCase):
                          artifact_identity("apk", "app.apk", b"synthetic"))
         self.assertNotEqual(artifact_identity("apk", "app.apk", b"one")["sha256"],
                             artifact_identity("apk", "app.apk", b"two")["sha256"])
+
+    def workspace_queue(self):
+        state = self.root / "queue"
+        state.mkdir(mode=0o700)
+        (state / MARKER).touch(mode=0o600)
+        runtime = state / RUNTIME
+        runtime.touch(mode=0o600)
+        runtime.write_bytes(self.runtime.read_bytes())
+        policy = Policy([*self.policy.grants, *(( "operator", op, "disposable")
+                                                for op in ("submit", "read", "cancel"))])
+        return Jobs(state, policy, workflows=("workspace_prepare",))
+
+    def test_durable_job_materializes_both_profiles(self):
+        jobs = self.workspace_queue()
+        ids = []
+        for profile in ("flutter-test", "expo-test"):
+            job = submit_workspace(jobs, "operator", "demo", self.sha, profile, profile)
+            ids.append(job)
+            self.assertEqual(job, submit_workspace(jobs, "operator", "demo", self.sha, profile, profile))
+        with self.assertRaises(ValueError):
+            submit_workspace(jobs, "operator", "demo", self.sha, "expo-test", "flutter-test")
+        run_pending(jobs)
+        reopened = Jobs(jobs.probe.root, jobs.policy, workflows=("workspace_prepare",))
+        for job in ids:
+            evidence = reopened.evidence("operator", job)
+            self.assertEqual(evidence["state"], "SUCCEEDED")
+            self.assertTrue(evidence["result"]["workspace_materialized"])
+            self.assertFalse(evidence["result"]["execution_available"])
+            self.assertEqual(evidence["result"]["head"], self.sha)
+            self.assertEqual((jobs.probe.root / ("workspace-" + job) / "pubspec.yaml").read_text(),
+                             "name: demo\n")
+        self.assertEqual(reopened.evidence("operator", ids[0])["result"]["workspace_sha256"],
+                         reopened.evidence("operator", ids[1])["result"]["workspace_sha256"])
+
+    def test_workspace_mapping_revoked_before_worker(self):
+        jobs = self.workspace_queue()
+        job = submit_workspace(jobs, "operator", "demo", self.sha, "expo-test", "revoke")
+        self.data["github_projects"].clear()
+        (jobs.probe.root / RUNTIME).write_text(json.dumps(self.data))
+        run_pending(jobs)
+        self.assertEqual(jobs.get("operator", job)["state"], "BLOCKED")
+        self.assertFalse((jobs.probe.root / ("workspace-" + job)).exists())
+
+    def test_workspace_cancel_and_interrupted_no_replay(self):
+        jobs = self.workspace_queue()
+        first = submit_workspace(jobs, "operator", "demo", self.sha, "expo-test", "cancel")
+        second = submit_workspace(jobs, "operator", "demo", self.sha, "expo-test", "interrupt")
+        self.assertTrue(jobs.cancel("operator", first))
+        with exclusive_worker(jobs):
+            self.assertEqual(jobs.claim()["id"], second)
+        run_pending(jobs)
+        self.assertEqual(jobs.get("operator", first)["state"], "CANCELLED")
+        self.assertEqual(jobs.get("operator", second)["state"], "INTERRUPTED")
+        self.assertEqual(second, submit_workspace(jobs, "operator", "demo", self.sha, "expo-test", "interrupt"))
+        self.assertFalse((jobs.probe.root / ("workspace-" + second)).exists())
+
+    def test_workspace_profile_not_enabled_by_default(self):
+        jobs = self.workspace_queue()
+        default = Jobs(jobs.probe.root, jobs.policy)
+        with self.assertRaises(ValueError):
+            submit_workspace(default, "operator", "demo", self.sha, "expo-test", "default")
+        job = submit_workspace(jobs, "operator", "demo", self.sha, "expo-test", "marker")
+        (jobs.probe.root / MARKER).unlink()
+        run_pending(jobs)
+        self.assertEqual(jobs.get("operator", job)["state"], "BLOCKED")
+        self.assertFalse((jobs.probe.root / ("workspace-" + job)).exists())
