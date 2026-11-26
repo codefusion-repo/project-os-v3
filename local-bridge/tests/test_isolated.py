@@ -112,4 +112,9 @@ class IsolationTests(unittest.TestCase):
             self.assertFalse(verify(mounts + [null], settings))
         self.assertFalse(verify(mounts + [("8:1", "/synthetic/credentials", "/elsewhere", ["ro"], "ext4")], settings))
         self.assertFalse(verify(mounts + [("0:4", "/", "/dev/shm", ["ro"], "9p")], settings))
+        mask = ("0:5", "/", "/sys/dev/block", ["ro"], "tmpfs")
+        with patch.object(Path, "iterdir", return_value=iter(())):
+            self.assertTrue(verify(mounts + [mask], settings))
+        with patch.object(Path, "iterdir", return_value=iter((Path("unexpected"),))):
+            self.assertFalse(verify(mounts + [mask], settings))
         self.assertFalse(verify(mounts[:-1] + [("8:1", "/synthetic/alias", "/fixture", ["ro"], "ext4")], settings))

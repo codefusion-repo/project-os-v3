@@ -39,7 +39,7 @@ def mount_violation(mounts, spec):
                '/dev/random': (1, 8), '/dev/urandom': (1, 9), '/dev/tty': (5, 0)}
     known = (set(pseudo) | readonly | masked | set(generated) | set(devices) | {'/', '/fixture', '/etc/passwd', '/etc/group',
              '/proc/interrupts', '/proc/schedstat', '/proc/self/fd', '/run', '/tmp', '/var/tmp', '/dev/null',
-             '/dev/ptmx', '/dev/console', '/sys/fs/cgroup/systemd'})
+             '/dev/ptmx', '/dev/console', '/sys/fs/cgroup/systemd', '/sys/dev/block'})
     seen = set()
     for device, root, target, options, fs in mounts:
         target_label = target if target in known else 'unlisted'
@@ -58,6 +58,9 @@ def mount_violation(mounts, spec):
             ok = fs == pseudo[target] and (root == '/' or fs == 'cgroup2')
         elif target in readonly and fs == 'proc':
             ok = root == target[5:] and 'ro' in options
+        elif target == '/sys/dev/block':
+            # Podman 4.9.3 masks this device inventory with an empty read-only tmpfs.
+            ok = fs == 'tmpfs' and root == '/' and 'ro' in options and not any(Path(target).iterdir())
         elif target in masked:
             ok = fs in {'tmpfs', 'devtmpfs'} and root in {'/', '/null'}
         elif target in devices:
