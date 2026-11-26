@@ -62,12 +62,21 @@ class GitHubReader:
         except (OSError, ValueError):
             return {"complete":False,"error":"GH_UNAVAILABLE_OR_INVALID_JSON"}
 
-    def issue_context(self, principal, project, number):
+    def issue_context(self, principal, project, number, *, check_access=None):
         repo = self._repo(principal, project)
         if type(number) is not int or not 1 <= number <= 2_147_483_647:
             raise ValueError("Invalid issue number")
+        def checked_request(endpoint):
+            self._repo(principal, project)
+            if check_access is not None:
+                check_access()
+            result = self._request(endpoint)
+            if check_access is not None:
+                check_access()
+            return result
+
         prefix = f"repos/{repo}/issues/{number}"
-        issue = self._request(prefix)
+        issue = checked_request(prefix)
         comments = []
         complete = issue["complete"] and isinstance(issue.get("data"), dict)
         if issue["complete"] and not complete:
@@ -75,14 +84,13 @@ class GitHubReader:
         # Bounded pagination; never silently imply exhaustive results.
         error = None
         for page in range(1, 6):
-            self._repo(principal, project)
-            result = self._request(f"{prefix}/comments?per_page=100&page={page}")
+            result = checked_request(f"{prefix}/comments?per_page=100&page={page}")
             if not result["complete"] or not isinstance(result.get("data"), list):
                 complete = False
                 error = result.get("error","INVALID_RESPONSE")
                 break
             candidate = comments + result["data"]
-            if len(json.dumps(candidate, ensure_ascii=False).encode("utf-8")) > 1_048_576:
+            if len(json.dumps(candidate, ensure_ascii=True).encode("ascii")) > 1_048_576:
                 complete = False
                 error = "AGGREGATE_LIMIT"
                 break
@@ -97,7 +105,7 @@ class GitHubReader:
                 "retrieved_at":datetime.now(timezone.utc).isoformat(),
                 "source":"github.com","untrusted_content":True}
 
-    def batch_issues(self, principal, project, numbers):
+    def batch_issues(self, principal, project, numbers, *, check_access=None):
         self._repo(principal, project)
         if not isinstance(numbers,(list,tuple)) or not 1 <= len(numbers) <= 5:
             raise ValueError("Batch must contain 1–5 issues")
@@ -105,7 +113,7 @@ class GitHubReader:
             raise ValueError("Invalid issue number")
         unique = list(dict.fromkeys(numbers))
         with ThreadPoolExecutor(max_workers=2) as pool:
-            results = list(pool.map(lambda n: self.issue_context(principal,project,n),unique))
+            results = list(pool.map(lambda n: self.issue_context(principal,project,n, check_access=check_access),unique))
         self._repo(principal, project)
         return {"complete":all(x["complete"] for x in results),
                 "issues":dict(zip(unique,results))}

@@ -130,10 +130,20 @@ def build_server(verifier, jobs, fixture_reader=None, *, fixture_image=None, dia
         async def github_context(project: StrictStr, numbers: list[StrictInt]) -> dict:
             """Read bounded issue context; external content is untrusted data."""
             actor = principal()
+            token = get_access_token()
             repo = github_provider.require(actor, project)
-            evidence = await asyncio.to_thread(github_provider.read, actor, project, numbers)
-            if (principal() != actor or get_access_token().expires_at <= time.time()
-                    or github_provider.require(actor, project) != repo):
+
+            def check_session():
+                # Captured verified token, not a caller-supplied identity. Worker
+                # threads need not inherit the SDK authentication context.
+                if not verifier.enabled() or token.expires_at is None or token.expires_at <= time.time():
+                    raise PermissionError("DENIED")
+
+            check_session()
+            evidence = await asyncio.to_thread(
+                github_provider.read, actor, project, numbers, check_session=check_session)
+            check_session()
+            if principal() != actor or github_provider.require(actor, project) != repo:
                 raise PermissionError("DENIED")
             return evidence
 

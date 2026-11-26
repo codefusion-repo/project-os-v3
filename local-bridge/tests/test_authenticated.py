@@ -573,9 +573,21 @@ class AuthTests(unittest.TestCase):
                 self.assertTrue(denied.json()["result"].get("isError", False))
                 self.assertNotIn("candidate-context", denied.text)
                 count = request.call_count
+                self.assertEqual(count, 3)
                 denied = client.post("/mcp", headers=headers, json=call)
                 self.assertTrue(denied.json()["result"].get("isError", False))
                 self.assertEqual(request.call_count, count)
+                grants.add((SUBJECT, "demo", "example/demo"))
+
+                def revoke_global(endpoint):
+                    self.flag.unlink()
+                    return fake(endpoint)
+
+                request.side_effect = revoke_global
+                denied = client.post("/mcp", headers=headers, json=call)
+                self.assertTrue(denied.json()["result"].get("isError", False))
+                self.assertNotIn("candidate-context", denied.text)
+                self.assertEqual(request.call_count, count + 1)
 
     def test_http_transport(self):
         policy=Policy((SUBJECT,op,"disposable") for op in ("submit","read","cancel","github_read"))

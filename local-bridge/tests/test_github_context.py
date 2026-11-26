@@ -52,9 +52,10 @@ class GitHubContextTests(unittest.TestCase):
         def revoke(endpoint):
             self.grants.clear()
             return self.fixture(endpoint)
-        with patch.object(self.reader, "_request", side_effect=revoke):
+        with patch.object(self.reader, "_request", side_effect=revoke) as request:
             with self.assertRaises(PermissionError):
                 self.context.read("owner", "demo", [1])
+            request.assert_called_once()
 
     def test_secret_and_control_filter_and_mismatch(self):
         def fake(endpoint):
@@ -94,3 +95,32 @@ class GitHubContextTests(unittest.TestCase):
         self.assertFalse(result["complete"])
         self.assertEqual(result["issues"][1]["issue"]["error"], "GH_FAILED_OR_TIMEOUT")
         self.assertEqual(result["issues"][1]["comments"], [])
+
+    def test_session_revoked_during_read_stops_pagination(self):
+        active = True
+
+        def check_session():
+            if not active:
+                raise PermissionError("DENIED")
+
+        def revoke(endpoint):
+            nonlocal active
+            active = False
+            return self.fixture(endpoint)
+
+        with patch.object(self.reader, "_request", side_effect=revoke) as request:
+            with self.assertRaises(PermissionError):
+                self.context.read("owner", "demo", [1], check_session=check_session)
+            request.assert_called_once()
+
+    def test_surrogate_in_comment_is_filtered(self):
+        def fake(endpoint):
+            result = self.fixture(endpoint)
+            if "/comments?" in endpoint:
+                result["data"][0]["body"] = "text" + chr(0xd800)
+            return result
+
+        with patch.object(self.reader, "_request", side_effect=fake):
+            result = self.context.read("owner", "demo", [1])
+        self.assertFalse(result["complete"])
+        self.assertEqual(result["issues"][1]["comments"][0]["body"], "text")

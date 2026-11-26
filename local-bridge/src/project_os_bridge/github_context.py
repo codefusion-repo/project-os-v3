@@ -94,6 +94,8 @@ def _issue(number, item):
             complete = False
             comment_error = comment_error or "COUNT_MISMATCH"
     retrieved_at, timestamp_changed = _text(item.get("retrieved_at"))
+    if comment_error is not None:
+        complete = False
     return {
         "complete": complete and not altered and not timestamp_changed,
         "issue": result, "comments": comments, "comments_error": comment_error,
@@ -127,11 +129,18 @@ class GitHubContext:
         except (OSError, ValueError, TypeError):
             raise PermissionError("DENIED") from None
 
-    def read(self, principal, project, numbers):
+    def read(self, principal, project, numbers, *, check_session=None):
         repo = self.require(principal, project)
-        raw = self.reader.batch_issues(principal, project, numbers)
-        if self.require(principal, project) != repo:
-            raise PermissionError("DENIED")
+
+        def check_access():
+            if check_session is not None:
+                check_session()
+            if self.require(principal, project) != repo:
+                raise PermissionError("DENIED")
+
+        check_access()
+        raw = self.reader.batch_issues(principal, project, numbers, check_access=check_access)
+        check_access()
         response = {
             "complete": raw["complete"], "issues": {}, "omitted_issues": [],
             "error": None, "retrieved_at": datetime.now(timezone.utc).isoformat(),
@@ -151,6 +160,5 @@ class GitHubContext:
                 response["complete"] = False
         if _size(response) > MAX_CONTEXT_BYTES:
             raise RuntimeError("CONTEXT_RESPONSE_LIMIT")
-        if self.require(principal, project) != repo:
-            raise PermissionError("DENIED")
+        check_access()
         return response
