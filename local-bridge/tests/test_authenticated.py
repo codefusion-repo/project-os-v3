@@ -967,6 +967,36 @@ class AuthTests(unittest.TestCase):
                     self.assertNotIn("private fixture", denied.text)
                     self.assertEqual(request.call_count, 4)
 
+    def test_health_reports_install_receipt_without_private_details(self):
+        jobs = Jobs(self.root, Policy([(SUBJECT, "read", "disposable")]))
+        app = build_http_app(self.verifier, jobs)
+        headers = {"Accept": "application/json, text/event-stream",
+                   "Authorization": "Bearer " + self.token()}
+        init = {"jsonrpc": "2.0", "id": 1, "method": "initialize",
+                "params": {"protocolVersion": "2025-11-25", "capabilities": {},
+                           "clientInfo": {"name": "test", "version": "1"}}}
+        call = {"jsonrpc": "2.0", "id": 2, "method": "tools/call",
+                "params": {"name": "health", "arguments": {}}}
+        receipt = {"sha": "a" * 40, "wheel_sha256": "b" * 64}
+        with TestClient(app, base_url="http://127.0.0.1:8765") as client:
+            response = client.post("/mcp", headers=headers, json=init)
+            self.assertEqual(response.status_code, 200)
+            headers["MCP-Protocol-Version"] = response.json()["result"]["protocolVersion"]
+            with patch("project_os_bridge.authenticated.installed_receipt", return_value=receipt):
+                result = client.post("/mcp", headers=headers, json=call)
+                self.assertEqual(result.status_code, 200)
+                self.assertFalse(result.json()["result"].get("isError", False))
+                self.assertIn("receipt_observed", result.text)
+                self.assertIn(receipt["sha"], result.text)
+                self.assertIn(receipt["wheel_sha256"], result.text)
+            with patch("project_os_bridge.authenticated.installed_receipt",
+                       side_effect=PermissionError("/private/fixture")):
+                result = client.post("/mcp", headers=headers, json=call)
+                self.assertEqual(result.status_code, 200)
+                self.assertIn("unavailable", result.text)
+                self.assertNotIn("/private/fixture", result.text)
+                self.assertNotIn(receipt["wheel_sha256"], result.text)
+
     def test_http_transport(self):
         policy=Policy((SUBJECT,op,"disposable") for op in ("submit","read","cancel","github_read"))
         jobs=Jobs(self.root,policy)

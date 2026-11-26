@@ -1,9 +1,11 @@
+import json
 import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
-from project_os_bridge.methodology import CANONICAL, build_context
+from project_os_bridge.methodology import CANONICAL, build_context, installed_receipt
 
 
 class MethodologyTests(unittest.TestCase):
@@ -48,6 +50,39 @@ class MethodologyTests(unittest.TestCase):
         self.git(root, "add", ".")
         self.git(root, "commit", "-qm", "fixture")
         return self.git(root, "rev-parse", "HEAD")
+
+    def test_installed_receipt_is_bounded_and_sanitized(self):
+        venv = self.kit / "local-bridge" / ".venv"
+        venv.mkdir(mode=0o700, parents=True)
+        path = venv / ".project-os-bridge-install.json"
+        receipt = {"sha": self.installed, "wheel_sha256": "a" * 64}
+        with patch("project_os_bridge.methodology.sys.prefix", str(venv)):
+            with self.assertRaises(OSError):
+                installed_receipt()
+            path.touch(mode=0o600)
+            path.write_text(json.dumps(receipt))
+            self.assertEqual(installed_receipt(), receipt)
+            for value in ({**receipt, "sha": "HEAD"},
+                          {**receipt, "wheel_sha256": "invalid"},
+                          {**receipt, "private": "private-fixture"}):
+                path.write_text(json.dumps(value))
+                with self.assertRaises(ValueError):
+                    installed_receipt()
+            path.write_text('{"sha":"' + self.installed + '","sha":"' + self.installed +
+                            '","wheel_sha256":"' + "a" * 64 + '"}')
+            with self.assertRaises(ValueError):
+                installed_receipt()
+            path.write_text(json.dumps(receipt))
+            path.chmod(0o644)
+            with self.assertRaises(PermissionError):
+                installed_receipt()
+            path.unlink()
+            target = venv / "other"
+            target.touch(mode=0o600)
+            target.write_text(json.dumps(receipt))
+            path.symlink_to(target)
+            with self.assertRaises(OSError):
+                installed_receipt()
 
     def test_pinned_selection_exact_git_documents_and_dedup(self):
         (self.kit / "PROJECT_OS.md").write_text("uncommitted content\n")

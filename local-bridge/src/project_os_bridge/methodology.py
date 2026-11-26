@@ -114,15 +114,22 @@ def build_context(kit, installed, project_root, repository, workflow, skills, te
     return result
 
 
-def installed_context(project_config, repository, workflow, skills, templates, expected_revision=None):
+def installed_receipt():
+    """Observe the local installation receipt; not an independent attestation."""
     venv = Path(sys.prefix)
     if venv.name != ".venv" or venv.parent.name != "local-bridge":
         raise ValueError("METHODOLOGY_UNAVAILABLE")
     receipt = json.loads(_private_bytes(venv / ".project-os-bridge-install.json", 1024),
                          object_pairs_hook=_unique_object)
     if (not isinstance(receipt, dict) or set(receipt) != {"sha", "wheel_sha256"}
+            or not isinstance(receipt["sha"], str) or not SHA.fullmatch(receipt["sha"])
             or not isinstance(receipt["wheel_sha256"], str)
             or not re.fullmatch(r"[0-9a-f]{64}", receipt["wheel_sha256"])):
         raise ValueError("METHODOLOGY_UNAVAILABLE")
-    return build_context(venv.parents[1], receipt["sha"], project_config.parent.parent,
+    return receipt
+
+
+def installed_context(project_config, repository, workflow, skills, templates, expected_revision=None):
+    receipt = installed_receipt()
+    return build_context(Path(sys.prefix).parents[1], receipt["sha"], project_config.parent.parent,
                          repository, workflow, skills, templates, expected_revision=expected_revision)

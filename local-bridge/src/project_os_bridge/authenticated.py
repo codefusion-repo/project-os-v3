@@ -31,7 +31,7 @@ from .security import RequestGate, Audit
 from .github_fixture import SyntheticGitHubReader
 from .github_context import GitHubContext
 from .github_operational import MultiProjectContext, load_operational_provider
-from .methodology import installed_context
+from .methodology import installed_context, installed_receipt
 from .vertical import OPERATIONS, bind_image, bound_context
 from .isolated import IMAGE
 from .podman_context import PodmanContext
@@ -77,6 +77,12 @@ def build_server(verifier, jobs, fixture_reader=None, *, fixture_image=None, dia
             actor = principal()
             result = {"status":"ready","caller_identity_verified":True,"repository_access":False,"mode":"authenticated-disposable",
                       "git_fixture_available":fixture_enabled(verifier, fixture_image, context_id)}
+            result["installation"] = {"status": "unavailable"}
+            if fixture_image is None and fixture_reader is None:
+                try:
+                    result["installation"] = {"status": "receipt_observed", **installed_receipt()}
+                except (OSError, ValueError, TypeError, RecursionError):
+                    pass  # No private paths or exception details.
             if github_provider is not None:
                 if type(github_provider) is MultiProjectContext:
                     available = github_provider.available(actor)
