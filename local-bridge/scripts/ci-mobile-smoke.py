@@ -143,6 +143,46 @@ def sha256(data):
     return hashlib.sha256(data).hexdigest()
 
 
+def verify_oci_conversion(source, image, manifest_bytes, config_bytes):
+    """Check converted OCI config and ordered filesystem identity.
+
+    Docker and OCI use different config encodings. Skopeo may change the
+    config digest while preserving the execution settings and uncompressed
+    layer identities. Never treat the two config digests as interchangeable.
+    """
+    if source["Id"] != image:
+        raise RuntimeError("MOBILE_DOCKER_IMAGE_IDENTITY")
+    manifest = json.loads(manifest_bytes)
+    target = json.loads(config_bytes)
+    digest = manifest["config"]["digest"]
+    if (not re.fullmatch(r"sha256:[0-9a-f]{64}", digest)
+            or digest != "sha256:" + sha256(config_bytes)
+            or manifest["config"]["size"] != len(config_bytes)):
+        raise RuntimeError("MOBILE_OCI_CONFIG_INTEGRITY")
+    layers = source["RootFS"]["Layers"]
+    if (source["RootFS"]["Type"] != "layers" or target["rootfs"]["type"] != "layers"
+            or not layers or layers != target["rootfs"]["diff_ids"]
+            or len(layers) != len(manifest["layers"])
+            or source["Architecture"] != target["architecture"]
+            or source["Os"] != target["os"]):
+        raise RuntimeError("MOBILE_OCI_FILESYSTEM_IDENTITY")
+    # Docker-only fields not defined by OCI (e.g. historical build metadata)
+    # are not identity claims. Compare every execution-relevant OCI field.
+    original, converted = source["Config"], target["config"]
+    fields = {"User": "", "WorkingDir": "", "Env": [], "Entrypoint": [],
+              "Cmd": [], "Volumes": {}, "ExposedPorts": {}, "Labels": {},
+              "StopSignal": "", "ArgsEscaped": False}
+    for name, empty in fields.items():
+        def value(obj):
+            v = obj.get(name)
+            return empty if v is None else v
+        if value(original) != value(converted):
+            raise RuntimeError("MOBILE_OCI_EXECUTION_CONFIG_IDENTITY:" + name)
+    return {"docker_config": image, "oci_config": digest,
+            "rootfs_layers": len(layers), "filesystem_identity_verified": True,
+            "execution_config_verified": True}
+
+
 def write_files(folder, files):
     for name, data in files.items():
         path = folder / name
@@ -407,6 +447,9 @@ def main():
             # Import the exact acquired candidate into a private rootless store,
             # not the Docker/default Podman store used for image acquisition.
             tag = "localhost/project-os-mobile-ci:validation"
+            source = json.loads(command(["docker", "image", "inspect", image], capture=True))
+            if len(source) != 1 or source[0].get("Id") != image:
+                raise RuntimeError("MOBILE_DOCKER_IMAGE_IDENTITY")
             command(["docker", "tag", image, tag])
             layout = folder / "oci"
             command(["skopeo", "copy", "--format", "oci", "docker-daemon:" + tag,
@@ -422,10 +465,13 @@ def main():
             if "sha256:" + sha256(manifest) != digest:
                 raise RuntimeError("MOBILE_OCI_MANIFEST_INTEGRITY")
             config = json.loads(manifest)["config"]["digest"]
-            if config != image:
-                raise RuntimeError("MOBILE_OCI_CONFIG_IDENTITY")
+            if not re.fullmatch(r"sha256:[0-9a-f]{64}", config):
+                raise RuntimeError("MOBILE_OCI_CONFIG_DIGEST")
             record["oci_manifest"] = digest
             record["oci_config"] = config
+            save()
+            config_bytes = (layout / "blobs/sha256" / config.split(":")[1]).read_bytes()
+            record["conversion"] = verify_oci_conversion(source[0], image, manifest, config_bytes)
             record["backend"] = "WorkspacePodman"
             save()
             # The short context path follows the existing Podman runroot limit.
