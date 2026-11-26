@@ -77,6 +77,79 @@ class UpgradeTests(unittest.TestCase):
         self.assertEqual((self.venv / "identity").read_text(), "old")
         self.assertEqual((self.backup / "candidate/identity").read_text(), "new")
 
+
+    def test_multirepo_profile_restored_with_venv_and_grants_archived(self):
+        from project_os_bridge.project_enrollment import next_runtime, record_migration
+        root = self.kit / "instance"
+        root.mkdir(mode=0o700)
+        (root / "service").mkdir(mode=0o700)
+        runtime = root / "service/runtime.json"
+        locator = str(self.kit / "project/.project-os/config.json")
+        original = {"tunnel": "fixture", "tunnel_id": "fixture", "image": None,
+                    "project_config": locator}
+        binding = ("demo", "example/demo", 123)
+        upgrade.save_json(runtime, original)
+        with upgrade.checkout_guard(self.kit) as (guard, fd):
+            upgrade.replace(self.kit, self.sha, self.wheel, guard, (fd,),
+                            self.bound, self.old_sha, self.old_wheel, run=self.candidate, root=root)
+        record_migration(root, original, binding, self.backup,
+                         {"sha": self.sha, "wheel_sha256": self.wheel})
+        migrated, _ = next_runtime(original, config=Path(locator), binding=binding)
+        multi, _ = next_runtime(migrated, config=Path("/fixture/other/.project-os/config.json"),
+                                binding=("other", "example/other", 456))
+        upgrade.save_json(runtime, multi)
+        with patch.object(upgrade, "legacy_binding_current", return_value=True):
+            with upgrade.checkout_guard(self.kit):
+                self.assertTrue(upgrade.restore(self.venv, self.backup, self.active,
+                                                self.sha, self.bound, root))
+            self.assertEqual(upgrade.profile_json(runtime), original)
+            self.assertEqual((self.venv / "identity").read_text(), "old")
+            saved = upgrade.profile_json(self.backup / upgrade.PROFILE_RESTORE)
+            self.assertEqual(saved["source"], multi)
+            self.assertEqual(saved["target"], original)
+            upgrade.check_release(self.kit, self.sha, self.guard, self.bound, root)
+
+    def test_profile_restore_replay_and_no_revoked_legacy_grant(self):
+        from project_os_bridge.project_enrollment import next_runtime
+        root = self.kit / "instance"
+        root.mkdir(mode=0o700)
+        (root / "service").mkdir(mode=0o700)
+        runtime = root / "service/runtime.json"
+        self.backup.mkdir(mode=0o700)
+        locator = str(self.kit / "project/.project-os/config.json")
+        original = {"tunnel": "fixture", "tunnel_id": "fixture", "image": None,
+                    "project_config": locator}
+        binding = ("demo", "example/demo", 123)
+        tx = {"sha": self.sha, "root": str(root)}
+        upgrade.save_json(self.backup / upgrade.PROFILE_MIGRATION,
+                          {"format": 1, "sha": self.sha, "root": str(root),
+                           "before": original, "binding": list(binding)})
+        migrated, _ = next_runtime(original, config=Path(locator), binding=binding)
+        multi, _ = next_runtime(migrated, revoke="demo")
+        upgrade.save_json(runtime, multi)
+        real_save = upgrade.save_json
+        def interrupted(path, data):
+            if path == runtime:
+                raise OSError("fixture interruption")
+            real_save(path, data)
+        with patch.object(upgrade, "save_json", side_effect=interrupted):
+            with self.assertRaises(OSError):
+                upgrade.restore_profile(root, self.backup, tx)
+        self.assertEqual(upgrade.profile_json(runtime), multi)
+        self.assertTrue((self.backup / upgrade.PROFILE_RESTORE).is_file())
+        with patch.object(upgrade, "legacy_binding_current") as verify:
+            upgrade.restore_profile(root, self.backup, tx)
+            upgrade.restore_profile(root, self.backup, tx)
+            verify.assert_not_called()
+        target = upgrade.profile_json(runtime)
+        self.assertNotIn("github_projects", target)
+        self.assertNotIn("project_config", target)
+        self.assertEqual(upgrade.profile_json(self.backup / upgrade.PROFILE_RESTORE)["source"], multi)
+        upgrade.save_json(runtime, {**target, "tunnel": "changed"})
+        with self.assertRaises(RuntimeError):
+            upgrade.restore_profile(root, self.backup, tx)
+        self.assertEqual(upgrade.profile_json(runtime)["tunnel"], "changed")
+
     def test_build_failure_preserves_partial_and_restores(self):
         def fail(*args):
             self.make_venv(self.venv, "partial")

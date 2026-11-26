@@ -595,6 +595,145 @@ def finish(active, tx, backup=None):
     sync_directory(active.parent)
 
 
+
+PROFILE_MIGRATION = "profile-migration.json"
+PROFILE_RESTORE = "profile-restore.json"
+
+
+def profile_json(path, limit=256 * 1024):
+    directory(path.parent)
+    expected = file_info(path, limit=limit)
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    try:
+        info = os.fstat(fd)
+        if (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns) != (
+                expected.st_dev, expected.st_ino, expected.st_size, expected.st_mtime_ns):
+            raise RuntimeError("Profile changed")
+        with os.fdopen(fd, "rb", closefd=False) as stream:
+            raw = stream.read(limit + 1)
+        current = file_info(path, limit=limit)
+        if (current.st_dev, current.st_ino, current.st_size, current.st_mtime_ns) != (
+                info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns) or len(raw) > limit:
+            raise RuntimeError("Profile changed")
+    finally:
+        os.close(fd)
+
+    def unique(pairs):
+        value = {}
+        for key, item in pairs:
+            if key in value:
+                raise ValueError("Duplicate profile key")
+            value[key] = item
+        return value
+
+    data = json.loads(raw, object_pairs_hook=unique)
+    if not isinstance(data, dict):
+        raise ValueError("Invalid profile")
+    return data
+
+
+def legacy_binding_current(locator, binding):
+    # A changed, missing, tracked or invalid binding is never resurrected.
+    try:
+        path = Path(locator)
+        if (not path.is_absolute() or path.name != "config.json"
+                or path.parent.name != ".project-os"):
+            return False
+        directory(path.parent)
+        env = {"PATH": "/usr/bin:/bin", "HOME": str(path.parent), "GIT_CONFIG_NOSYSTEM": "1",
+               "GIT_CONFIG_GLOBAL": "/dev/null", "GIT_OPTIONAL_LOCKS": "0",
+               "GIT_NO_REPLACE_OBJECTS": "1", "GIT_NO_LAZY_FETCH": "1"}
+        def check(*args):
+            return subprocess.run(["git", "-C", str(path.parent.parent), "-c", "core.fsmonitor=false", *args],
+                                  env=env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                  stderr=subprocess.DEVNULL, timeout=5, check=False)
+        tracked = check("ls-files", "--", ".project-os/")
+        ignored = check("check-ignore", "--", ".project-os/config.json")
+        if tracked.returncode or tracked.stdout or ignored.returncode:
+            return False
+        data = profile_json(path, 64 * 1024)
+        project, repository, repository_id = binding
+        return (type(data.get("version")) is int and data["version"] == 2
+                and data.get("github_context") == {"project": project, "repository": repository,
+                                                    "repository_id": repository_id}
+                and isinstance(data.get("repositories"), list)
+                and all(isinstance(item, str) for item in data["repositories"])
+                and repository.casefold() in {item.casefold() for item in data["repositories"]})
+    except (OSError, ValueError, TypeError, subprocess.SubprocessError):
+        return False
+
+
+def restore_profile(root, backup, tx):
+    """Restore a legacy-readable profile; archive multi grants, never silently reactivate them."""
+    migration = backup / PROFILE_MIGRATION
+    archive = backup / PROFILE_RESTORE
+    if not os.path.lexists(migration):
+        if os.path.lexists(archive):
+            raise RuntimeError("Missing profile migration evidence")
+        return
+    if root is None:
+        raise ValueError("Profile migration requires exact instance")
+    record = profile_json(migration)
+    if (set(record) != {"format", "sha", "root", "before", "binding"}
+            or record["format"] != 1 or record["sha"] != tx["sha"]
+            or record["root"] != str(root) or tx["root"] != str(root)):
+        raise ValueError("Profile migration identity mismatch")
+    old, binding = record["before"], record["binding"]
+    required = {"tunnel", "tunnel_id", "image"}
+    if (not isinstance(old, dict) or not required <= set(old)
+            or set(old) - required - {"podman_context", "project_config"}
+            or old["image"] is not None or old.get("podman_context") is not None
+            or not isinstance(binding, list) or len(binding) != 3
+            or not isinstance(binding[0], str) or not isinstance(binding[1], str)
+            or type(binding[2]) is not int or binding[2] <= 0):
+        raise ValueError("Invalid legacy profile evidence")
+    runtime = root / "service" / "runtime.json"
+    current = profile_json(runtime, 64 * 1024)
+    locator = old.get("project_config")
+
+    def plan(source):
+        if source == old:
+            # Migration was interrupted before its atomic profile replacement.
+            return old
+        grants = source.get("github_projects")
+        if (not isinstance(grants, dict) or len(grants) > 32
+                or {k: v for k, v in source.items() if k != "github_projects"}
+                   != {k: v for k, v in old.items() if k != "project_config"}):
+            raise RuntimeError("Unrelated service settings changed; reconcile before rollback")
+        target = {k: v for k, v in old.items() if k != "project_config"}
+        if locator is not None and grants.get(binding[0]) == {
+                "config": locator, "repository": binding[1], "repository_id": binding[2]}:
+            if legacy_binding_current(locator, binding):
+                target["project_config"] = locator
+        return target
+
+    if os.path.lexists(archive):
+        saved = profile_json(archive)
+        if (set(saved) != {"format", "sha", "root", "source", "target"}
+                or saved["format"] != 1 or saved["sha"] != tx["sha"]
+                or saved["root"] != str(root) or not isinstance(saved["source"], dict)
+                or not isinstance(saved["target"], dict)):
+            raise ValueError("Profile restore identity mismatch")
+        source, target = saved["source"], saved["target"]
+        if plan(source) != target or current not in (source, target):
+            raise RuntimeError("Profile changed during rollback; preserve evidence")
+    else:
+        source, target = current, plan(current)
+        if source == target:
+            return
+        saved = {"format": 1, "sha": tx["sha"], "root": str(root),
+                 "source": source, "target": target}
+        if len(json.dumps(target).encode()) + 1 > 4096:
+            raise ValueError("Legacy service configuration exceeds limit")
+        save_json(archive, saved)
+    if current != target:
+        if profile_json(runtime, 64 * 1024) != source:
+            raise RuntimeError("Profile changed before rollback")
+        save_json(runtime, target)
+    if profile_json(runtime, 64 * 1024) != target:
+        raise RuntimeError("Legacy profile restore unconfirmed")
+
+
 def restore(venv, backup, active, sha, bound_python, root=None):
     directory(backup)
     tx = read_json(active if os.path.lexists(active) else backup / TRANSACTION)
@@ -616,6 +755,7 @@ def restore(venv, backup, active, sha, bound_python, root=None):
             directory(venv)
         tx["phase"] = "restoring"
         save_json(active, tx)
+        restore_profile(root, backup, tx)
         if os.path.lexists(venv):
             move(venv, candidate)
         move(previous, venv)
@@ -623,6 +763,7 @@ def restore(venv, backup, active, sha, bound_python, root=None):
         validate_prior(prior, venv, venv, bound_python)
         tx["phase"] = "restoring"
         save_json(active, tx)
+        restore_profile(root, backup, tx)
     validate_prior(prior, venv, venv, bound_python)
     tx["phase"] = "restored"
     finish(active, tx, backup)
@@ -700,6 +841,10 @@ def check_release(kit, sha, guard, bound_python, root=None):
         validate_prior(tx["prior"], venv, backup / "previous", bound_python)
     elif tx["phase"] == "restored":
         validate_prior(tx["prior"], venv, venv, bound_python)
+        if os.path.lexists(backup / PROFILE_RESTORE):
+            saved = profile_json(backup / PROFILE_RESTORE)
+            if root is None or profile_json(root / "service/runtime.json", 64 * 1024) != saved.get("target"):
+                raise RuntimeError("Restored service profile changed; reconcile before release")
     else:
         raise RuntimeError("Incomplete maintenance")
 

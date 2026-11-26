@@ -18,6 +18,9 @@ from .maintenance_guard import require_no_installation
 from .methodology import checkout
 from .workos_auth import load_config, private_directory
 
+PROFILE_MIGRATION = "profile-migration.json"
+PROFILE_RESTORE = "profile-restore.json"
+
 
 def repository_identity(root, repository):
     # Local operator selection only; the reader never inherits personal credentials.
@@ -67,6 +70,47 @@ def next_runtime(data, *, config=None, binding=None, revoke=None):
     return result, migrate
 
 
+
+def record_migration(root, before, binding, backup, receipt):
+    """Persist legacy-profile evidence before the live profile can change."""
+    if not os.path.lexists(backup):
+        return
+    private_directory(backup)
+    transaction = json.loads(_private_bytes(backup / "transaction.json", 16384),
+                             object_pairs_hook=_unique_object)
+    if (transaction.get("phase") != "installed" or transaction.get("root") != str(root)
+            or transaction.get("sha") != receipt.get("sha")
+            or transaction.get("wheel") != receipt.get("wheel_sha256")
+            or not isinstance(transaction.get("prior"), dict)
+            or os.path.lexists(backup / PROFILE_RESTORE)):
+        raise RuntimeError("Unreconciled maintenance backup")
+    record = {"format": 1, "sha": transaction["sha"], "root": str(root),
+              "before": before, "binding": list(binding)}
+    path = backup / PROFILE_MIGRATION
+    if os.path.lexists(path):
+        if json.loads(_private_bytes(path, 128 * 1024), object_pairs_hook=_unique_object) != record:
+            raise RuntimeError("Previous profile migration evidence differs")
+        return
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(dir=backup, prefix=".profile-", delete=False) as stream:
+            temporary = Path(stream.name)
+            stream.write((json.dumps(record, sort_keys=True) + "\n").encode())
+            stream.flush()
+            os.fsync(stream.fileno())
+        if os.path.lexists(path):
+            raise RuntimeError("Migration evidence appeared")
+        os.replace(temporary, path)
+        fd = os.open(backup, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try:
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
+
+
 def update_runtime(root, *, config=None, revoke=None):
     if (config is None) == (revoke is None):
         raise ValueError("Choose exactly one enrollment operation")
@@ -109,6 +153,15 @@ def update_runtime(root, *, config=None, revoke=None):
             if (_private_bytes(runtime, MAX_BINDING) != original or snapshot(unit) != before
                     or (config is not None and read_project_binding(config) != binding)):
                 raise RuntimeError("Configuration or lifecycle changed; no grant written")
+            if migrated:
+                venv = Path(sys.prefix)
+                backup = venv.parent / ".venv-install.rollback"
+                if os.path.lexists(backup):
+                    receipt = json.loads(_private_bytes(venv / ".project-os-bridge-install.json", 1024),
+                                         object_pairs_hook=_unique_object)
+                    record_migration(root, data, binding, backup, receipt)
+                if _private_bytes(runtime, MAX_BINDING) != original:
+                    raise RuntimeError("Configuration changed after migration evidence")
             os.replace(temp, runtime)
             fd = os.open(runtime.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
             try:

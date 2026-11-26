@@ -1,4 +1,8 @@
 import asyncio
+import os
+import subprocess
+import threading
+from concurrent.futures import ThreadPoolExecutor
 import json
 import tempfile
 import time
@@ -591,6 +595,126 @@ class AuthTests(unittest.TestCase):
                 self.assertTrue(denied.json()["result"].get("isError", False))
                 self.assertNotIn("candidate-context", denied.text)
                 self.assertEqual(request.call_count, count + 1)
+
+
+    def test_multirepo_http_overlap_and_revocation(self):
+        from project_os_bridge.github_operational import (
+            CONFIG_DIR, FLAG, load_operational_provider, read_project_binding,
+        )
+        state = self.root / "state"
+        state.mkdir(mode=0o700)
+        (state / "allow-authenticated-probe").touch(mode=0o600)
+        (self.root / CONFIG_DIR).mkdir(mode=0o700)
+        service = self.root / "service"
+        service.mkdir(mode=0o700)
+        runtime = service / "runtime.json"
+        runtime.touch(mode=0o600)
+        grants = {}
+        for project, repo_id in (("alpha", 101), ("beta", 202)):
+            checkout = self.root / project
+            checkout.mkdir()
+            subprocess.run(["git", "init", "-q", str(checkout)], check=True)
+            (checkout / ".gitignore").write_text(".project-os/\n")
+            (checkout / ".project-os").mkdir(mode=0o700)
+            config = checkout / ".project-os/config.json"
+            config.touch(mode=0o600)
+            repo = "example/" + project
+            config.write_text(json.dumps({"version": 2, "repositories": [repo],
+                                          "github_context": {"project": project, "repository": repo,
+                                                             "repository_id": repo_id}}))
+            grants[project] = {"config": str(config), "repository": repo, "repository_id": repo_id}
+        def publish(entries):
+            tmp = service / "fixture-runtime.tmp"
+            tmp.touch(mode=0o600)
+            tmp.write_text(json.dumps({"tunnel": "fixture", "tunnel_id": "fixture", "image": None,
+                                       "github_projects": entries}))
+            os.replace(tmp, runtime)
+        publish(grants)
+        verifier = Verifier(ISSUER, RESOURCE, SUBJECT, state, jwks=self.jwks)
+        provider = load_operational_provider(verifier, supervised=True, multi=True)
+        (state / FLAG).touch(mode=0o600)
+        app = build_http_app(verifier, Jobs(state, Policy([])), github_provider=provider)
+        headers = {"Accept": "application/json, text/event-stream",
+                   "Authorization": "Bearer " + self.token()}
+        init = {"jsonrpc": "2.0", "id": 1, "method": "initialize",
+                "params": {"protocolVersion": "2025-11-25", "capabilities": {},
+                           "clientInfo": {"name": "concurrent-test", "version": "1"}}}
+
+        def upstream(reader, endpoint):
+            repo = endpoint.split("/")[1:3]
+            self.assertEqual("/".join(repo), next(iter(reader.repositories.values())))
+            project = repo[1]
+            base = "https://api.github.com/repos/example/" + project
+            if endpoint == "repos/example/" + project:
+                return {"complete": True, "data": {"id": grants[project]["repository_id"],
+                                                   "full_name": "example/" + project}}
+            if "/comments?" in endpoint:
+                return {"complete": True, "data": []}
+            return {"complete": True, "data": {"number": 1, "title": project + "-fixture-issue",
+                                                "body": None, "state": "open", "comments": 0,
+                                                "repository_url": base, "url": base + "/issues/1"}}
+
+        def methodology(path, repository, workflow, skills, templates, expected_revision):
+            self.assertEqual(str(path), grants[repository.split("/")[1]]["config"])
+            return {"complete": True, "documents": [{"content": repository + "-fixture-methodology"}]}
+
+        def call(client, tool, project, number):
+            args = {"project": project}
+            if tool == "github_context":
+                args["numbers"] = [1]
+            else:
+                args.update(workflow="implement", skills=[], templates=[])
+            return client.post("/mcp", headers=headers, json={"jsonrpc": "2.0", "id": number,
+                               "method": "tools/call", "params": {"name": tool, "arguments": args}})
+
+        with TestClient(app, base_url="http://127.0.0.1:8765") as client:
+            initialized = client.post("/mcp", headers=headers, json=init)
+            self.assertEqual(initialized.status_code, 200)
+            headers["MCP-Protocol-Version"] = initialized.json()["result"]["protocolVersion"]
+            listing = client.post("/mcp", headers=headers, json={"jsonrpc": "2.0", "id": 2,
+                                  "method": "tools/list", "params": {}})
+            self.assertTrue({"github_context", "methodology_context"} <=
+                            {tool["name"] for tool in listing.json()["result"]["tools"]})
+            with patch.object(GitHubReader, "_request", autospec=True, side_effect=upstream), \
+                    patch("project_os_bridge.authenticated.installed_context", side_effect=methodology):
+                for index, (slow_tool, revoke) in enumerate(
+                        (("github_context", False), ("methodology_context", True))):
+                    with self.subTest(tool=slow_tool):
+                        publish(grants)
+                        entered, release = threading.Event(), threading.Event()
+                        def slow_binding(path):
+                            if str(path) == grants["alpha"]["config"] and not entered.is_set():
+                                entered.set()
+                                if not release.wait(15):
+                                    raise RuntimeError("Fixture synchronization timeout")
+                            return read_project_binding(path)
+                        with patch("project_os_bridge.github_operational.read_project_binding",
+                                   side_effect=slow_binding), ThreadPoolExecutor(max_workers=2) as executor:
+                            alpha = executor.submit(call, client, slow_tool, "alpha", 10 + index * 3)
+                            try:
+                                self.assertTrue(entered.wait(5))
+                                beta = executor.submit(call, client, "github_context", "beta", 11 + index * 3)
+                                answer = beta.result(timeout=8)
+                                self.assertEqual(answer.status_code, 200)
+                                self.assertFalse(answer.json()["result"].get("isError", False))
+                                self.assertIn("beta-fixture-issue", answer.text)
+                                self.assertNotIn("alpha-fixture-issue", answer.text)
+                                self.assertFalse(alpha.done())
+                                if revoke:
+                                    publish({"beta": grants["beta"]})
+                            finally:
+                                release.set()
+                            answer = alpha.result(timeout=8)
+                            self.assertEqual(answer.status_code, 200)
+                            self.assertEqual(bool(answer.json()["result"].get("isError", False)), revoke)
+                            if revoke:
+                                self.assertNotIn("alpha-fixture-methodology", answer.text)
+                                still = call(client, "methodology_context", "beta", 12 + index * 3)
+                                self.assertFalse(still.json()["result"].get("isError", False))
+                                self.assertIn("beta-fixture-methodology", still.text)
+                            else:
+                                self.assertIn("alpha-fixture-issue", answer.text)
+                                self.assertNotIn("beta-fixture-issue", answer.text)
 
     def test_candidate_github_context_expires_during_http_read(self):
         jobs = Jobs(self.root, Policy([]))
