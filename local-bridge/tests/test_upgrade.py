@@ -137,6 +137,119 @@ class UpgradeTests(unittest.TestCase):
         self.assertTrue(self.backup.is_dir())
         self.assertFalse(archive.exists())
 
+    def test_upgrade_rejects_unknown_changed_or_disconnected_archive(self):
+        self.replace(self.candidate)
+        self.relocate(self.sha)
+        archive = self.bridge / (upgrade.ARCHIVE_PREFIX + self.sha)
+        next_sha, next_wheel = "5" * 40, "6" * 64
+        run = Mock()
+        def attempt(sha=next_sha):
+            with upgrade.checkout_guard(self.kit) as (guard, fd):
+                upgrade.replace(self.kit, sha, next_wheel, guard, (fd,),
+                                self.bound, self.sha, self.wheel, run=run)
+        foreign = self.bridge / (upgrade.ARCHIVE_PREFIX + "unknown")
+        foreign.mkdir(mode=0o700)
+        with self.assertRaises(ValueError):
+            attempt()
+        foreign.rmdir()
+        with self.assertRaises(ValueError):
+            attempt(self.sha)
+        tx = upgrade.read_json(archive / upgrade.TRANSACTION)
+        changed = dict(tx, candidate_identity={**tx["candidate_identity"], "ino": -1})
+        upgrade.save_json(archive / upgrade.TRANSACTION, changed)
+        with self.assertRaises(RuntimeError):
+            attempt()
+        upgrade.save_json(archive / upgrade.TRANSACTION, tx)
+        with patch.object(upgrade, "group_busy", return_value=True):
+            with self.assertRaises(RuntimeError):
+                attempt()
+        self.write_receipt(archive / "previous", self.sha, self.wheel)
+        with self.assertRaises(ValueError):
+            attempt()
+        run.assert_not_called()
+        self.assertFalse(self.active.exists())
+        self.assertFalse(self.backup.exists())
+        self.assertEqual((self.venv / "identity").read_text(), "new")
+
+    def test_public_cli_recovers_chain_without_changing_maintenance_checkout(self):
+        # Real CLI parser, Git identity, SQLite and filesystem/locks. Mock only
+        # host service manager, host-Python selection and package building.
+        def git(*args):
+            return upgrade.git(self.kit, *args)
+        git("init", "-q")
+        git("config", "user.email", "fixture@example.invalid")
+        git("config", "user.name", "fixture")
+        git("remote", "add", "origin", upgrade.ORIGIN)
+        (self.kit / ".gitignore").write_text(".venv/\n.venv-install.*/\n")
+        (self.kit / "tracked").write_text("first")
+        git("add", ".")
+        git("commit", "-qm", "first")
+        self.sha = git("rev-parse", "HEAD")
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        root = Path(temp.name)
+        for name in ("service", "state"):
+            (root / name).mkdir(mode=0o700)
+        db = root / "state/jobs.sqlite3"
+        db.touch(mode=0o600)
+        with sqlite3.connect(db) as conn:
+            conn.executescript("CREATE TABLE jobs(state TEXT);"
+                               "CREATE TABLE fixture_effects(resolved_at TEXT);")
+        unit = root / "service" / upgrade.UNIT
+        unit.touch(mode=0o600)
+        unit.write_text(upgrade.unit_text(root, self.bound))
+        loaded = False
+        def manager(*args, **kwargs):
+            nonlocal loaded
+            fenced = unit.read_text() == upgrade.fenced_unit_text(root, self.bound)
+            if args == ("daemon-reload",):
+                loaded = fenced
+                return SimpleNamespace(returncode=0, stdout="")
+            self.assertEqual(args[0], "show")
+            fields = dict(Id=upgrade.UNIT, LoadState="loaded", FragmentPath=str(unit),
+                          DropInPaths="", NeedDaemonReload="no" if loaded == fenced else "yes",
+                          ActiveState="inactive", UnitFileState="linked", Job="", MainPID="0",
+                          ControlPID="0", RefuseManualStart="yes" if loaded else "no")
+            return SimpleNamespace(returncode=0, stdout="\n".join(
+                f"{key}={value}" for key, value in fields.items()))
+        real_lock = upgrade.lock
+        def local_lock(path):
+            return real_lock(root / "service/lifecycle.lock" if path.name ==
+                             "project-os-bridge-lifecycle.lock" else path)
+        def build(kit, sha, wheel, active, tx, fds):
+            self.make_venv(self.venv, sha)
+            self.write_receipt(self.venv, sha, wheel)
+        def cli(action, *args):
+            head = git("rev-parse", "HEAD")
+            with patch.object(upgrade.sys, "argv",
+                              ["upgrade.py", action, head, "--root", str(root),
+                               "--bound-python", str(self.bound), *args]):
+                upgrade.main()
+        with patch.object(upgrade, "__file__", str(self.bridge / "scripts/upgrade.py")), \
+             patch.object(upgrade.sys, "prefix", sys.base_prefix), \
+             patch.object(upgrade, "systemctl", side_effect=manager), \
+             patch.object(upgrade, "lock", side_effect=local_lock), \
+             patch.object(upgrade, "build_runner", return_value=build):
+            cli("fence")
+            cli("upgrade", "--expected-wheel", self.wheel, "--previous-sha",
+                self.old_sha, "--previous-wheel", self.old_wheel)
+            (self.kit / "tracked").write_text("second")
+            git("commit", "-qam", "second")
+            next_sha, next_wheel = git("rev-parse", "HEAD"), "6" * 64
+            cli("archive", "--rollback-sha", self.sha)
+            with self.assertRaises(SystemExit):
+                cli("release")
+            cli("upgrade", "--expected-wheel", next_wheel, "--previous-sha",
+                self.sha, "--previous-wheel", self.wheel)
+            cli("restore")
+            cli("archive", "--rollback-sha", next_sha)
+            cli("unarchive", "--rollback-sha", self.sha)
+            cli("restore", "--rollback-sha", self.sha)
+            cli("release", "--rollback-sha", self.sha)
+            self.assertEqual(git("rev-parse", "HEAD"), next_sha)
+            self.assertEqual((self.venv / "identity").read_text(), "old")
+            self.assertFalse(loaded)
+
     def test_archive_rename_interruption_reconciles_same_directory(self):
         self.replace(self.candidate)
         archive = self.bridge / (upgrade.ARCHIVE_PREFIX + self.sha)
