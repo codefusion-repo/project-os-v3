@@ -85,6 +85,16 @@ class PodmanContextTests(unittest.TestCase):
         (self.context.root / "home/.config/containers").mkdir(parents=True)
         self.assertEqual(self.context.identity(), self.identity)
 
+    def test_rpm_metadata_is_distinct_from_authentication_material(self):
+        rpm = self.context.root / "home/.rpmdb"
+        rpm.mkdir()
+        for name in ("rpmdb.sqlite", "rpmdb.sqlite-shm", "rpmdb.sqlite-wal"):
+            (rpm / name).touch()
+        self.assertEqual(self.context.identity(), self.identity)
+        (rpm / "auth.json").touch()
+        with self.assertRaises(PermissionError):
+            self.context.identity()
+
     def test_host_data_and_context_layout_drift_fail_closed(self):
         (self.context.root / "home/foreign").touch()
         with patch.object(self.context, "_run") as run, self.assertRaises(PermissionError):

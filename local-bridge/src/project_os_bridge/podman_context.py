@@ -17,6 +17,7 @@ SAFE_PATH = re.compile(r"/[A-Za-z0-9_./-]+")
 PODMAN = "/usr/bin/podman"
 RUNROOT_MAX_BYTES = 50  # Podman 4.9.3 storage path limit.
 FIXTURE_TAG = "localhost/project-os-alpine-ci:candidate"
+RPM_HOME_FILES = {Path(".rpmdb") / name for name in ("rpmdb.sqlite", "rpmdb.sqlite-shm", "rpmdb.sqlite-wal")}
 DIRECTORIES = ("home", "runtime", "graph", "runroot", "libpod", "volumes", "networks", "tmp", "hooks",
                "config", "data", "cache")
 
@@ -61,13 +62,20 @@ class PodmanContext:
                 raise ContextError("Podman context configuration changed")
         if any((root / "hooks").iterdir()):
             raise ContextError("Podman context hooks must be empty")
-        for parent, dirs, files in os.walk(root / "home", followlinks=False):
-            if files:
-                raise ContextError("Podman context HOME contains files")
+        home = root / "home"
+        for parent, dirs, files in os.walk(home, followlinks=False):
             for name in dirs:
                 info = (Path(parent) / name).lstat()
                 if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o022:
                     raise ContextError("Unsafe directory in Podman context HOME")
+            # Some hosts run RPM package probes during Podman info, even on Ubuntu.
+            # This HOME starts empty. Permit the specific runtime DB, never auth/config files.
+            for name in files:
+                path = Path(parent) / name
+                info = path.lstat()
+                if (path.relative_to(home) not in RPM_HOME_FILES or not stat.S_ISREG(info.st_mode)
+                        or info.st_uid != os.getuid() or info.st_mode & 0o022 or info.st_nlink != 1):
+                    raise ContextError("Unexpected file in Podman context HOME")
         for line in Path("/proc/self/mountinfo").read_text().splitlines():
             mount = re.sub(r"\\([0-7]{3})", lambda match: chr(int(match[1], 8)), line.split()[4])
             if Path(mount).is_relative_to(root):

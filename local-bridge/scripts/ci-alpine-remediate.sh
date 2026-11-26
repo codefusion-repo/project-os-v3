@@ -178,20 +178,7 @@ python3 -m venv "$work/venv"
 context_parent="$(mktemp -d /tmp/lboci.XXXXXXXX)"
 context="$context_parent/context"
 runtime=(env "PYTHONPATH=$repo/local-bridge/src" "$work/venv/bin/python" -B)
-if ! "${runtime[@]}" -m project_os_bridge.podman_context --context "$context" prepare; then
-  # A failed initialization in CI has a fresh synthetic HOME. Report structure only.
-  "${runtime[@]}" - "$context/home" <<'PYHOME'
-import os, re, sys
-from pathlib import Path
-root = Path(sys.argv[1])
-for folder, dirs, files in os.walk(root, followlinks=False):
-    for name in files:
-        path = (Path(folder) / name).relative_to(root).as_posix()
-        if len(path) <= 96 and re.fullmatch(r"[A-Za-z_.-]+(?:/[A-Za-z_.-]+)*", path):
-            print("CI_GENERATED_HOME_ENTRY", path)
-PYHOME
-  exit 1
-fi
+"${runtime[@]}" -m project_os_bridge.podman_context --context "$context" prepare
 [ "$("${runtime[@]}" -m project_os_bridge.podman_context --context "$context" import-layout "$work/oci" "$digest")" = "$image" ]
 if [ "$mode" = fixture-only ]; then
   "${runtime[@]}" -m project_os_bridge.podman_context --context "$context" smoke "$image"
