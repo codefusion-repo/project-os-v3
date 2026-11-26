@@ -3,6 +3,8 @@ import json
 import os
 import re
 import threading
+import subprocess
+from pathlib import Path
 from datetime import datetime, timezone
 
 from .core import Policy
@@ -12,10 +14,10 @@ from .security import Audit
 from .workos_auth import private_directory, private_file
 
 FLAG = "allow-github-context"
-BINDING = "github-context.json"
+PROJECT_CONFIG = ".project-os/config.json"
 CONFIG_DIR = "github-context-gh"
 AUDIT_NAME = "github-context-audit.jsonl"
-MAX_BINDING = 4096
+MAX_BINDING = 64 * 1024
 MAX_AUDIT = 1024 * 1024
 OUTCOMES = frozenset({"admitted", "complete", "partial", "denied", "failed"})
 
@@ -73,7 +75,7 @@ class GitHubContextAudit:
                 os.close(fd)
 
 
-def load_operational_provider(verifier, *, supervised):
+def load_operational_provider(verifier, *, supervised, project_config=None):
     """Register only from explicit private binding with no active opt-in.
 
     Startup never grants repository access. The local operator may enable the
@@ -82,18 +84,41 @@ def load_operational_provider(verifier, *, supervised):
     """
     state = verifier.state_dir
     private_directory(state)
-    flag, path = state / FLAG, state / BINDING
+    flag = state / FLAG
     if os.path.lexists(flag):
         raise PermissionError("Revoke GitHub context before startup")
-    if not os.path.lexists(path):
+    if project_config is None:
         return None
     if supervised is not True:
         raise PermissionError("Supervised non-fixture HTTPS required")
+    path = Path(project_config)
+    if not path.is_absolute() or path.name != "config.json" or path.parent.name != ".project-os":
+        raise ValueError("Canonical project configuration required")
+    private_directory(path.parent)
+    # Never read a tracked project configuration. Explicit local locator only.
+    env = {"PATH": "/usr/bin:/bin", "HOME": str(state.parent), "GIT_CONFIG_NOSYSTEM": "1",
+           "GIT_CONFIG_GLOBAL": "/dev/null", "GIT_OPTIONAL_LOCKS": "0"}
+    def git(*args):
+        return subprocess.run(["git", "-C", str(path.parent.parent), *args], env=env,
+                              stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                              stderr=subprocess.DEVNULL, timeout=5, check=False)
+    tracked = git("ls-files", "--", ".project-os/")
+    ignored = git("check-ignore", "--", PROJECT_CONFIG)
+    if tracked.returncode != 0 or tracked.stdout or ignored.returncode != 0:
+        raise PermissionError("Project configuration must be excluded from Git")
     original = _private_bytes(path, MAX_BINDING)
-    config = json.loads(original, object_pairs_hook=_unique_object)
-    if not isinstance(config, dict) or set(config) != {"principal", "project", "repository", "repository_id"}:
+    data = json.loads(original, object_pairs_hook=_unique_object)
+    if not isinstance(data, dict) or type(data.get("version")) is not int or data["version"] != 2:
+        raise ValueError("Invalid project configuration")
+    config = data.get("github_context")
+    if not isinstance(config, dict) or set(config) != {"project", "repository", "repository_id"}:
         raise ValueError("Invalid GitHub context binding")
-    actor, project, repo, repo_id = (config[key] for key in ("principal", "project", "repository", "repository_id"))
+    project, repo, repo_id = (config[key] for key in ("project", "repository", "repository_id"))
+    repositories = data.get("repositories")
+    if (not isinstance(repositories, list) or not all(isinstance(v, str) for v in repositories)
+            or not isinstance(repo, str) or repo.casefold() not in {v.casefold() for v in repositories}):
+        raise ValueError("GitHub context repository not in project")
+    actor = verifier.subject
     if (actor != verifier.subject or not isinstance(project, str) or not PROJECT.fullmatch(project)
             or not isinstance(repo, str) or not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repo)
             or any(part in {".", ".."} for part in repo.split("/"))

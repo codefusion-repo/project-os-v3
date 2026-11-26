@@ -332,6 +332,7 @@ def main():
     parser.add_argument("--tls-cert", type=Path, help="Private local PEM certificate")
     parser.add_argument("--tls-key", type=Path, help="Private local PEM key")
     parser.add_argument("--supervised-ca", type=Path, help="Require verified loopback TLS metadata before worker dispatch")
+    parser.add_argument("--project-config", type=Path, help="Explicit local project configuration for GitHub context")
     args = parser.parse_args()
     os.umask(0o077)
     try:
@@ -385,7 +386,8 @@ def main():
         if args.fixture_image and args.supervised_ca is None:
             bind_image(jobs, args.fixture_image, context_id)
         try:
-            github_provider = load_operational_provider(verifier, supervised=diagnostics is not None and args.fixture_image is None)
+            github_provider = load_operational_provider(verifier, supervised=diagnostics is not None and args.fixture_image is None,
+                                                        project_config=args.project_config)
         except (OSError, ValueError, TypeError):
             parser.error("Invalid or active private GitHub context configuration")
         fixture = (None if github_provider is not None else

@@ -35,8 +35,9 @@ def commands(root):
     service = root / "service"
     private_directory(service)
     config = json.loads(read_private(service / "runtime.json", 4096))
-    if not isinstance(config, dict) or set(config) not in ({"tunnel", "tunnel_id", "image"},
-                                                          {"tunnel", "tunnel_id", "image", "podman_context"}):
+    required = {"tunnel", "tunnel_id", "image"}
+    if (not isinstance(config, dict) or not required <= set(config)
+            or set(config) - required - {"podman_context", "project_config"}):
         raise ValueError("Invalid service configuration")
     tunnel = checked_path(Path(config["tunnel"]))
     info = tunnel.stat()
@@ -71,6 +72,11 @@ def commands(root):
               "--supervised-ca",str(ca)]
     if image:
         bridge += ["--fixture-image", image, "--podman-context", context_path]
+    if "project_config" in config:
+        if image is not None or not isinstance(config["project_config"], str):
+            raise ValueError("Project configuration requires non-fixture profile")
+        project_config = checked_path(Path(config["project_config"]))
+        bridge += ["--project-config", str(project_config)]
     tunnel_cmd = [str(tunnel),"run","--config",str(service/"tunnel.yaml"),
                   "--mcp.server-url","https://127.0.0.1:8765/mcp",
                   "--ca-bundle",str(ca),"--mcp.oauth-trusted-origin",verifier.issuer]

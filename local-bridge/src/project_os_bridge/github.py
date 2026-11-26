@@ -111,35 +111,39 @@ class GitHubReader:
         repo = self._repo(principal, project)
         if type(number) is not int or not 1 <= number <= 2_147_483_647:
             raise ValueError("Invalid issue number")
-        def authorized_request(endpoint):
-            self._repo(principal, project)
-            if check_access is not None:
-                check_access()
-            result = self._request(endpoint)
-            if check_access is not None:
-                check_access()
-            return result
+        self._verify_identity(principal, project, check_access)
+        return self._issue_context(principal, project, number, check_access)
 
-        def verify_identity():
-            expected = self.repository_ids.get(project)
-            if expected is None:
-                return
-            result = authorized_request(f"repos/{repo}")
-            if result.get("complete") is not True:
-                raise GitHubReadError(result.get("error", "INVALID_RESPONSE"))
-            data = result.get("data")
-            if (not isinstance(data, dict) or type(data.get("id")) is not int
-                    or data["id"] != expected or not isinstance(data.get("full_name"), str)
-                    or not data["full_name"].isascii() or data["full_name"].lower() != repo.lower()):
-                raise GitHubReadError("RESOURCE_MISMATCH")
+    def _authorized_request(self, principal, project, endpoint, check_access):
+        self._repo(principal, project)
+        if check_access is not None:
+            check_access()
+        result = self._request(endpoint)
+        if check_access is not None:
+            check_access()
+        return result
+
+    def _verify_identity(self, principal, project, check_access):
+        expected = self.repository_ids.get(project)
+        if expected is None:
+            return
+        repo = self._repo(principal, project)
+        result = self._authorized_request(principal, project, f"repos/{repo}", check_access)
+        if result.get("complete") is not True:
+            raise GitHubReadError(result.get("error", "INVALID_RESPONSE"))
+        data = result.get("data")
+        if (not isinstance(data, dict) or type(data.get("id")) is not int
+                or data["id"] != expected or not isinstance(data.get("full_name"), str)
+                or not data["full_name"].isascii() or data["full_name"].lower() != repo.lower()):
+            raise GitHubReadError("RESOURCE_MISMATCH")
+
+    def _issue_context(self, principal, project, number, check_access):
+        repo = self._repo(principal, project)
 
         def checked_request(endpoint):
-            # REST issue routes are name-based, not an atomic ID snapshot.
-            verify_identity()
-            result = authorized_request(endpoint)
+            result = self._authorized_request(principal, project, endpoint, check_access)
             if result.get("error") == "GH_RATE_LIMIT":
                 raise GitHubReadError("GH_RATE_LIMIT")
-            verify_identity()
             return result
 
         prefix = f"repos/{repo}/issues/{number}"
@@ -182,7 +186,8 @@ class GitHubReader:
         # For the operational binding, stop the batch on the first identity or
         # rate-limit failure rather than queueing more upstream requests.
         if project in self.repository_ids:
-            results = [self.issue_context(principal, project, n, check_access=check_access) for n in unique]
+            self._verify_identity(principal, project, check_access)
+            results = [self._issue_context(principal, project, n, check_access) for n in unique]
         else:
             with ThreadPoolExecutor(max_workers=2) as pool:
                 results = list(pool.map(lambda n: self.issue_context(principal,project,n, check_access=check_access),unique))

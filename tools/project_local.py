@@ -170,7 +170,7 @@ def validate_config(data):
     if not isinstance(data, dict) or type(data.get('version')) is not int or data['version'] not in (1, 2):
         raise ProjectError('Formato local desconocido; no se sobrescribirá automáticamente.')
     common = {'version', 'name', 'prompt_dir', 'checkouts'}
-    allowed = common | ({'primary_repo', 'related_repos'} if data['version'] == 1 else {'repositories'})
+    allowed = common | ({'primary_repo', 'related_repos'} if data['version'] == 1 else {'repositories', 'github_context'})
     if set(data) - allowed:
         raise ProjectError('Formato local desconocido; no se sobrescribirá automáticamente.')
     if not isinstance(data.get('name', ''), str) or not isinstance(data.get('prompt_dir', '.project-os/prompts'), str):
@@ -204,6 +204,18 @@ def validate_config(data):
             raise ProjectError('La configuración contiene repositorios duplicados.')
         if any(name.casefold() not in {value.casefold() for value in repos} for name in checkouts):
             raise ProjectError('Hay checkouts sin repositorio asociado; conserva y revisa la configuración.')
+        if 'github_context' in data:
+            binding = data['github_context']
+            if not isinstance(binding, dict) or set(binding) != {'project', 'repository', 'repository_id'}:
+                raise ProjectError('Configuración GitHub context inválida.')
+            repo = binding['repository']
+            validate_repository(repo)
+            if (repo.casefold() not in {value.casefold() for value in repos}
+                    or not isinstance(binding['project'], str)
+                    or not re.fullmatch(r'[A-Za-z0-9_-]{1,80}', binding['project'])
+                    or type(binding['repository_id']) is not int
+                    or not 0 < binding['repository_id'] <= 2**63 - 1):
+                raise ProjectError('Configuración GitHub context inválida.')
     return data
 
 
