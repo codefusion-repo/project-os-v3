@@ -9,6 +9,7 @@ import time
 import unittest
 import httpx
 from pathlib import Path
+from datetime import datetime, timezone
 from http import HTTPStatus
 from unittest.mock import Mock, patch
 from cryptography.hazmat.primitives.asymmetric import rsa
@@ -74,6 +75,80 @@ class AuthTests(unittest.TestCase):
                         {"sid":None},{"jti":None},{"act":{}},{"sub_profile":"ai_agent"},{"org_id":"org_fixture"}):
             with self.subTest(changes=changes):
                 self.assertIsNone(self.verify(self.token(changes)))
+
+    def test_clock_skew_does_not_extend_expiry(self):
+        # Freeze both the pinned library's UTC clock and the verifier clock.
+        # The same signed token is rejected under the original zero leeway.
+        now = int(time.time())
+        fixed = datetime.fromtimestamp(now, timezone.utc)
+        class FrozenDatetime(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return fixed.astimezone(tz) if tz is not None else fixed.replace(tzinfo=None)
+
+        with patch("jwt.api_jwt.datetime", FrozenDatetime), \
+                patch("project_os_bridge.workos_auth.time.time", return_value=now):
+            token = self.token({"iat": now + 3, "nbf": now + 3, "exp": now + 300})
+            with self.assertRaises(jwt.exceptions.ImmatureSignatureError):
+                jwt.decode(token, self.key.public_key(), algorithms=["RS256"],
+                           issuer=ISSUER, audience=RESOURCE, leeway=0)
+            self.assertIsNotNone(self.verify(token))
+            for field in ("iat", "nbf"):
+                for seconds in (0, 3, 5, 6):
+                    with self.subTest(field=field, seconds=seconds):
+                        result = self.verify(self.token({field: now + seconds}))
+                        self.assertEqual(result is not None, seconds <= 5)
+            for seconds in (-6, -5, -1, 0, 1):
+                with self.subTest(expiry=seconds):
+                    result = self.verify(self.token({"iat": now - 300, "exp": now + seconds}))
+                    self.assertEqual(result is not None, seconds > 0)
+                    if result is not None:
+                        self.assertEqual(result.expires_at, now + seconds)
+            for changes in ({"iat": now + 2, "exp": now + 2},
+                            {"nbf": now + 4, "exp": now + 4},
+                            {"nbf": now + 5, "exp": now + 4},
+                            {"iat": now, "exp": now + 3601},
+                            {"iat": str(now + 1)}, {"nbf": str(now + 1)},
+                            {"exp": str(now + 300)},
+                            {"iat": now + 3, "sub": "user_other"},
+                            {"iat": now + 3, "aud": "other"},
+                            {"iat": now + 3, "scope": "openid admin"}):
+                with self.subTest(changes=changes):
+                    self.assertIsNone(self.verify(self.token(changes)))
+            self.assertIsNone(self.verify(self.token({"iat": now + 3}, key=self.other)))
+
+    def test_clock_skew_http_contract(self):
+        jobs = Jobs(self.root, Policy([(SUBJECT, "read", "disposable")]))
+        app = build_http_app(self.verifier, jobs)
+        now = int(time.time())
+        # Long-lived boundaries in this HTTP test; exact edges tested above.
+        accepted = self.token({"iat": now + 3, "nbf": now + 3, "exp": now + 300})
+        future = self.token({"iat": now + 60})
+        expired = self.token({"iat": now - 300, "exp": now - 1})
+        init = {"jsonrpc": "2.0", "id": 1, "method": "initialize",
+                "params": {"protocolVersion": "2025-11-25", "capabilities": {},
+                           "clientInfo": {"name": "test", "version": "1"}}}
+        with TestClient(app, base_url="http://127.0.0.1:8765") as client:
+            def call(token):
+                return client.post("/mcp", json=init, headers={
+                    "Accept": "application/json, text/event-stream",
+                    "Authorization": "Bearer " + token})
+            for token in (future, expired):
+                response = call(token)
+                self.assertEqual(response.status_code, 401)
+                self.assertIn("www-authenticate", response.headers)
+                self.assertNotIn("TOKEN_NOT_YET_VALID", response.text + str(response.headers))
+                self.assertNotIn("TOKEN_EXPIRED", response.text + str(response.headers))
+            self.assertEqual(call(accepted).status_code, 200)
+            self.flag.unlink()
+            response = call(accepted)
+            self.assertEqual(response.status_code, 403)
+            self.assertNotIn("www-authenticate", response.headers)
+        raw = (self.root / AUTH_AUDIT_NAME).read_text()
+        self.assertEqual([json.loads(line)["auth_outcome"] for line in raw.splitlines()],
+                         ["TOKEN_NOT_YET_VALID", "TOKEN_EXPIRED", "TOKEN_ACCEPTED", "TOKEN_ACCEPTED"])
+        for token in (future, expired, accepted):
+            self.assertNotIn(token, raw)
 
     def test_malformed_numeric_dates_fail_closed(self):
         for field in ("exp", "iat", "nbf"):
@@ -232,7 +307,7 @@ class AuthTests(unittest.TestCase):
             (self.token({"scope": ["openid"]}), "TOKEN_SCOPE_INVALID"),
             (self.token({"scope": "openid private-fixture-scope"}), "TOKEN_SCOPE_INVALID"),
             (self.token({"exp": now + 7200}), "TOKEN_TEMPORAL_CLAIM_INVALID"),
-            (self.token({"nbf": now + 600}), "TOKEN_TEMPORAL_CLAIM_INVALID"),
+            (self.token({"nbf": now + 600}), "TOKEN_NOT_YET_VALID"),
             (self.token({"iat": "private-fixture-date"}), "TOKEN_TEMPORAL_CLAIM_INVALID"),
             (self.token({"iss": "https://private-fixture.authkit.app"}), "TOKEN_ISSUER_INVALID"),
         ]

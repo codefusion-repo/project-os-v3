@@ -21,6 +21,8 @@ SCOPE = "openid"
 CLIENT_ID = "https://chatgpt.com/oauth/client.json"
 SCOPES = {"openid", "profile", "email", "offline_access"}
 MAX_JWKS = 65536
+# Small clock skew allowance for newly issued tokens, never for expiry.
+CLOCK_SKEW_SECONDS = 5
 
 
 class AuthOutcome(str, Enum):
@@ -37,6 +39,7 @@ class AuthOutcome(str, Enum):
     TOKEN_SESSION_CLAIM_INVALID = "TOKEN_SESSION_CLAIM_INVALID"
     TOKEN_SCOPE_INVALID = "TOKEN_SCOPE_INVALID"
     TOKEN_TEMPORAL_CLAIM_INVALID = "TOKEN_TEMPORAL_CLAIM_INVALID"
+    TOKEN_NOT_YET_VALID = "TOKEN_NOT_YET_VALID"
     TOKEN_ISSUER_INVALID = "TOKEN_ISSUER_INVALID"
     JWKS_UNAVAILABLE = "JWKS_UNAVAILABLE"
     TOKEN_ACCEPTED = "TOKEN_ACCEPTED"
@@ -190,6 +193,7 @@ class Verifier:
             except (jwt.PyJWTError,ValueError,TypeError,KeyError,OSError,httpx.HTTPError,OverflowError,RecursionError):
                 return observe_auth(AuthOutcome.JWKS_UNAVAILABLE)
             claims = jwt.decode(token,key,algorithms=["RS256"],issuer=self.issuer,audience=self.resource,
+                leeway=CLOCK_SKEW_SECONDS,
                 options={"require":["iss","aud","sub","client_id","sid","jti","scope","iat","exp"],"strict_aud":True})
             if claims["sub"] != self.subject:
                 return observe_auth(AuthOutcome.TOKEN_SUBJECT_INVALID)
@@ -205,6 +209,12 @@ class Verifier:
             if SCOPE not in scopes or not scopes <= SCOPES:
                 return observe_auth(AuthOutcome.TOKEN_SCOPE_INVALID)
             if ("nbf" in claims and type(claims["nbf"]) is not int) or type(claims["exp"]) is not int or type(claims["iat"]) is not int or not 0 < claims["exp"]-claims["iat"] <= 3600:
+                return observe_auth(AuthOutcome.TOKEN_TEMPORAL_CLAIM_INVALID)
+            # PyJWT's leeway applies to exp as well as iat/nbf. Restore the
+            # strict expiry boundary before returning any authenticated token.
+            if claims["exp"] <= time.time():
+                return observe_auth(AuthOutcome.TOKEN_EXPIRED)
+            if "nbf" in claims and claims["nbf"] >= claims["exp"]:
                 return observe_auth(AuthOutcome.TOKEN_TEMPORAL_CLAIM_INVALID)
             result = AccessToken(token=token,client_id=CLIENT_ID,subject=self.subject,
                 scopes=sorted(scopes),expires_at=claims["exp"],resource=self.resource,claims={"iss":self.issuer})
@@ -229,7 +239,9 @@ class Verifier:
                 return observe_auth(AuthOutcome.TOKEN_SUBJECT_INVALID)
             if isinstance(exc, jwt.exceptions.InvalidJTIError):
                 return observe_auth(AuthOutcome.TOKEN_SESSION_CLAIM_INVALID)
-            if isinstance(exc, (jwt.exceptions.InvalidIssuedAtError, jwt.exceptions.ImmatureSignatureError)):
+            if isinstance(exc, jwt.exceptions.ImmatureSignatureError):
+                return observe_auth(AuthOutcome.TOKEN_NOT_YET_VALID)
+            if isinstance(exc, jwt.exceptions.InvalidIssuedAtError):
                 return observe_auth(AuthOutcome.TOKEN_TEMPORAL_CLAIM_INVALID)
             return observe_auth(AuthOutcome.TOKEN_CLAIMS_INVALID)
 
