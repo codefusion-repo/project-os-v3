@@ -589,6 +589,65 @@ class AuthTests(unittest.TestCase):
                 self.assertNotIn("candidate-context", denied.text)
                 self.assertEqual(request.call_count, count + 1)
 
+    def test_candidate_github_context_expires_during_http_read(self):
+        jobs = Jobs(self.root, Policy([]))
+        reader = GitHubReader(Policy([(SUBJECT, "github_read", "demo")]),
+                              {"demo": "example/demo"}, self.root)
+        provider = GitHubContext(reader, lambda *grant:
+                                 grant == (SUBJECT, "demo", "example/demo"))
+        app = build_http_app(self.verifier, jobs, github_provider=provider)
+        now = int(time.time())
+        expires_at = now + 300
+        headers = {"Accept": "application/json, text/event-stream",
+                   "Authorization": "Bearer " + self.token({"exp": expires_at})}
+        init = {"jsonrpc": "2.0", "id": 1, "method": "initialize",
+                "params": {"protocolVersion": "2025-11-25", "capabilities": {},
+                           "clientInfo": {"name": "test", "version": "1"}}}
+        call = {"jsonrpc": "2.0", "id": 2, "method": "tools/call",
+                "params": {"name": "github_context", "arguments": {"project": "demo", "numbers": [1]}}}
+
+        # Move only the handler's clock; JWT verification and the HTTP stack
+        # retain their real clocks. No sleeps or real upstream traffic.
+        with patch("project_os_bridge.authenticated.time", wraps=time) as clock:
+            clock.time.return_value = now
+
+            def fake(endpoint):
+                if "/comments?" in endpoint:
+                    return {"complete": True, "data": []}
+                return {"complete": True, "data": {"number": 1, "title": "expiry-fixture-context", "comments": 0}}
+
+            with patch.object(reader, "_request", side_effect=fake) as request:
+                with TestClient(app, base_url="http://127.0.0.1:8765") as client:
+                    response = client.post("/mcp", headers=headers, json=init)
+                    self.assertEqual(response.status_code, 200)
+                    headers["MCP-Protocol-Version"] = response.json()["result"]["protocolVersion"]
+                    response = client.post("/mcp", headers=headers, json=call)
+                    self.assertEqual(response.status_code, 200)
+                    self.assertFalse(response.json()["result"].get("isError", False))
+                    self.assertIn("expiry-fixture-context", response.text)
+                    self.assertEqual(request.call_count, 2)
+
+                    def expire(endpoint):
+                        result = fake(endpoint)
+                        # Equality with exp must already be denied.
+                        clock.time.return_value = expires_at
+                        return result
+
+                    request.reset_mock()
+                    request.side_effect = expire
+                    response = client.post("/mcp", headers=headers, json=call)
+                    self.assertEqual(response.status_code, 200)
+                    self.assertTrue(response.json()["result"].get("isError", False))
+                    self.assertNotIn("expiry-fixture-context", response.text)
+                    request.assert_called_once_with("repos/example/demo/issues/1")
+                    self.assertTrue(self.verifier.enabled())
+                    self.assertEqual(provider.require(SUBJECT, "demo"), "example/demo")
+
+                    # The same logically expired session cannot start more reads.
+                    response = client.post("/mcp", headers=headers, json=call)
+                    self.assertTrue(response.json()["result"].get("isError", False))
+                    request.assert_called_once_with("repos/example/demo/issues/1")
+
     def test_http_transport(self):
         policy=Policy((SUBJECT,op,"disposable") for op in ("submit","read","cancel","github_read"))
         jobs=Jobs(self.root,policy)
