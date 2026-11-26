@@ -71,14 +71,16 @@ def build_server(verifier, jobs, fixture_reader=None, *, fixture_image=None, dia
         return token.subject
 
     @mcp.tool(annotations=read)
-    def health() -> dict:
-        """Report authenticated disposable service status."""
+    async def health() -> dict:
+        """Report authenticated service status and local capability admission."""
         actor = principal()
         result = {"status":"ready","caller_identity_verified":True,"repository_access":False,"mode":"authenticated-disposable",
                   "git_fixture_available":fixture_enabled(verifier, fixture_image, context_id)}
         if github_provider is not None:
             if type(github_provider) is MultiProjectContext:
-                available = github_provider.available(actor)
+                available = await asyncio.to_thread(github_provider.available, actor)
+                if principal() != actor:
+                    raise PermissionError("DENIED")
             else:
                 available = False
                 for project in github_provider.reader.repositories:
@@ -195,7 +197,8 @@ def build_server(verifier, jobs, fixture_reader=None, *, fixture_image=None, dia
     if type(github_provider) is MultiProjectContext:
         @mcp.tool(annotations=read)
         async def methodology_context(project: StrictStr, workflow: StrictStr,
-                                      skills: list[StrictStr], templates: list[StrictStr]) -> dict:
+                                      skills: list[StrictStr], templates: list[StrictStr],
+                                      expected_revision: StrictStr | None = None) -> dict:
             """Read selected versioned methodology documents; no arbitrary file paths."""
             def observe(outcome):
                 try:
@@ -218,7 +221,7 @@ def build_server(verifier, jobs, fixture_reader=None, *, fixture_image=None, dia
 
                 check()
                 result = await asyncio.to_thread(installed_context, path, repository,
-                                                 workflow, skills, templates)
+                                                 workflow, skills, templates, expected_revision)
                 check()
                 observe("complete")
                 check()

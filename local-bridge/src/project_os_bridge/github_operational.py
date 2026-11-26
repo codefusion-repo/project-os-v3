@@ -91,7 +91,7 @@ def checked_project_config(path):
     try:
         tracked = git("ls-files", "--", ".project-os/")
         ignored = git("check-ignore", "--", PROJECT_CONFIG)
-    except subprocess.TimeoutExpired:
+    except (OSError, subprocess.TimeoutExpired):
         raise PermissionError("Project configuration exclusion could not be verified") from None
     if tracked.returncode != 0 or tracked.stdout or ignored.returncode != 0:
         raise PermissionError("Project configuration must be excluded from Git")
@@ -134,7 +134,10 @@ def read_runtime(path):
 
 
 def registry_entries(path):
-    entries = read_runtime(path).get("github_projects")
+    return validate_entries(read_runtime(path).get("github_projects"))
+
+
+def validate_entries(entries):
     if not isinstance(entries, dict) or len(entries) > MAX_PROJECTS:
         raise ValueError("Invalid project grants")
     for project, entry in entries.items():

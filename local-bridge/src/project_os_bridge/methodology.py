@@ -82,13 +82,14 @@ def selection(workflow, skills, templates):
             "adapters/browser-chat.md"]
 
 
-def build_context(kit, installed, project_root, repository, workflow, skills, templates):
+def build_context(kit, installed, project_root, repository, workflow, skills, templates, *, expected_revision=None):
     paths = selection(workflow, skills, templates)
     checkout(kit, CANONICAL)
     installed = commit(kit, installed)
     if repository.casefold() == CANONICAL:
         version = installed
         agents = document(kit, CANONICAL, installed, "AGENTS.md")
+        paths.extend(["docs/PRODUCT.md", "local-bridge/MVP.md"])
     else:
         checkout(project_root, repository)
         head = commit(project_root, git(project_root, "rev-parse", "--verify", "HEAD").decode().strip())
@@ -102,6 +103,8 @@ def build_context(kit, installed, project_root, repository, workflow, skills, te
             raise ValueError("METHODOLOGY_VERSION_UNAVAILABLE")
         version = commit(kit, refs[0])
         git(kit, "merge-base", "--is-ancestor", version, installed)
+    if expected_revision is not None and expected_revision != version:
+        raise ValueError("METHODOLOGY_VERSION_MISMATCH")
     documents = [agents] + [document(kit, CANONICAL, version, path) for path in paths]
     result = {"complete": True, "methodology_revision": version,
               "installed_revision": installed, "documents": documents,
@@ -111,7 +114,7 @@ def build_context(kit, installed, project_root, repository, workflow, skills, te
     return result
 
 
-def installed_context(project_config, repository, workflow, skills, templates):
+def installed_context(project_config, repository, workflow, skills, templates, expected_revision=None):
     venv = Path(sys.prefix)
     if venv.name != ".venv" or venv.parent.name != "local-bridge":
         raise ValueError("METHODOLOGY_UNAVAILABLE")
@@ -122,4 +125,4 @@ def installed_context(project_config, repository, workflow, skills, templates):
             or not re.fullmatch(r"[0-9a-f]{64}", receipt["wheel_sha256"])):
         raise ValueError("METHODOLOGY_UNAVAILABLE")
     return build_context(venv.parents[1], receipt["sha"], project_config.parent.parent,
-                         repository, workflow, skills, templates)
+                         repository, workflow, skills, templates, expected_revision=expected_revision)

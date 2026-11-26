@@ -21,7 +21,8 @@ class MethodologyTests(unittest.TestCase):
                      "skills/github-traceability/SKILL.md": "traceability\n",
                      "skills/testing/SKILL.md": "tests\n",
                      "templates/comment.md": "comment\n",
-                     "adapters/browser-chat.md": "browser\n"}
+                     "adapters/browser-chat.md": "browser\n",
+                     "docs/PRODUCT.md": "product\n", "local-bridge/MVP.md": "contract\n"}
         for path, content in documents.items():
             target = self.kit / path
             target.parent.mkdir(parents=True, exist_ok=True)
@@ -67,6 +68,10 @@ class MethodologyTests(unittest.TestCase):
     def test_kit_uses_installed_base_and_rejects_unknown_or_unsafe_selection(self):
         result = build_context(self.kit, self.installed, self.project, CANONICAL, "implement", [], [])
         self.assertEqual(result["methodology_revision"], self.installed)
+        self.assertIn("docs/PRODUCT.md", {doc["path"] for doc in result["documents"]})
+        with self.assertRaises(ValueError):
+            build_context(self.kit, self.installed, self.project, CANONICAL, "implement", [], [],
+                          expected_revision=self.base)
         for workflow, skills in [("../AGENTS", []), ("implement", ["../secret"]), ("missing", [])]:
             with self.assertRaises(ValueError):
                 build_context(self.kit, self.installed, self.project, CANONICAL, workflow, skills, [])

@@ -1,5 +1,6 @@
-"""Operator-controlled setup helpers; never execute workflows or grant access."""
+"""Operator-controlled setup helpers; never execute workflows or enable services."""
 import os
+import json
 import platform
 import re
 import shutil
@@ -76,11 +77,98 @@ def private_setup(root, sha, run, out, ask, launch):
     return 0
 
 
-def guide(mode, root, run=probe, out=print, ask=input, interactive=False, launch=execute):
+
+def enroll_project(root, project, local, *, interactive, out=print, ask=input,
+                   launch=execute, run=probe):
+    """Reuse the existing project-local preference writer and installed setup."""
+    if not interactive:
+        out("Sin TTY: no se modifica la configuración ni se conceden grants.")
+        return 1
+    try:
+        project = local.path(project)
+        if project == root or local.git_root(project) != project:
+            out("Selecciona el checkout Git del proyecto, separado de la instalación central.")
+            return 1
+        if local.private_tracked(project / ".project-os"):
+            out("BLOCKED: configuración privada rastreada.")
+            return 1
+        config = local.read_config(project)
+        if config is None or config["version"] != 2:
+            out("Configura/adopta primero el proyecto mediante el selector existente.")
+            return 1
+        instance = local.path(ask("Instancia Bridge existente [~/.project-os-bridge]: ").strip()
+                              or "~/.project-os-bridge")
+        python = root / "local-bridge/.venv/bin/python"
+        if not python.is_file() or not instance.is_dir():
+            out("BLOCKED: falta la instalación o instancia existente; no se reinstalará.")
+            return 1
+        receipt = python.parent.parent / ".project-os-bridge-install.json"
+        try:
+            if receipt.is_symlink() or receipt.stat().st_size > 1024:
+                raise ValueError("Invalid receipt")
+            installed = json.loads(receipt.read_text(encoding="utf-8"))
+            sha = installed["sha"]
+            if (not isinstance(installed["wheel_sha256"], str)
+                    or not re.fullmatch(r"[0-9a-f]{64}", installed["wheel_sha256"])
+                    or not reviewed_checkout(root, sha, run)):
+                raise ValueError("Unverified installation")
+        except (OSError, ValueError, KeyError, TypeError):
+            out("BLOCKED: instalación revisada no verificable; no se modificó el proyecto.")
+            return 1
+        command = [str(python), "-I", "-m", "project_os_bridge.setup_instance", "--root", str(instance)]
+        binding = config.get("github_context")
+        if binding is None:
+            for index, repository in enumerate(config["repositories"], 1):
+                out(f"{index}. {repository}")
+            choice = ask("Repositorio autorizado (número, vacío cancela): ").strip()
+            if not choice:
+                return 0
+            if not choice.isascii() or not choice.isdecimal() or not 1 <= int(choice) <= len(config["repositories"]):
+                out("Selección inválida.")
+                return 1
+            repository = config["repositories"][int(choice) - 1]
+            default = repository.rsplit("/", 1)[-1]
+            alias = ask(f"Identificador MCP [{default}]: ").strip() or default
+            if not re.fullmatch(r"[A-Za-z0-9_-]{1,80}", alias):
+                out("Identificador inválido.")
+                return 1
+            if not approved("¿Verificar la credencial dedicada existente para " + repository + "?", ask):
+                return 0
+            rc, output = run(command + ["--github-repository", repository], timeout=25)
+            value = output.strip()
+            if rc or not re.fullmatch(r"[1-9][0-9]{0,18}", value) or int(value) > 2**63 - 1:
+                out("BLOCKED: la credencial dedicada no acredita ese repositorio.")
+                return 1
+            binding = {"project": alias, "repository": repository, "repository_id": int(value)}
+        if not approved("¿Preparar lectura MCP de " + binding["repository"]
+                        + " como " + binding["project"]
+                        + ", con credencial dedicada read-only y controles aplicables satisfechos?", ask):
+            return 0
+        if config.get("github_context") != binding:
+            updated = {**config, "github_context": binding}
+            out(local.save_config(project, updated, expected=config))
+        rc = launch(command + ["--github-project", str(project / ".project-os/config.json")])
+        if rc:
+            out("Grant no confirmado; se conserva la preferencia local. No se modifican credenciales ni se reinicia.")
+            return 1
+        out("Usa el identificador del proyecto en las herramientas MCP. No se amplió el token ni se activaron marcadores.")
+        return 0
+    except (OSError, ValueError, EOFError, KeyboardInterrupt):
+        out("Configuración interrumpida o bloqueada; conserva el estado y revisa antes de reintentar.")
+        return 1
+
+
+def guide(mode, root, run=probe, out=print, ask=input, interactive=False, launch=execute, project=None, local=None):
     if mode not in MODES:
         raise ValueError("Modo inválido")
     root = Path(root).resolve()
     out("Project OS — configuración de proveedores")
+    if project is not None:
+        if mode == "terminal" or local is None:
+            return 1
+        return enroll_project(root, project, local, interactive=interactive,
+                              out=out, ask=ask, launch=launch, run=run)
+    out("Para incorporar un proyecto existente: --providers chatgpt --project RUTA")
     out("Python: " + ("AVAILABLE" if sys.version_info >= (3, 9) else "BLOCKED"))
     for name in ("git", "gh", "python3"):
         rc, _ = run([name, "--version"])
