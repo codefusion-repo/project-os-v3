@@ -103,13 +103,17 @@ RUN test "$(node --version)" = v22.16.0 && npm --version && npm install --packag
 ANDROID_SETUP = """USER root
 RUN apt-get update && apt-get install -y --no-install-recommends openjdk-17-jdk-headless && rm -rf /var/lib/apt/lists/*
 ENV JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64 ANDROID_HOME=/opt/android-sdk ANDROID_SDK_ROOT=/opt/android-sdk
+# Numeric runner UID need not have an NSS account in the image. Android Gradle
+# must resolve its synthetic debug signing location consistently with HOME.
+ENV JAVA_TOOL_OPTIONS=-Duser.home=/home/smoke ANDROID_USER_HOME=/home/smoke/.android
 ENV PATH=/opt/android-sdk/cmdline-tools/latest/bin:/opt/android-sdk/platform-tools:$PATH
 RUN mkdir -p /opt/android-sdk/cmdline-tools && curl --fail --show-error --silent --location --retry 2 https://dl.google.com/android/repository/commandlinetools-linux-15859902_latest.zip -o /tmp/android.zip && echo '4e4c464f145a7512b57d088ac6c278c03c9eea610886b35a5e0804e74eedf583  /tmp/android.zip' | sha256sum -c - && unzip -q /tmp/android.zip -d /tmp/android-tools && mv /tmp/android-tools/cmdline-tools /opt/android-sdk/cmdline-tools/latest && rm /tmp/android.zip && chown -R "$UID:$GID" /opt/android-sdk
 USER $UID:$GID
 RUN yes | sdkmanager --licenses >/dev/null && sdkmanager 'platform-tools' 'platforms;android-35' 'platforms;android-36' 'build-tools;35.0.0' 'build-tools;36.0.0' 'ndk;27.0.12077973'
 RUN flutter precache --android && flutter create --platforms=android --project-name=synthetic_mobile --org=com.example --no-pub /home/smoke/generated && cp -a /home/smoke/generated/android /fixture/android
 RUN printf 'org.gradle.jvmargs=-Xmx2g -XX:MaxMetaspaceSize=512m -Dfile.encoding=UTF-8\\nandroid.useAndroidX=true\\norg.gradle.workers.max=2\\norg.gradle.daemon=false\\n' > android/gradle.properties
-RUN flutter pub get && flutter build apk --debug --no-pub
+RUN test "$(id -u)" = "$UID" && test "$HOME" = /home/smoke && mkdir -p "$ANDROID_USER_HOME" && (java -XshowSettings:properties -version 2>&1 | grep -E '^[[:space:]]*user[.]home = /home/smoke$')
+RUN flutter pub get && flutter build apk --debug --no-pub && test -s "$ANDROID_USER_HOME/debug.keystore" && test ! -L "$ANDROID_USER_HOME/debug.keystore" && echo CI_SYNTHETIC_DEBUG_SIGNING_HOME_PASS
 RUN tar --exclude=android/local.properties --exclude=android/.gradle --exclude=android/.kotlin --exclude=android/app/build --exclude=android/build --exclude=android/app/src/main/java/io/flutter/plugins/GeneratedPluginRegistrant.java -cf /home/smoke/android-source.tar android && rm -rf /fixture/build /fixture/android /fixture/.dart_tool && mkdir -p /home/smoke/.gradle/init.d && printf 'gradle.startParameter.offline = true\\n' > /home/smoke/.gradle/init.d/ci-offline.gradle
 """
 
@@ -228,6 +232,9 @@ def apk_executor(image, output):
         # consumes only the pre-acquired toolchain/cache and prepared source.
         setup = ('set -eu; cmp /source/pubspec.lock /fixture/pubspec.lock; '
                  'test ! -e /fixture/build; test ! -e /fixture/android; '
+                 'test "$ANDROID_USER_HOME" = /home/smoke/.android; '
+                 'test -s "$ANDROID_USER_HOME/debug.keystore"; '
+                 'test ! -L "$ANDROID_USER_HOME/debug.keystore"; '
                  'cp -a /source/. /fixture/; flutter pub get --offline; '
                  'cmp /source/pubspec.lock pubspec.lock; "$@"; '
                  'apk=build/app/outputs/flutter-apk/app-debug.apk; '
@@ -347,7 +354,9 @@ def main():
                 files = {**files, **native_files(image)}
                 record["android_sdk"] = command([*container_args(image), image, "sdkmanager", "--list_installed"],
                                                 capture=True).decode("utf-8", "replace")[:16000]
-                record["java"] = command([*container_args(image), image, "java", "-version"], capture=True).decode("utf-8", "replace")
+                record["java"] = subprocess.run([*container_args(image), image, "java", "-version"],
+                                                stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                                stdin=subprocess.DEVNULL, timeout=30, check=True).stdout.decode("utf-8", "replace")[:4096]
                 _, _, executed = prepare(folder, files, lock, lock_bytes, profiles, image_id=image,
                                          executor=apk_executor(image, output))
                 record["execution"] = executed
