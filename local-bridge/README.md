@@ -123,6 +123,17 @@ Follow [WSL-VALIDATION.md](WSL-VALIDATION.md) for the grouped operator procedure
 ### Production installation evidence (LB-01)
 The installer builds two wheels from independently extracted copies of the reviewed Git tree with the commit timestamp as SOURCE_DATE_EPOCH and identical locked dependencies, and compares filenames and SHA-256 before installing either. A mismatch stops installation. This proves reproducibility only for the observed host/toolchain, not an entire venv or a different OS. CI uses the exact observed 29-package auditor closure in requirements-audit.lock, verifies wheel bytes and installed versions, and retains raw JSON and strict exit codes; a missing or inconsistent report is a failure. The strict vendor audit remains blocking until remediated or an explicitly reviewed disposition is authorized. Host Python/OS/CA/Git/curl/tar remain prerequisites. For updates use the original checkout and the explicit maintenance flow below; no permanent checkout per PR or issue.
 
+### Disposable revision/package profile (LB-07 first slice)
+
+Local-only development evidence, not a real-project execution profile. Reuse the existing fixture CLI and durable job queue with a new empty private disposable state directory. Initialize the fixed Bridge-created Git source, copy its returned full HEAD into REVIEWED_FIXTURE_SHA, then validate/package that exact revision:
+
+```bash
+project-os-bridge-fixture --state-dir "$DISPOSABLE_STATE" --profile fixture-package --initialize
+project-os-bridge-fixture --state-dir "$DISPOSABLE_STATE" --profile fixture-package --expected-sha "$REVIEWED_FIXTURE_SHA" --request-key package-1
+```
+
+The state directory must already exist, be private and empty at initialization; never use the active Bridge instance. Each job creates its own fixed worktree and builds a deterministic ZIP of the fixed fixture data using trusted stdlib code, with no repository code execution or dependency acquisition. The package grant, exact SHA, idempotency key, bounded storage, worker exclusivity and no replay of interrupted jobs apply. Results contain the revision, validation/build result codes and artifact name, SHA-256 and size, without source text or absolute paths. The artifact remains local under the job-owned package directory; evidence-only retrieval uses the existing `--evidence-job-id` option with the same profile. Partial workspaces and artifacts are retained, never adopted or overwritten. This is not a Flutter/Node/Django build, a general sandbox, a real project mapping, or an MCP handler. Existing OCI fixture and operational profile remain unchanged. Real-project preparation and execution require reviewed mappings/grants and applicable profile-specific isolation and authorization.
+
 ### Single-installation maintenance
 
 Authenticated `health` reports `installation.status=receipt_observed` with the local receipt's `sha` and `wheel_sha256` in a non-fixture runtime (not an attestation of installed files). Missing or invalid receipts report `unavailable`. [#48](https://github.com/codefusion-repo/project-os-v3/issues/48) adds an opt-in remote wrapper around the same maintenance procedure.

@@ -16,11 +16,13 @@ SHA = re.compile(r"[0-9a-f]{40}")
 
 
 class GitFixture:
-    def __init__(self, root: Path, policy: Policy):
+    def __init__(self, root: Path, policy: Policy, *, job_id=None):
+        if job_id is not None and (not isinstance(job_id, str) or not re.fullmatch(r"[0-9a-f]{32}", job_id)):
+            raise ValueError("Invalid fixture job identity")
         self.root = root
         self.policy = policy
         self.repo = root / "repo"
-        self.worktree = root / "worktree"
+        self.worktree = root / ("worktree" if job_id is None else "worktree-" + job_id)
         self._check_root()
 
     def _check_root(self):

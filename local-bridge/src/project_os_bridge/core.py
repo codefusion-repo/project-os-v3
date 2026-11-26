@@ -34,7 +34,7 @@ class Jobs:
         self.probe = Probe(root)
         self.policy = policy
         self.workflows = frozenset(workflows)
-        if not self.workflows <= {"probe_check", "git_fixture_check"}:
+        if not self.workflows <= {"probe_check", "git_fixture_check", "fixture_package"}:
             raise ValueError("Unknown workflow configuration")
         self.db = root / "jobs.sqlite3"
         import os
@@ -52,6 +52,12 @@ class Jobs:
             c.execute("""CREATE TABLE IF NOT EXISTS events (
                 id INTEGER PRIMARY KEY, job_id TEXT NOT NULL, state TEXT NOT NULL,
                 at TEXT NOT NULL)""")
+
+            # Parameters are scoped to the disposable package profile. Keep the
+            # existing jobs schema readable/writable by retained older runtimes.
+            if "fixture_package" in self.workflows:
+                c.execute("""CREATE TABLE IF NOT EXISTS package_inputs (
+                    job_id TEXT PRIMARY KEY, expected_sha TEXT NOT NULL)""")
 
             # Legacy interrupted/uncertain fixtures have no recorded identity.
             # Do not infer absence or silently migrate their external effects.
@@ -95,12 +101,18 @@ class Jobs:
     def event(self, c, job_id, state):
         c.execute("INSERT INTO events(job_id,state,at) VALUES(?,?,?)", (job_id,state,now()))
 
-    def submit(self, principal, resource, workflow, request_key):
+    def submit(self, principal, resource, workflow, request_key, *, expected_sha=None):
         self.policy.require(principal, "submit", resource)
         if resource != "disposable" or workflow not in self.workflows:
             raise ValueError("Unknown workflow or resource")
         if workflow == "git_fixture_check":
             self.policy.require(principal, "git_workflow", resource)
+        if workflow == "fixture_package":
+            self.policy.require(principal, "fixture_package", resource)
+            if not isinstance(expected_sha, str) or not re.fullmatch(r"[0-9a-f]{40}", expected_sha):
+                raise ValueError("Full fixture SHA required")
+        elif expected_sha is not None:
+            raise ValueError("Unexpected revision parameter")
         if not isinstance(request_key, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,80}", request_key):
             raise ValueError("Invalid request key")
         with self.transaction() as c:
@@ -109,6 +121,11 @@ class Jobs:
             if row:
                 if row["workflow"] != workflow:
                     raise ValueError("Idempotency conflict")
+                if workflow == "fixture_package":
+                    parameters = c.execute("SELECT expected_sha FROM package_inputs WHERE job_id=?",
+                                           (row["id"],)).fetchone()
+                    if not parameters or parameters["expected_sha"] != expected_sha:
+                        raise ValueError("Idempotency conflict")
                 return row["id"]
             if c.execute("SELECT 1 FROM fixture_effects WHERE resolved_at IS NULL LIMIT 1").fetchone():
                 raise QueueLimitError("RECONCILIATION_REQUIRED")
@@ -121,10 +138,15 @@ class Jobs:
             if workflow == "git_fixture_check" and c.execute(
                     "SELECT count(*) FROM jobs WHERE workflow='git_fixture_check'").fetchone()[0] >= 8:
                 raise QueueLimitError("FIXTURE_STORAGE_LIMIT")
+            if workflow == "fixture_package" and c.execute(
+                    "SELECT count(*) FROM jobs WHERE workflow='fixture_package'").fetchone()[0] >= 8:
+                raise QueueLimitError("FIXTURE_STORAGE_LIMIT")
             job_id = uuid.uuid4().hex
             stamp = now()
             c.execute("INSERT INTO jobs VALUES(?,?,?,?,?,?,?,?,?)",
                       (job_id,principal,resource,workflow,request_key,"QUEUED",None,stamp,stamp))
+            if workflow == "fixture_package":
+                c.execute("INSERT INTO package_inputs VALUES(?,?)", (job_id, expected_sha))
             self.event(c, job_id, "QUEUED")
             return job_id
 
@@ -164,6 +186,12 @@ class Jobs:
                     self.policy.require(row["principal"], "submit", row["resource"])
                     if row["workflow"] not in self.workflows:
                         raise PermissionError("Workflow disabled")
+                    if row["workflow"] == "fixture_package":
+                        self.policy.require(row["principal"], "fixture_package", row["resource"])
+                        parameters = c.execute("SELECT expected_sha FROM package_inputs WHERE job_id=?",
+                                               (row["id"],)).fetchone()
+                        if not parameters or not re.fullmatch(r"[0-9a-f]{40}", parameters["expected_sha"]):
+                            raise PermissionError("Missing package revision")
                     if row["workflow"] == "git_fixture_check":
                         self.policy.require(row["principal"], "git_workflow", row["resource"])
                         if fixture_context is None:
@@ -174,6 +202,8 @@ class Jobs:
                     continue
                 self.transition(c,row["id"],"QUEUED","RUNNING")
                 claimed = dict(row)
+                if row["workflow"] == "fixture_package":
+                    claimed["expected_sha"] = parameters["expected_sha"]
                 if row["workflow"] == "git_fixture_check":
                     token = uuid.uuid4().hex
                     c.execute("INSERT INTO fixture_effects(job_id,token,context_id) VALUES(?,?,?)",

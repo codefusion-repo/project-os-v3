@@ -58,6 +58,9 @@ def run_pending(jobs: Jobs, *, fixture_image=None, podman_context=None, context_
                 if row["workflow"] == "probe_check":
                     result = jobs.probe.read()
                     state = "SUCCEEDED"
+                elif row["workflow"] == "fixture_package":
+                    from .workspace_fixture import run_package
+                    state, result = run_package(jobs, row)
                 elif row["workflow"] == "git_fixture_check":
                     if row["effect_context"] != context_id or not fixture_ready():
                         state, result = "BLOCKED", {"reason": "FIXTURE_BINDING_UNAVAILABLE"}

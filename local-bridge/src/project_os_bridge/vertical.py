@@ -126,11 +126,20 @@ def main():
     parser.add_argument("--state-dir", type=Path, required=True)
     mode = parser.add_mutually_exclusive_group(required=True)
     mode.add_argument("--request-key")
+    mode.add_argument("--initialize", action="store_true", help="Initialize a new disposable package source")
     mode.add_argument("--evidence-job-id", help="Retrieve existing evidence without executing a job")
+    parser.add_argument("--profile", choices=("fixture-python", "fixture-package"), default="fixture-python")
+    parser.add_argument("--expected-sha", help="Exact disposable package source SHA")
     parser.add_argument("--podman-context", type=Path, help="Prepared private Podman context")
     parser.add_argument("--image", help="Locally approved image@sha256:digest; never pulled")
     args = parser.parse_args()
     os.umask(0o077)
+    if args.profile == "fixture-package":
+        from .workspace_fixture import package_cli
+        package_cli(args, parser)
+        return
+    if args.initialize or args.expected_sha is not None:
+        parser.error("Package initialization and revision require fixture-package")
     if args.evidence_job_id is not None:
         if args.image is not None or args.podman_context is not None or not re.fullmatch(r"[0-9a-f]{32}", args.evidence_job_id):
             parser.error("Evidence requires a valid job ID and no image")
