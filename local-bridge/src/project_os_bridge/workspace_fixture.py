@@ -19,7 +19,11 @@ ARTIFACT = "fixture.zip"
 
 def require_package(root):
     private_directory(root)
-    if (private_file(root / MARKER).st_size != 0
+    try:
+        marker = private_file(root / MARKER)
+    except FileNotFoundError:
+        raise PermissionError("Package opt-in revoked") from None
+    if (marker.st_size != 0
             or any(os.path.lexists(root / name) for name in
                    ("allow-authenticated-probe", "local-fixture-mode", "fixture-image", "fixture-context"))):
         raise PermissionError("Dedicated package fixture state required")
