@@ -78,6 +78,77 @@ class UpgradeTests(unittest.TestCase):
         self.assertEqual((self.backup / "candidate/identity").read_text(), "new")
 
 
+    def relocate(self, sha, *, unarchive=False, root=None):
+        with upgrade.checkout_guard(self.kit) as (guard, fd):
+            upgrade.relocate_backup(self.kit, guard, sha, self.bound, root,
+                                    unarchive=unarchive)
+
+    def test_consecutive_offline_upgrades_and_reverse_rollback(self):
+        self.replace(self.candidate)
+        archive = self.bridge / (upgrade.ARCHIVE_PREFIX + self.sha)
+        before = (self.backup / upgrade.TRANSACTION).read_bytes()
+        self.relocate(self.sha)
+        self.relocate(self.sha)  # idempotent, no new copy
+        self.assertEqual((archive / upgrade.TRANSACTION).read_bytes(), before)
+        self.assertFalse(self.backup.exists())
+        with self.assertRaises(RuntimeError):
+            upgrade.check_release(self.kit, self.sha, self.guard, self.bound)
+
+        next_sha, next_wheel = "5" * 40, "6" * 64
+        def build(kit, sha, wheel, active, tx, fds):
+            self.make_venv(self.venv, "next")
+            self.write_receipt(self.venv, sha, wheel)
+        with upgrade.checkout_guard(self.kit) as (guard, fd):
+            upgrade.replace(self.kit, next_sha, next_wheel, guard, (fd,),
+                            self.bound, self.sha, self.wheel, run=build)
+        self.assertTrue(archive.is_dir())
+        upgrade.check_release(self.kit, next_sha, self.guard, self.bound)
+        with self.assertRaises(RuntimeError):
+            self.relocate(self.sha, unarchive=True)
+        with upgrade.checkout_guard(self.kit):
+            self.assertTrue(upgrade.restore(self.venv, self.backup, self.active,
+                                            next_sha, self.bound))
+        self.assertEqual((self.venv / "identity").read_text(), "new")
+        self.relocate(next_sha)
+        self.relocate(self.sha, unarchive=True)
+        self.relocate(self.sha, unarchive=True)
+        self.assertEqual((self.backup / upgrade.TRANSACTION).read_bytes(), before)
+        self.assertTrue(self.restore())
+        self.assertEqual((self.venv / "identity").read_text(), "old")
+        self.assertTrue((self.bridge / (upgrade.ARCHIVE_PREFIX + next_sha)).is_dir())
+
+    def test_archive_refuses_active_writer_conflict_and_identity_change(self):
+        self.replace(self.candidate)
+        archive = self.bridge / (upgrade.ARCHIVE_PREFIX + self.sha)
+        upgrade.save_json(self.active, {})
+        with self.assertRaises(RuntimeError):
+            self.relocate(self.sha)
+        self.active.unlink()
+        with patch.object(upgrade, "group_busy", return_value=True):
+            with self.assertRaises(RuntimeError):
+                self.relocate(self.sha)
+        archive.mkdir(mode=0o700)
+        with self.assertRaises(RuntimeError):
+            self.relocate(self.sha)
+        archive.rmdir()
+        self.write_receipt(self.backup / "previous", self.sha, self.wheel)
+        with self.assertRaises(ValueError):
+            self.relocate(self.sha)
+        self.assertTrue(self.backup.is_dir())
+        self.assertFalse(archive.exists())
+
+    def test_archive_rename_interruption_reconciles_same_directory(self):
+        self.replace(self.candidate)
+        archive = self.bridge / (upgrade.ARCHIVE_PREFIX + self.sha)
+        with patch.object(upgrade, "sync_directory", side_effect=OSError("fixture")):
+            with self.assertRaises(OSError):
+                self.relocate(self.sha)
+        self.assertFalse(self.backup.exists())
+        self.assertTrue(archive.is_dir())
+        self.relocate(self.sha)
+        self.relocate(self.sha, unarchive=True)
+        self.assertTrue(self.restore())
+
     def test_multirepo_profile_restored_with_venv_and_grants_archived(self):
         from project_os_bridge.project_enrollment import next_runtime, record_migration
         root = self.kit / "instance"
@@ -99,6 +170,12 @@ class UpgradeTests(unittest.TestCase):
                                 binding=("other", "example/other", 456))
         upgrade.save_json(runtime, multi)
         with patch.object(upgrade, "legacy_binding_current", return_value=True):
+            migration = (self.backup / upgrade.PROFILE_MIGRATION).read_bytes()
+            self.relocate(self.sha, root=root)
+            self.assertEqual(upgrade.profile_json(runtime), multi)
+            self.relocate(self.sha, unarchive=True, root=root)
+            self.assertEqual((self.backup / upgrade.PROFILE_MIGRATION).read_bytes(), migration)
+            self.assertFalse((self.backup / upgrade.PROFILE_RESTORE).exists())
             with upgrade.checkout_guard(self.kit):
                 self.assertTrue(upgrade.restore(self.venv, self.backup, self.active,
                                                 self.sha, self.bound, root))

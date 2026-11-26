@@ -22,6 +22,7 @@ import tempfile
 ORIGIN = "https://github.com/codefusion-repo/project-os-v3.git"
 UNIT = "project-os-bridge.service"
 BACKUP = ".venv-install.rollback"
+ARCHIVE_PREFIX = ".venv-install.archive-"
 GUARD = ".venv-install.guard"
 ACTIVE = "active.json"
 TRANSACTION = "transaction.json"
@@ -89,7 +90,8 @@ def verify_checkout(kit, sha):
         if os.path.lexists(kit / ".git" / name):
             raise ValueError("Git operation in progress")
     # Do not allow tracked files under the maintenance paths, even if ignored.
-    for path in ("local-bridge/.venv", "local-bridge/" + BACKUP, "local-bridge/" + GUARD):
+    for path in ("local-bridge/.venv", "local-bridge/" + BACKUP, "local-bridge/" + GUARD,
+                 "local-bridge/" + ARCHIVE_PREFIX + "*"):
         if git(kit, "ls-files", "--", path):
             raise ValueError("Runtime path tracked in Git")
 
@@ -663,7 +665,7 @@ def legacy_binding_current(locator, binding):
         return False
 
 
-def restore_profile(root, backup, tx):
+def restore_profile(root, backup, tx, *, check_only=False):
     """Restore a legacy-readable profile; archive multi grants, never silently reactivate them."""
     migration = backup / PROFILE_MIGRATION
     archive = backup / PROFILE_RESTORE
@@ -725,7 +727,10 @@ def restore_profile(root, backup, tx):
                  "source": source, "target": target}
         if len(json.dumps(target).encode()) + 1 > 4096:
             raise ValueError("Legacy service configuration exceeds limit")
-        save_json(archive, saved)
+        if not check_only:
+            save_json(archive, saved)
+    if check_only:
+        return
     if current != target:
         if profile_json(runtime, 64 * 1024) != source:
             raise RuntimeError("Profile changed before rollback")
@@ -809,7 +814,8 @@ def initial_install(kit, sha, wheel, guard, fd, run=None):
         run = build_runner()
     venv = kit / "local-bridge" / ".venv"
     active = guard / ACTIVE
-    if os.path.lexists(active) or os.path.lexists(venv.parent / BACKUP):
+    if (os.path.lexists(active) or os.path.lexists(venv.parent / BACKUP)
+            or any(venv.parent.glob(ARCHIVE_PREFIX + "*"))):
         raise RuntimeError("Unresolved maintenance or retained backup")
     if os.path.lexists(venv):
         raise ValueError("Existing bridge environment preserved.")
@@ -829,8 +835,15 @@ def check_release(kit, sha, guard, bound_python, root=None):
     venv = kit / "local-bridge/.venv"
     backup = venv.parent / BACKUP
     if not os.path.lexists(backup):
-        # Cancel an explicit fence before any replacement.
+        # An archived-only transaction must not be followed by enrollment or
+        # activation without its rollback metadata at the original location.
+        if any(venv.parent.glob(ARCHIVE_PREFIX + "*")):
+            raise RuntimeError("Restore rollback slot before release or complete upgrade")
         return
+    validate_completed(venv, backup, sha, bound_python, root)
+
+
+def validate_completed(venv, backup, sha, bound_python, root):
     directory(backup)
     tx = read_json(backup / TRANSACTION)
     verify_transaction(tx, venv, sha, root)
@@ -847,11 +860,51 @@ def check_release(kit, sha, guard, bound_python, root=None):
                 raise RuntimeError("Restored service profile changed; reconcile before release")
     else:
         raise RuntimeError("Incomplete maintenance")
+    return tx
+
+
+def relocate_backup(kit, guard, rollback_sha, bound_python, root, *, unarchive=False):
+    """Move the entire completed transaction, not an executable environment."""
+    if not SHA.fullmatch(rollback_sha or ""):
+        raise ValueError("Exact rollback transaction SHA required")
+    if os.path.lexists(guard / ACTIVE):
+        raise RuntimeError("Unresolved maintenance")
+    venv = kit / "local-bridge/.venv"
+    backup = venv.parent / BACKUP
+    archived = venv.parent / (ARCHIVE_PREFIX + rollback_sha)
+    source, target = (archived, backup) if unarchive else (backup, archived)
+    present = [path for path in (source, target) if os.path.lexists(path)]
+    if len(present) != 1:
+        raise RuntimeError("Missing or conflicting rollback locations")
+    location = present[0]
+    tx = validate_completed(venv, location, rollback_sha, bound_python, root)
+    # Only the normal, same-path receipt-backed case is eligible. Keep the
+    # existing legacy consolidation and quarantine disposition unchanged.
+    if not tx["prior"]["eligible"]:
+        raise RuntimeError("Legacy consolidation requires existing disposition")
+    if (tx["phase"] == "installed" and
+            (os.path.lexists(location / "candidate") or
+             os.path.lexists(location / PROFILE_RESTORE))):
+        raise RuntimeError("Ambiguous installed rollback")
+    if tx["phase"] == "restored" and os.path.lexists(location / "previous"):
+        raise RuntimeError("Ambiguous restored rollback")
+    if any(os.path.ismount(path) for path in
+           (location, location / "previous", location / "candidate")):
+        raise RuntimeError("Rollback mount present")
+    restore_profile(root, location, tx, check_only=True)
+    if location == source:
+        move(source, target)
+    # A retry after a completed rename (including a failed fsync) verifies the
+    # destination again and makes the same-directory rename durable.
+    validate_completed(venv, target, rollback_sha, bound_python, root)
+    restore_profile(root, target, tx, check_only=True)
+    sync_directory(target.parent)
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("action", choices=("install", "fence", "upgrade", "restore", "release"))
+    parser.add_argument("action", choices=("install", "fence", "upgrade", "restore", "release",
+                                           "archive", "unarchive"))
     parser.add_argument("reviewed_sha")
     parser.add_argument("--root", type=Path)
     parser.add_argument("--bound-python", type=Path)
@@ -859,6 +912,7 @@ def main():
     parser.add_argument("--previous-sha")
     parser.add_argument("--previous-wheel")
     parser.add_argument("--legacy-consolidation", action="store_true")
+    parser.add_argument("--rollback-sha")
     args = parser.parse_args()
     os.umask(0o077)
     try:
@@ -869,6 +923,8 @@ def main():
         verify_checkout(kit, args.reviewed_sha)
         if args.expected_wheel is not None and not DIGEST.fullmatch(args.expected_wheel):
             raise ValueError("Invalid expected wheel digest")
+        if ((args.action in ("archive", "unarchive")) != (args.rollback_sha is not None)):
+            raise ValueError("Rollback SHA is only required for archive/unarchive")
         run = build_runner() if args.action in ("install", "upgrade") else None
         with checkout_guard(kit) as (guard, fd):
             verify_checkout(kit, args.reviewed_sha)
@@ -891,6 +947,12 @@ def main():
                         check_release(kit, args.reviewed_sha, guard, args.bound_python, args.root)
                         release_unit(args.root, args.bound_python)
                         print("BRIDGE UNIT RELEASED; no service started")
+                elif args.action in ("archive", "unarchive"):
+                    if any((args.expected_wheel, args.previous_sha, args.previous_wheel, args.legacy_consolidation)):
+                        raise ValueError("Archive uses recorded transaction")
+                    relocate_backup(kit, guard, args.rollback_sha, args.bound_python, args.root,
+                                    unarchive=args.action == "unarchive")
+                    print("BRIDGE ROLLBACK RECONCILED; unit remains fenced")
                 elif args.action == "upgrade":
                     if not DIGEST.fullmatch(args.expected_wheel or ""):
                         raise ValueError("Expected CI wheel SHA-256 required")
