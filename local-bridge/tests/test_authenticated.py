@@ -50,11 +50,13 @@ class AuthTests(unittest.TestCase):
         return {**json.loads(jwt.algorithms.RSAAlgorithm.to_jwk(key.public_key())),
                 "kid":kid,"use":"sig","alg":"RS256"}
 
-    def token(self,changes=None,key=None,kid="one",headers=None):
+    def token(self,changes=None,key=None,kid="one",headers=None,*,omit=()):
         now=int(time.time())
         claims={"iss":ISSUER,"aud":RESOURCE,"sub":SUBJECT,"client_id":CLIENT_ID,
                 "scope":"openid offline_access","sid":"consent_fixture","jti":"token_fixture","iat":now,"exp":now+300}
         claims.update(changes or {})
+        for name in omit:
+            del claims[name]
         return jwt.encode(claims,key or self.key,algorithm="RS256",headers={"kid":kid,**(headers or {})})
 
     def verify(self,token):
@@ -156,8 +158,8 @@ class AuthTests(unittest.TestCase):
             ("Bearer " + self.token({"iat": now - 600, "exp": now - 300}), "TOKEN_EXPIRED"),
             ("Bearer " + self.token(key=self.other), "TOKEN_SIGNATURE_INVALID"),
             ("Bearer " + self.token({"aud": "private-fixture-audience"}), "TOKEN_AUDIENCE_INVALID"),
-            ("Bearer " + self.token({"sub": "user_privatefixture"}), "TOKEN_CLAIMS_INVALID"),
-            ("Bearer " + self.token({"scope": "offline_access"}), "TOKEN_CLAIMS_INVALID"),
+            ("Bearer " + self.token({"sub": "user_privatefixture"}), "TOKEN_SUBJECT_INVALID"),
+            ("Bearer " + self.token({"scope": "offline_access"}), "TOKEN_SCOPE_INVALID"),
         ]
         tokens = [value for value, _ in cases if value is not None]
         valid = "Bearer " + self.token()
@@ -205,6 +207,73 @@ class AuthTests(unittest.TestCase):
         for secret in tokens + ["private-fixture-audience", "user_privatefixture",
                                 "private-fixture-network", SUBJECT, RESOURCE, ISSUER]:
             self.assertNotIn(secret, raw + auth_raw)
+        self.assertIsNone(auth_outcome.get())
+        with jobs.transaction() as conn:
+            self.assertEqual(conn.execute("SELECT count(*) FROM jobs").fetchone()[0], 0)
+
+    def test_claim_rejection_categories_and_legacy_audit(self):
+        # All rejection details remain local, with the original four-field
+        # sidecar schema, unchanged primary stream and identical HTTP 401.
+        audit = Audit(self.root)
+        audit.record(401, outcome=AuthOutcome.TOKEN_CLAIMS_INVALID)
+        old_primary = audit.path.read_bytes()
+        old_sidecar = audit.auth_path.read_bytes()
+        jobs = Jobs(self.root, Policy([(SUBJECT, "read", "disposable")]))
+        app = build_http_app(self.verifier, jobs)
+        now = int(time.time())
+        cases = [
+            (self.token({"sub": "user_privatefixture"}), "TOKEN_SUBJECT_INVALID"),
+            (self.token({"sub": 123}), "TOKEN_SUBJECT_INVALID"),
+            (self.token({"client_id": "private-fixture-client"}), "TOKEN_CLIENT_MISMATCH"),
+            (self.token(omit=("sid",)), "TOKEN_REQUIRED_CLAIM_MISSING"),
+            (self.token({"org_id": "private-fixture-org"}), "TOKEN_FORBIDDEN_CLAIM_PRESENT"),
+            (self.token({"sid": ""}), "TOKEN_SESSION_CLAIM_INVALID"),
+            (self.token({"jti": 123}), "TOKEN_SESSION_CLAIM_INVALID"),
+            (self.token({"scope": ["openid"]}), "TOKEN_SCOPE_INVALID"),
+            (self.token({"scope": "openid private-fixture-scope"}), "TOKEN_SCOPE_INVALID"),
+            (self.token({"exp": now + 7200}), "TOKEN_TEMPORAL_CLAIM_INVALID"),
+            (self.token({"nbf": now + 600}), "TOKEN_TEMPORAL_CLAIM_INVALID"),
+            (self.token({"iat": "private-fixture-date"}), "TOKEN_TEMPORAL_CLAIM_INVALID"),
+            (self.token({"iss": "https://private-fixture.authkit.app"}), "TOKEN_ISSUER_INVALID"),
+        ]
+        init = {"jsonrpc": "2.0", "id": 1, "method": "initialize",
+                "params": {"protocolVersion": "2025-11-25", "capabilities": {},
+                           "clientInfo": {"name": "test", "version": "1"}}}
+        base = {"Accept": "application/json, text/event-stream"}
+        def check(client, token):
+            response = client.post("/mcp", headers={**base, "Authorization": "Bearer " + token}, json=init)
+            self.assertEqual(response.status_code, 401)
+            self.assertIn("www-authenticate", response.headers)
+            for outcome in AuthOutcome:
+                self.assertNotIn(outcome.value, response.text)
+                self.assertNotIn(outcome.value, str(response.headers))
+            return response.content, response.headers["www-authenticate"]
+
+        valid = self.token()
+        with TestClient(app, base_url="http://127.0.0.1:8765") as client:
+            baseline = check(client, cases[0][0])
+            for token, outcome in cases[1:]:
+                with self.subTest(outcome=outcome):
+                    self.assertEqual(check(client, token), baseline)
+            with patch("project_os_bridge.workos_auth.jwt.decode",
+                       side_effect=ValueError("private-fixture-exception")):
+                self.assertEqual(check(client, valid), baseline)
+            self.assertEqual(client.post("/mcp", headers={**base, "Authorization": "Bearer " + valid}, json=init).status_code, 200)
+        primary = audit.path.read_bytes()
+        supplemental = audit.auth_path.read_bytes()
+        self.assertTrue(primary.startswith(old_primary))
+        self.assertTrue(supplemental.startswith(old_sidecar))
+        events = [json.loads(line) for line in primary.splitlines()]
+        observed = [json.loads(line) for line in supplemental.splitlines()]
+        self.assertEqual([e["auth_outcome"] for e in observed],
+                         ["TOKEN_CLAIMS_INVALID"] + [outcome for _, outcome in cases] +
+                         ["TOKEN_CLAIMS_INVALID", "TOKEN_ACCEPTED"])
+        self.assertTrue(all(set(e) == {"at", "event", "status", "auth_outcome"} for e in observed))
+        self.assertEqual([{k: v for k, v in e.items() if k != "auth_outcome"} for e in observed],
+                         [e for e in events if e["status"] != 100])
+        self.assertTrue(all(AuthOutcome(e["auth_outcome"]) for e in observed))
+        for value in [token for token, _ in cases] + [valid, "private-fixture", SUBJECT, RESOURCE, ISSUER]:
+            self.assertNotIn(value.encode(), primary + supplemental)
         self.assertIsNone(auth_outcome.get())
         with jobs.transaction() as conn:
             self.assertEqual(conn.execute("SELECT count(*) FROM jobs").fetchone()[0], 0)

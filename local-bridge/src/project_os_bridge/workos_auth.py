@@ -30,6 +30,14 @@ class AuthOutcome(str, Enum):
     TOKEN_SIGNATURE_INVALID = "TOKEN_SIGNATURE_INVALID"
     TOKEN_AUDIENCE_INVALID = "TOKEN_AUDIENCE_INVALID"
     TOKEN_CLAIMS_INVALID = "TOKEN_CLAIMS_INVALID"
+    TOKEN_SUBJECT_INVALID = "TOKEN_SUBJECT_INVALID"
+    TOKEN_CLIENT_MISMATCH = "TOKEN_CLIENT_MISMATCH"
+    TOKEN_REQUIRED_CLAIM_MISSING = "TOKEN_REQUIRED_CLAIM_MISSING"
+    TOKEN_FORBIDDEN_CLAIM_PRESENT = "TOKEN_FORBIDDEN_CLAIM_PRESENT"
+    TOKEN_SESSION_CLAIM_INVALID = "TOKEN_SESSION_CLAIM_INVALID"
+    TOKEN_SCOPE_INVALID = "TOKEN_SCOPE_INVALID"
+    TOKEN_TEMPORAL_CLAIM_INVALID = "TOKEN_TEMPORAL_CLAIM_INVALID"
+    TOKEN_ISSUER_INVALID = "TOKEN_ISSUER_INVALID"
     JWKS_UNAVAILABLE = "JWKS_UNAVAILABLE"
     TOKEN_ACCEPTED = "TOKEN_ACCEPTED"
 
@@ -183,19 +191,21 @@ class Verifier:
                 return observe_auth(AuthOutcome.JWKS_UNAVAILABLE)
             claims = jwt.decode(token,key,algorithms=["RS256"],issuer=self.issuer,audience=self.resource,
                 options={"require":["iss","aud","sub","client_id","sid","jti","scope","iat","exp"],"strict_aud":True})
-            if claims["sub"] != self.subject or claims["client_id"] != CLIENT_ID:
-                return observe_auth(AuthOutcome.TOKEN_CLAIMS_INVALID)
+            if claims["sub"] != self.subject:
+                return observe_auth(AuthOutcome.TOKEN_SUBJECT_INVALID)
+            if claims["client_id"] != CLIENT_ID:
+                return observe_auth(AuthOutcome.TOKEN_CLIENT_MISMATCH)
             if any(k in claims for k in ("act","sub_profile","org_id")):
-                return observe_auth(AuthOutcome.TOKEN_CLAIMS_INVALID)
+                return observe_auth(AuthOutcome.TOKEN_FORBIDDEN_CLAIM_PRESENT)
             if not all(isinstance(claims[k],str) and 0 < len(claims[k]) <= 512 for k in ("sid","jti")):
-                return observe_auth(AuthOutcome.TOKEN_CLAIMS_INVALID)
+                return observe_auth(AuthOutcome.TOKEN_SESSION_CLAIM_INVALID)
             if not isinstance(claims["scope"],str):
-                return observe_auth(AuthOutcome.TOKEN_CLAIMS_INVALID)
+                return observe_auth(AuthOutcome.TOKEN_SCOPE_INVALID)
             scopes = set(claims["scope"].split())
             if SCOPE not in scopes or not scopes <= SCOPES:
-                return observe_auth(AuthOutcome.TOKEN_CLAIMS_INVALID)
+                return observe_auth(AuthOutcome.TOKEN_SCOPE_INVALID)
             if ("nbf" in claims and type(claims["nbf"]) is not int) or type(claims["exp"]) is not int or type(claims["iat"]) is not int or not 0 < claims["exp"]-claims["iat"] <= 3600:
-                return observe_auth(AuthOutcome.TOKEN_CLAIMS_INVALID)
+                return observe_auth(AuthOutcome.TOKEN_TEMPORAL_CLAIM_INVALID)
             result = AccessToken(token=token,client_id=CLIENT_ID,subject=self.subject,
                 scopes=sorted(scopes),expires_at=claims["exp"],resource=self.resource,claims={"iss":self.issuer})
             observe_auth(AuthOutcome.TOKEN_ACCEPTED)
@@ -208,7 +218,19 @@ class Verifier:
             return observe_auth(AuthOutcome.TOKEN_AUDIENCE_INVALID)
         except jwt.DecodeError:
             return observe_auth(AuthOutcome.TOKEN_MALFORMED)
-        except (jwt.PyJWTError,ValueError,TypeError,KeyError,OSError,httpx.HTTPError,OverflowError,RecursionError):
+        except (jwt.PyJWTError,ValueError,TypeError,KeyError,OSError,httpx.HTTPError,OverflowError,RecursionError) as exc:
+            # Diagnostic refinement only, within the original rejection set.
+            # Never inspect exception messages, claim names or values.
+            if isinstance(exc, jwt.exceptions.MissingRequiredClaimError):
+                return observe_auth(AuthOutcome.TOKEN_REQUIRED_CLAIM_MISSING)
+            if isinstance(exc, jwt.exceptions.InvalidIssuerError):
+                return observe_auth(AuthOutcome.TOKEN_ISSUER_INVALID)
+            if isinstance(exc, jwt.exceptions.InvalidSubjectError):
+                return observe_auth(AuthOutcome.TOKEN_SUBJECT_INVALID)
+            if isinstance(exc, jwt.exceptions.InvalidJTIError):
+                return observe_auth(AuthOutcome.TOKEN_SESSION_CLAIM_INVALID)
+            if isinstance(exc, (jwt.exceptions.InvalidIssuedAtError, jwt.exceptions.ImmatureSignatureError)):
+                return observe_auth(AuthOutcome.TOKEN_TEMPORAL_CLAIM_INVALID)
             return observe_auth(AuthOutcome.TOKEN_CLAIMS_INVALID)
 
 
