@@ -180,19 +180,9 @@ context="$context_parent/context"
 runtime=(env "PYTHONPATH=$repo/local-bridge/src" "$work/venv/bin/python" -B)
 "${runtime[@]}" -m project_os_bridge.podman_context --context "$context" prepare
 [ "$("${runtime[@]}" -m project_os_bridge.podman_context --context "$context" import-layout "$work/oci" "$digest")" = "$image" ]
-if [ "$mode" = fixture-only ]; then
-  "${runtime[@]}" -m project_os_bridge.podman_context --context "$context" smoke "$image"
-else
-  "${runtime[@]}" - "$context" "$image" <<'PYSMOKE'
-from pathlib import Path
-import sys
-from project_os_bridge.podman_context import PodmanContext
-PodmanContext(Path(sys.argv[1])).smoke(sys.argv[2], fixture_only=False)
-PYSMOKE
-fi
 fixture=0
 PYTHONPATH="$repo/local-bridge/src" "$work/venv/bin/python" -m project_os_bridge.vertical --state-dir "$work/state" --request-key ci-alpine-remediation --image "$image" --podman-context "$context" > "$work/evidence.json" || fixture=$?
-python3 - "$repo/local-bridge/src" "$work/evidence.json" "$image" <<'PY' || fixture=1
+python3 - "$repo/local-bridge/src" "$work/evidence.json" "$image" "$mode" <<'PY' || fixture=1
 import json, sys
 from pathlib import Path
 sys.path.insert(0, sys.argv[1])
@@ -203,8 +193,11 @@ v = r['steps'][-1]
 print('ALPINE_FIXTURE', json.dumps({'state':e['state'], 'image':r.get('image'), 'validation':v, 'events':[x['state'] for x in e['events']]}, sort_keys=True))
 assert e['state'] == 'SUCCEEDED' and r['image'] == sys.argv[3]
 assert r['steps'][1]['original_unchanged'] is True and v['cleanup_verified'] is True
-from project_os_bridge.isolated import CHECKS, ISOLATION_CHECKS
+from project_os_bridge.isolated import CHECKS, ISOLATION_CHECKS, RUNTIME_COMPATIBILITY, PACKAGE_ABSENCE
 assert v['checks'] == CHECKS and v['isolation_checks'] == ISOLATION_CHECKS and v['exit_code'] == 0
+expected = RUNTIME_COMPATIBILITY + (PACKAGE_ABSENCE if sys.argv[4] == 'fixture-only' else ())
+assert v['compatibility_checks'] == list(expected)
+print('FIXTURE_IMAGE_COMPATIBILITY_PASS')
 PY
 if [ "$fixture" != 0 ]; then exit 1; fi
 # New CLI processes must recover exactly the original durable result without rerunning.

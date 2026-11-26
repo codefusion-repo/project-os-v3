@@ -4,7 +4,10 @@ from pathlib import Path
 import unittest
 from unittest.mock import Mock, patch
 
-from project_os_bridge.isolated import validate_in_container, SCRIPT, CHECKS, ISOLATION_CHECKS
+from project_os_bridge.isolated import (
+    ALPINE_BASELINE, ALPINE_FIXTURE_ONLY, CHECKS, ISOLATION_CHECKS, PACKAGE_ABSENCE,
+    RUNTIME_COMPATIBILITY, SCRIPT, validate_in_container,
+)
 from project_os_bridge.isolation_profile import MOUNT_CHECK
 
 IMAGE = "python@sha256:" + "a" * 64
@@ -80,6 +83,35 @@ class IsolationTests(unittest.TestCase):
             result = self.invoke()
         self.assertEqual((result["status"], result["exit_code"]), ("FAILED", 18))
         self.assertFalse(result["checks"] or result["isolation_checks"])
+
+    def test_compatibility_profiles_share_the_named_container_and_absence_checks(self):
+        for digest, packages in ((ALPINE_BASELINE, ()), (ALPINE_FIXTURE_ONLY, PACKAGE_ABSENCE)):
+            with self.subTest(digest=digest):
+                self.context.run.reset_mock()
+                self.context.run.side_effect = [Mock(returncode=0), Mock(returncode=1),
+                                                Mock(returncode=0, stdout=b"")]
+                result = self.invoke("localhost/project-os-alpine-ci@" + digest)
+                self.assertEqual(result["compatibility_checks"], list(RUNTIME_COMPATIBILITY + packages))
+                self.assertEqual(result["checks"], CHECKS)
+                self.assertEqual(result["isolation_checks"], ISOLATION_CHECKS)
+                calls = self.context.run.call_args_list
+                self.assertEqual([c.args[1] for c in calls], ["run", "container", "ps"])
+                args = calls[0].args
+                program = args[args.index("-c") + 1]
+                compile(program, "<fixture-with-compatibility>", "exec")
+                self.assertTrue(program.startswith(SCRIPT))
+                self.assertTrue(program.endswith(f"check_compatibility({bool(packages)})\n"))
+                self.assertIn("project-os-fixture-" + TOKEN, args)
+                self.assertIn("io.project-os.fixture=" + TOKEN, args)
+                self.assertTrue(result["cleanup_verified"])
+
+    def test_compatibility_exit_with_proven_cleanup_is_a_persistable_failure(self):
+        self.context.run.side_effect = [Mock(returncode=20), Mock(returncode=1), Mock(returncode=0, stdout=b"")]
+        result = self.invoke("localhost/project-os-alpine-ci@" + ALPINE_FIXTURE_ONLY)
+        self.assertEqual((result["status"], result["reason"], result["exit_code"]),
+                         ("FAILED", "IMAGE_COMPATIBILITY_FAILED", 20))
+        self.assertTrue(result["cleanup_verified"])
+        self.assertEqual(result["compatibility_checks"], [])
 
     def test_timeouts_and_context_drift_after_dispatch_require_reconciliation(self):
         cases = ([subprocess.TimeoutExpired("podman", 30)],

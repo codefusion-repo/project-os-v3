@@ -6,10 +6,12 @@ from unittest.mock import patch, Mock
 from project_os_bridge.core import Jobs, Policy, QueueLimitError
 from project_os_bridge.worker import run_pending, exclusive_worker
 from project_os_bridge.reconcile import reconcile
-from project_os_bridge.isolated import container_absent
+from project_os_bridge.isolated import ALPINE_FIXTURE_ONLY, container_absent
+from project_os_bridge.vertical import OPERATIONS, bind_image
 
 
 IDENTITY = "a" * 64
+IMAGE = "localhost/project-os-alpine-ci@" + ALPINE_FIXTURE_ONLY
 
 
 class ReconciliationTests(unittest.TestCase):
@@ -17,18 +19,23 @@ class ReconciliationTests(unittest.TestCase):
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
         self.root = Path(tmp.name).resolve()
-        self.policy = Policy(("p", op, "disposable") for op in ("submit","read","git_workflow"))
+        self.policy = Policy(("p", op, "disposable") for op in OPERATIONS)
         self.jobs = self.open()
-        self.context = Mock(identity=Mock(return_value=IDENTITY))
+        self.context = Mock(root=Path("/unused-test-context"), identity=Mock(return_value=IDENTITY))
+        self.context.host.return_value = {"security": {}}
+        bind_image(self.jobs, IMAGE, IDENTITY)
         self.first = self.jobs.submit("p","disposable","git_fixture_check","first")
         self.second = self.jobs.submit("p","disposable","probe_check","second")
 
     def open(self):
         return Jobs(self.root,self.policy,workflows=("probe_check","git_fixture_check"))
 
+    def drain_fixture(self):
+        run_pending(self.jobs, fixture_image=IMAGE, podman_context=self.context, context_id=IDENTITY)
+
     def test_cleanup_failure_blocks_queue_and_new_work_across_restart(self):
         with patch("project_os_bridge.vertical.run_git_fixture", return_value=("BLOCKED", {"container_absent":False})):
-            run_pending(self.jobs, fixture_image="fixture", podman_context=self.context)
+            self.drain_fixture()
         reopened = self.open()
         self.assertEqual(reopened.get("p",self.first)["state"],"BLOCKED")
         self.assertEqual(reopened.get("p",self.second)["state"],"QUEUED")
@@ -72,9 +79,64 @@ class ReconciliationTests(unittest.TestCase):
 
     def test_success_clears_barrier_atomically(self):
         with patch("project_os_bridge.vertical.run_git_fixture",return_value=("SUCCEEDED",{"container_absent":True})):
-            run_pending(self.jobs,fixture_image="fixture", podman_context=self.context)
+            self.drain_fixture()
         self.assertFalse(self.open().pending_effects())
         self.assertEqual(self.jobs.get("p",self.second)["state"],"SUCCEEDED")
+
+    def assert_compatibility_barrier(self, failure, expected_state):
+        effects = []
+        responses = iter([Mock(returncode=1), Mock(returncode=0, stdout=b"owned-container\n")]
+                         if failure is None else [])
+
+        def launch(identity, action, *args, **kwargs):
+            self.assertEqual(identity, IDENTITY)
+            if action != "run":
+                return next(responses)
+            effect = self.open().pending_effects()[0]
+            effects.append(effect)
+            self.assertEqual(effect["job_id"], self.first)
+            self.assertEqual(effect["context_id"], IDENTITY)
+            self.assertIn("project-os-fixture-" + effect["token"], args)
+            self.assertIn("io.project-os.fixture=" + effect["token"], args)
+            self.assertIn("check_compatibility(True)", args[args.index("-c") + 1])
+            if failure is not None:
+                raise failure
+            return Mock(returncode=20)  # Fixed program reported a compatibility failure.
+
+        self.context.run.side_effect = launch
+        with patch("project_os_bridge.isolated.challenge", return_value='{"forbidden": []}'):
+            if isinstance(failure, KeyboardInterrupt):
+                with self.assertRaises(KeyboardInterrupt):
+                    self.drain_fixture()
+            else:
+                self.drain_fixture()
+        self.assertEqual(len(effects), 1)
+        run_count = self.context.run.call_count
+        reopened = self.open()
+        run_pending(reopened, fixture_image=IMAGE, podman_context=self.context, context_id=IDENTITY)
+        self.assertEqual(self.context.run.call_count, run_count)
+        self.assertEqual(reopened.get("p", self.first)["state"], expected_state)
+        self.assertEqual(reopened.get("p", self.second)["state"], "QUEUED")
+        self.assertEqual(reopened.pending_effects(), effects)
+        evidence = reopened.evidence("p", self.first)
+        with patch("project_os_bridge.reconcile.container_absent", return_value=True) as absent:
+            reconcile(reopened, self.first, self.context)
+        absent.assert_called_once_with(self.context, IDENTITY, effects[0]["token"])
+        self.assertFalse(reopened.pending_effects())
+        self.assertEqual(reopened.submit("p", "disposable", "git_fixture_check", "first"), self.first)
+        run_pending(reopened, fixture_image=IMAGE, podman_context=self.context, context_id=IDENTITY)
+        self.assertEqual(reopened.evidence("p", self.first), evidence)
+        self.assertEqual(reopened.get("p", self.second)["state"], "SUCCEEDED")
+        self.assertEqual(self.context.run.call_count, run_count)
+
+    def test_interrupted_compatibility_is_recorded_before_launch_and_recovered(self):
+        self.assert_compatibility_barrier(KeyboardInterrupt(), "INTERRUPTED")
+
+    def test_compatibility_timeout_keeps_barrier_across_restart(self):
+        self.assert_compatibility_barrier(subprocess.TimeoutExpired("podman", 30), "BLOCKED")
+
+    def test_unconfirmed_compatibility_cleanup_keeps_barrier(self):
+        self.assert_compatibility_barrier(None, "BLOCKED")
 
     def test_legacy_unknown_container_cannot_be_reconciled(self):
         with self.jobs.transaction() as c:

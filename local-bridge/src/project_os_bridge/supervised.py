@@ -17,6 +17,7 @@ from .workos_auth import load_config, private_directory, private_file
 from .authenticated import tls_options
 from .isolated import IMAGE
 from .podman_context import PodmanContext
+from .vertical import bound_context
 from .service_setup import checked_path
 from .readiness import read_metadata, verify_metadata
 
@@ -48,11 +49,9 @@ def commands(root):
     if (image is None) != (context_path is None):
         raise PermissionError("Fixture image and Podman context must be supplied together")
     if image is not None:
-        PodmanContext(Path(context_path)).identity()
         if not isinstance(image, str) or not IMAGE.fullmatch(image):
             raise ValueError("Invalid fixture image")
-        if read_private(root / "state" / "fixture-image", 1024) != image + "\n":
-            raise PermissionError("Fixture binding mismatch")
+        PodmanContext(Path(context_path)).identity(bound_context(root / "state", image))
     key = read_private(service / "runtime-key", 4096)
     if not re.fullmatch(r"[!-~]{16,4096}", key):
         raise ValueError("Invalid runtime key")

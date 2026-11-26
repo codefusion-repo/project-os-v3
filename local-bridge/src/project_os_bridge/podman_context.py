@@ -217,32 +217,6 @@ class PodmanContext:
             raise ContextError("Fixture image was not imported into this context")
         self.check_image(identity, image)
 
-    def smoke(self, image, *, fixture_only=True):
-        identity = self.identity()
-        self.host(identity)
-        self.require_import(identity, image)
-        program = (
-            'import ctypes, importlib.metadata as m, importlib.util as u, pathlib, platform, '
-            'shutil, socket, sqlite3, ssl, sys, sysconfig, zlib; '
-            'assert sys.version_info[:2] == (3, 12) and platform.machine() == "x86_64"; '
-            'assert pathlib.Path("/lib/ld-musl-x86_64.so.1").exists(); ctypes.CDLL("libkrb5.so.3"); '
-            'assert sqlite3.connect(":memory:").execute("select 1").fetchone() == (1,); '
-            'assert ssl.create_default_context() and {n for _, n in socket.if_nameindex()} <= {"lo"}; '
-            'assert zlib.decompress(zlib.compress(b"fixture")) == b"fixture"'
-        )
-        if fixture_only:
-            program += (
-                '; assert all(u.find_spec(n) is None for n in ("pip", "setuptools", "ensurepip")); '
-                'assert not {d.metadata["Name"].lower() for d in m.distributions()} & {"pip", "setuptools"}; '
-                'assert not any(shutil.which(n) for n in ("pip", "pip3", "pip3.12")); '
-                'assert not list(pathlib.Path(sysconfig.get_path("stdlib")).glob("ensurepip/_bundled/*.whl"))'
-            )
-        result = self.run(identity, "run", "--rm", "--pull=never", "--network=none", "--read-only",
-                          "--cap-drop=ALL", "--security-opt=no-new-privileges", "--http-proxy=false",
-                          "--image-volume=ignore", "--entrypoint", "python", image, "-I", "-B", "-c", program, timeout=30)
-        if result.returncode:
-            raise ValueError("Fixture image compatibility check failed")
-
     def import_layout(self, layout, digest):
         if not DIGEST.fullmatch(digest) or not SAFE_PATH.fullmatch(str(layout)):
             raise ValueError("Canonical OCI layout and locked digest required")
@@ -286,8 +260,6 @@ def main():
     acquire = sub.add_parser("import-layout")
     acquire.add_argument("layout", type=Path)
     acquire.add_argument("digest")
-    smoke = sub.add_parser("smoke")
-    smoke.add_argument("image")
     args = parser.parse_args()
     os.umask(0o077)
     try:
@@ -295,11 +267,8 @@ def main():
         if args.operation == "prepare":
             context.prepare()
             print("Private Podman context prepared")
-        elif args.operation == "import-layout":
-            print(context.import_layout(args.layout, args.digest))
         else:
-            context.smoke(args.image)
-            print("FIXTURE_IMAGE_COMPATIBILITY_PASS")
+            print(context.import_layout(args.layout, args.digest))
     except ContextError as exc:
         parser.exit(1, f"PODMAN_CONTEXT_BLOCKED: {exc}\n")
     except (OSError, ValueError, KeyError, TypeError, AttributeError, subprocess.SubprocessError) as exc:

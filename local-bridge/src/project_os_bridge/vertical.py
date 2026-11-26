@@ -7,7 +7,7 @@ from pathlib import Path
 
 from .core import Jobs, Policy
 from .git_fixture import GitFixture
-from .isolated import IMAGE, CHECKS, ISOLATION_CHECKS, validate_in_container
+from .isolated import IMAGE, CHECKS, ISOLATION_CHECKS, compatibility_checks, validate_in_container
 from .podman_context import CONTEXT_ID, PodmanContext
 from .workos_auth import private_directory, private_file
 from .worker import run_pending, exclusive_worker
@@ -52,6 +52,7 @@ def run_git_fixture(jobs, row, image, context):
                 or result.get("cleanup_verified") is not True
                 or result.get("checks") != CHECKS
                 or result.get("isolation_checks") != ISOLATION_CHECKS
+                or result.get("compatibility_checks") != compatibility_checks(image)
                 or result.get("profile") != "fixture-python"):
             evidence["error"] = "INCOMPLETE_ISOLATION_EVIDENCE"
             return "BLOCKED", evidence
@@ -78,6 +79,19 @@ def local_jobs(root, *, existing=False):
         private_file(root / "probe.sqlite3")
     return Jobs(root, Policy(("local-fixture",op,"disposable") for op in OPERATIONS),
                 workflows=("git_fixture_check",))
+
+
+def bound_context(root, image):
+    """Read the existing image and context authorization without creating a binding."""
+    image_path, context_path = root / "fixture-image", root / "fixture-context"
+    if (private_file(image_path).st_size != len(image) + 1
+            or image_path.read_text(encoding="utf-8") != image + "\n"
+            or private_file(context_path).st_size != 65):
+        raise PermissionError("Fixture binding mismatch")
+    identity = context_path.read_text(encoding="utf-8")
+    if not identity.endswith("\n") or not CONTEXT_ID.fullmatch(identity[:-1]):
+        raise PermissionError("Fixture binding mismatch")
+    return identity[:-1]
 
 
 def bind_image(jobs, image, context_id):
@@ -133,7 +147,7 @@ def main():
     jobs = local_jobs(args.state_dir)
     bind_image(jobs, args.image, identity)
     job = jobs.submit("local-fixture","disposable","git_fixture_check",args.request_key)
-    run_pending(jobs, fixture_image=args.image, podman_context=context)
+    run_pending(jobs, fixture_image=args.image, podman_context=context, context_id=identity)
     evidence = jobs.evidence("local-fixture",job)
     print(json.dumps(evidence, indent=2))
     raise SystemExit(0 if evidence["state"] == "SUCCEEDED" else 1)

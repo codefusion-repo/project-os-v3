@@ -115,11 +115,24 @@ PODMAN_CONTEXT="$context_parent/context"  # Podman 4.9.3 limits runroot to 50 by
 image="$("$bridge_python" -I -m project_os_bridge.podman_context \
   --context "$PODMAN_CONTEXT" import-layout "$work/oci" "$digest")"
 test "$image" = "localhost/project-os-alpine-ci@$digest"
-"$bridge_python" -I -m project_os_bridge.podman_context --context "$PODMAN_CONTEXT" smoke "$image"
 mkdir -m 0700 "$work/state"
 "$fixture_cli" --state-dir "$work/state" --request-key independent-fixture \
   --image "$image" --podman-context "$PODMAN_CONTEXT" > "$work/evidence.json"
-job="$(python3 -I -c 'import json,sys; e=json.load(open(sys.argv[1])); assert e["state"]=="SUCCEEDED"; v=e["result"]["steps"][-1]; assert v["cleanup_verified"] is True and len(v["checks"])==10 and len(v["isolation_checks"])==7; assert e["result"]["steps"][1]["original_unchanged"] is True; print(e["id"])' "$work/evidence.json")"
+job="$(python3 -I - "$work/evidence.json" <<'PY'
+import json, sys
+from pathlib import Path
+e = json.loads(Path(sys.argv[1]).read_text())
+assert e["state"] == "SUCCEEDED"
+v = e["result"]["steps"][-1]
+assert v["cleanup_verified"] is True and len(v["checks"]) == 10 and len(v["isolation_checks"]) == 7
+assert v["compatibility_checks"] == [
+    "python_312_amd64", "musl_loader", "krb5_library", "sqlite", "tls", "loopback_only", "zlib",
+    "package_modules_absent", "package_metadata_absent", "pip_entrypoints_absent", "bundled_bootstrap_absent",
+]
+assert e["result"]["steps"][1]["original_unchanged"] is True
+print(e["id"])
+PY
+)"
 "$repo/local-bridge/.venv/bin/project-os-bridge-fixture" --state-dir "$work/state" --evidence-job-id "$job" > "$work/recovered.json"
 "$repo/local-bridge/.venv/bin/project-os-bridge-fixture" --state-dir "$work/state" --request-key independent-fixture --image "$image" --podman-context "$PODMAN_CONTEXT" > "$work/replay.json"
 python3 -I - "$work/evidence.json" "$work/recovered.json" "$work/replay.json" <<'PY'
@@ -132,7 +145,9 @@ print("FIXTURE_REPLAY_PASS")
 PY
 ```
 
-The prepared context is separate from the build store. It imports the exact local layout, verifies the stored manifest and pins that image in its own store. The compatibility check, fixture, absence queries and any reconciliation use that context. Run all steps as the same dedicated operator. Keep the private context and fixture state intact until effects are reconciled. A reboot, lost pause namespace, replaced state DB, or moved context can invalidate identity. Preserve evidence and use the reconciliation runbook. Do not recreate the context to clear an effect.
+The prepared context is separate from the build store. It imports the exact local layout, verifies the stored manifest and pins that image in its own store. The fixture checks the authorized binding and effective context before claim and again before dispatch. The same named and labeled container runs all 17 isolation checks and the compatibility checks after SQLite records its ownership token and context at claim. A timeout, interruption or unconfirmed absence keeps that same durable effect for reconciliation. A compatibility failure with verified absence is recorded as a terminal failure. Both the CI baseline and the fixture-only candidate verify the runtime libraries and loopback in this protected execution. The exact fixture-only digest also requires the package tools, metadata, entry points and bootstrap wheels to be absent.
+
+Run all steps as the same dedicated operator. Keep the private context and fixture state intact until effects are reconciled. A reboot, lost pause namespace, replaced state DB, or moved context can invalidate identity. Preserve evidence and use the reconciliation runbook. Do not recreate the context to clear an effect.
 
 Stop on any failure; preserve evidence and use the reconciliation runbook. No modification of an existing image binding, no automatic service startup and no real resources. Report only SHA, digest, aggregate audit, tool versions and boolean checks. No publication of images or private state.
 

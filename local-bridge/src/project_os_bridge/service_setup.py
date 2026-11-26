@@ -14,9 +14,10 @@ from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.x509.oid import NameOID, ExtendedKeyUsageOID
 
-from .workos_auth import load_config, private_directory, private_file
+from .workos_auth import load_config, private_directory
 from .isolated import IMAGE
 from .podman_context import PodmanContext
+from .vertical import bound_context
 
 SAFE_PATH = re.compile(r"/[A-Za-z0-9_./-]+")
 
@@ -107,10 +108,7 @@ def prepare_service(root, tunnel, runtime_key, image=None, *, podman_context=Non
     if (image is None) != (podman_context is None):
         raise PermissionError("Fixture image and Podman context must be supplied together")
     if image is not None:
-        PodmanContext(podman_context).identity()
-        binding = root / "state" / "fixture-image"
-        if private_file(binding).st_size > 1024 or binding.read_text() != image + "\n":
-            raise PermissionError("Existing validated image binding required")
+        PodmanContext(podman_context).identity(bound_context(root / "state", image))
     python = Path(sys.executable)
     if not SAFE_PATH.fullmatch(str(python)) or not python.is_absolute():
         raise ValueError("Unsupported Python path")

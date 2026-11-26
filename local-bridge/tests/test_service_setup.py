@@ -69,3 +69,32 @@ class ServiceSetupTests(unittest.TestCase):
             if child.poll() is None:
                 child.kill()
                 child.wait()
+
+    @unittest.skipIf(os.getuid()==0,"Requires unprivileged user")
+    def test_supervisor_checks_existing_binding_before_startup(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder).resolve()
+            state = root / "state"
+            state.mkdir(mode=0o700)
+            config = {"issuer": "https://fixture.authkit.app", "subject": "user_fixture",
+                      "resource": "https://api.openai.com/v1/mcp/tunnel_fixture"}
+            write_new(root / "oauth.json", json.dumps(config).encode())
+            tunnel = root / "tunnel-client"
+            write_new(tunnel, b"#!/bin/sh\nexit 0\n")
+            tunnel.chmod(0o700)
+            image, authorized = "example/python@sha256:" + "a" * 64, "1" * 64
+            write_new(state / "fixture-image", (image + "\n").encode())
+            write_new(state / "fixture-context", (authorized + "\n").encode())
+            context = Path("/unused-test-context")
+            with patch("project_os_bridge.service_setup.os.path.lexists", return_value=False), \
+                    patch.object(sys, "base_prefix", "/synthetic-base"), \
+                    patch("project_os_bridge.service_setup.PodmanContext") as prepare_context:
+                prepare_service(root, tunnel, "synthetic-test-runtime-key", image, podman_context=context)
+            prepare_context.assert_called_once_with(context)
+            prepare_context.return_value.identity.assert_called_once_with(authorized)
+            with patch("project_os_bridge.supervised.PodmanContext") as verify_context:
+                verify_context.return_value.identity.side_effect = PermissionError("context replaced")
+                with self.assertRaisesRegex(PermissionError, "context replaced"):
+                    commands(root)
+            verify_context.assert_called_once_with(context)
+            verify_context.return_value.identity.assert_called_once_with(authorized)

@@ -28,25 +28,19 @@ from .core import Jobs, Policy
 from .worker import run_pending, WorkerBusy
 from .security import RequestGate, Audit
 from .github_fixture import SyntheticGitHubReader
-from .vertical import OPERATIONS, bind_image
+from .vertical import OPERATIONS, bind_image, bound_context
 from .isolated import IMAGE
-from .podman_context import CONTEXT_ID, PodmanContext
+from .podman_context import PodmanContext
 from .workos_auth import private_file, private_directory
 from .readiness import read_metadata, verify_metadata
 from .diagnostics import Diagnostics, Section
 
 
 def fixture_enabled(verifier, image, context_id=None):
-    if not image or not verifier.enabled():
+    if not image or context_id is None or not verifier.enabled():
         return False
     try:
-        path = verifier.state_dir / "fixture-image"
-        binding = verifier.state_dir / "fixture-context"
-        if private_file(binding).st_size != 65:
-            return False
-        identity = binding.read_text(encoding="utf-8").rstrip("\n")
-        return (bool(CONTEXT_ID.fullmatch(identity)) and (context_id is None or identity == context_id)
-                and private_file(path).st_size <= 1024 and path.read_text(encoding="utf-8") == image + "\n")
+        return bound_context(verifier.state_dir, image) == context_id
     except (OSError, ValueError):
         return False
 
@@ -220,9 +214,8 @@ def exclusive_http_service(root):
         os.close(fd)
 
 
-def serve_with_worker(server, jobs, verifier, fixture_image, *, readiness=None, podman_context=None):
+def serve_with_worker(server, jobs, verifier, fixture_image, *, readiness=None, podman_context=None, context_id=None):
     """Stop HTTP on infrastructure failure; preserve in-flight cleanup on shutdown."""
-    context_id = podman_context.identity() if podman_context is not None else None
     stop = threading.Event()
     failed = threading.Event()
 
@@ -249,6 +242,7 @@ def serve_with_worker(server, jobs, verifier, fixture_image, *, readiness=None, 
                 try:
                     if verifier.enabled():
                         run_pending(jobs, fixture_image=fixture_image, podman_context=podman_context,
+                                    context_id=context_id,
                                     enabled=lambda: verifier.enabled() and not stopping(),
                                     fixture_allowed=lambda: fixture_enabled(verifier, fixture_image, context_id))
                     if jobs.pending_effects():
@@ -320,7 +314,11 @@ def main():
     if args.podman_context is not None:
         try:
             podman_context = PodmanContext(args.podman_context)
-            context_id = podman_context.identity()
+            if args.supervised_ca is not None:
+                context_id = bound_context(args.state_dir, args.fixture_image)
+                podman_context.identity(context_id)
+            else:
+                context_id = podman_context.identity()
             podman_context.require_import(context_id, args.fixture_image)
         except (OSError, ValueError, subprocess.SubprocessError):
             parser.error("Verified private Podman context required")
@@ -333,14 +331,15 @@ def main():
         jobs = Jobs(args.state_dir, Policy(grants), workflows=workflows)
         if jobs.pending_effects():
             parser.error("RECONCILIATION_REQUIRED; stop and use local reconciliation")
-        if args.fixture_image:
+        if args.fixture_image and args.supervised_ca is None:
             bind_image(jobs, args.fixture_image, context_id)
         fixture = SyntheticGitHubReader(Policy([(verifier.subject,"github_read","disposable")]),args.state_dir)
         app = build_http_app(verifier,jobs,fixture,fixture_image=args.fixture_image,diagnostics=diagnostics,context_id=context_id)
         import uvicorn
         server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=args.port,
                                               access_log=False, **tls))
-        serve_with_worker(server, jobs, verifier, args.fixture_image, readiness=readiness, podman_context=podman_context)
+        serve_with_worker(server, jobs, verifier, args.fixture_image, readiness=readiness,
+                          podman_context=podman_context, context_id=context_id)
 
 
 if __name__ == "__main__":
