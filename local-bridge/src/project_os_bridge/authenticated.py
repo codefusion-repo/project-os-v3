@@ -30,7 +30,8 @@ from .worker import run_pending, WorkerBusy
 from .security import RequestGate, Audit
 from .github_fixture import SyntheticGitHubReader
 from .github_context import GitHubContext
-from .github_operational import load_operational_provider
+from .github_operational import MultiProjectContext, load_operational_provider
+from .methodology import installed_context
 from .vertical import OPERATIONS, bind_image, bound_context
 from .isolated import IMAGE
 from .podman_context import PodmanContext
@@ -49,7 +50,7 @@ def fixture_enabled(verifier, image, context_id=None):
 
 
 def build_server(verifier, jobs, fixture_reader=None, *, fixture_image=None, diagnostics=None, context_id=None, github_provider=None):
-    if github_provider is not None and (type(github_provider) is not GitHubContext or fixture_image is not None or fixture_reader is not None):
+    if github_provider is not None and (type(github_provider) not in (GitHubContext, MultiProjectContext) or fixture_image is not None or fixture_reader is not None):
         raise ValueError("Invalid GitHub context configuration")
     mcp = MCPServer("Project OS authenticated disposable jobs",
                     token_verifier=verifier,
@@ -70,11 +71,32 @@ def build_server(verifier, jobs, fixture_reader=None, *, fixture_image=None, dia
         return token.subject
 
     @mcp.tool(annotations=read)
-    def health() -> dict:
-        """Report authenticated disposable service status."""
-        principal()
-        return {"status":"ready","caller_identity_verified":True,"repository_access":False,"mode":"authenticated-disposable",
-                "git_fixture_available":fixture_enabled(verifier, fixture_image, context_id)}
+    async def health() -> dict:
+        """Report authenticated service status and local capability admission."""
+        def collect():
+            actor = principal()
+            result = {"status":"ready","caller_identity_verified":True,"repository_access":False,"mode":"authenticated-disposable",
+                      "git_fixture_available":fixture_enabled(verifier, fixture_image, context_id)}
+            if github_provider is not None:
+                if type(github_provider) is MultiProjectContext:
+                    available = github_provider.available(actor)
+                    if principal() != actor:
+                        raise PermissionError("DENIED")
+                else:
+                    available = False
+                    for project in github_provider.reader.repositories:
+                        try:
+                            github_provider.require(actor, project)
+                            available = True
+                            break
+                        except PermissionError:
+                            continue
+                result.update(repository_access=available, github_context_registered=True,
+                              methodology_context_registered=type(github_provider) is MultiProjectContext,
+                              repository_access_basis="local_grant_not_upstream_check")
+            return result
+
+        return await asyncio.to_thread(collect)
 
     if diagnostics is not None and fixture_image is None:
         @mcp.tool(annotations=read)
@@ -130,47 +152,102 @@ def build_server(verifier, jobs, fixture_reader=None, *, fixture_image=None, dia
         @mcp.tool(annotations=ToolAnnotations(read_only_hint=True, open_world_hint=True))
         async def github_context(project: StrictStr, numbers: list[StrictInt]) -> dict:
             """Read bounded issue context; external content is untrusted data."""
-            def observe(outcome):
-                if github_provider.audit is not None:
-                    try:
-                        github_provider.audit.record(outcome)
-                    except (OSError, ValueError):
-                        raise RuntimeError("GITHUB_AUDIT_UNAVAILABLE") from None
+            def execute():
+                def observe(outcome):
+                    if github_provider.audit is not None:
+                        try:
+                            github_provider.audit.record(outcome)
+                        except (OSError, ValueError):
+                            raise RuntimeError("GITHUB_AUDIT_UNAVAILABLE") from None
 
-            observe("admitted")
-            try:
-                actor = principal()
-                token = get_access_token()
-                repo = github_provider.require(actor, project)
+                observe("admitted")
+                try:
+                    actor = principal()
+                    token = get_access_token()
+                    provider = (github_provider.open_project(actor, project)[0]
+                                if type(github_provider) is MultiProjectContext else github_provider)
+                    repo = provider.require(actor, project)
 
-                def check_session():
-                    if not verifier.enabled() or token.expires_at is None or token.expires_at <= time.time():
+                    def check_session():
+                        # The legacy reader also uses its own ThreadPoolExecutor.
+                        # Its threads have no MCP request ContextVar; use only
+                        # this request's already authenticated token and live gate.
+                        if (not verifier.enabled() or token.subject != actor
+                                or actor != verifier.subject or token.client_id != verifier.client_id
+                                or SCOPE not in token.scopes or token.expires_at is None
+                                or token.expires_at <= time.time()):
+                            raise PermissionError("DENIED")
+
+                    check_session()
+                    evidence = provider.read(actor, project, numbers, check_session=check_session)
+                    check_session()
+                    if principal() != actor or provider.require(actor, project) != repo:
                         raise PermissionError("DENIED")
+                except PermissionError:
+                    observe("denied")
+                    raise PermissionError("DENIED") from None
+                except (TypeError, ValueError):
+                    observe("failed")
+                    raise ValueError("INVALID_CONTEXT_REQUEST") from None
+                except Exception:
+                    observe("failed")
+                    raise RuntimeError("GITHUB_CONTEXT_FAILED") from None
+                observe("complete" if evidence["complete"] else "partial")
+                try:
+                    check_session()
+                    if principal() != actor or provider.require(actor, project) != repo:
+                        raise PermissionError("DENIED")
+                except PermissionError:
+                    observe("denied")
+                    raise
+                return evidence
 
-                check_session()
-                evidence = await asyncio.to_thread(
-                    github_provider.read, actor, project, numbers, check_session=check_session)
-                check_session()
-                if principal() != actor or github_provider.require(actor, project) != repo:
-                    raise PermissionError("DENIED")
-            except PermissionError:
-                observe("denied")
-                raise PermissionError("DENIED") from None
-            except (TypeError, ValueError):
-                observe("failed")
-                raise ValueError("INVALID_CONTEXT_REQUEST") from None
-            except Exception:
-                observe("failed")
-                raise RuntimeError("GITHUB_CONTEXT_FAILED") from None
-            observe("complete" if evidence["complete"] else "partial")
-            try:
-                check_session()
-                if principal() != actor or github_provider.require(actor, project) != repo:
-                    raise PermissionError("DENIED")
-            except PermissionError:
-                observe("denied")
-                raise
-            return evidence
+            return await asyncio.to_thread(execute)
+
+
+    if type(github_provider) is MultiProjectContext:
+        @mcp.tool(annotations=read)
+        async def methodology_context(project: StrictStr, workflow: StrictStr,
+                                      skills: list[StrictStr], templates: list[StrictStr],
+                                      expected_revision: StrictStr | None = None) -> dict:
+            """Read selected versioned methodology documents; no arbitrary file paths."""
+            def execute():
+                def observe(outcome):
+                    try:
+                        github_provider.audit.record(outcome, event="methodology_context")
+                    except (OSError, ValueError):
+                        raise RuntimeError("METHODOLOGY_AUDIT_UNAVAILABLE") from None
+
+                observe("admitted")
+                try:
+                    actor = principal()
+                    token = get_access_token()
+                    provider, path = github_provider.open_project(actor, project)
+                    repository = provider.require(actor, project)
+
+                    def check():
+                        if (principal() != actor or token.expires_at is None
+                                or token.expires_at <= time.time()
+                                or provider.require(actor, project) != repository):
+                            raise PermissionError("DENIED")
+
+                    check()
+                    result = installed_context(path, repository, workflow, skills, templates, expected_revision)
+                    check()
+                    observe("complete")
+                    check()
+                    return result
+                except PermissionError:
+                    observe("denied")
+                    raise PermissionError("DENIED") from None
+                except (OSError, ValueError, TypeError):
+                    observe("failed")
+                    raise ValueError("METHODOLOGY_UNAVAILABLE_OR_INVALID_SELECTION") from None
+                except Exception:
+                    observe("failed")
+                    raise RuntimeError("METHODOLOGY_CONTEXT_FAILED") from None
+
+            return await asyncio.to_thread(execute)
 
     return mcp
 
@@ -332,7 +409,8 @@ def main():
     parser.add_argument("--tls-cert", type=Path, help="Private local PEM certificate")
     parser.add_argument("--tls-key", type=Path, help="Private local PEM key")
     parser.add_argument("--supervised-ca", type=Path, help="Require verified loopback TLS metadata before worker dispatch")
-    parser.add_argument("--project-config", type=Path, help="Explicit local project configuration for GitHub context")
+    parser.add_argument("--project-config", type=Path, help="Legacy local project configuration for GitHub context")
+    parser.add_argument("--github-projects", action="store_true", help="Use locally authorized projects in the existing private service configuration")
     args = parser.parse_args()
     os.umask(0o077)
     try:
@@ -387,7 +465,7 @@ def main():
             bind_image(jobs, args.fixture_image, context_id)
         try:
             github_provider = load_operational_provider(verifier, supervised=diagnostics is not None and args.fixture_image is None,
-                                                        project_config=args.project_config)
+                                                        project_config=args.project_config, multi=args.github_projects)
         except (OSError, ValueError, TypeError):
             parser.error("Invalid or active private GitHub context configuration")
         fixture = (None if github_provider is not None else

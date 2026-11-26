@@ -32,6 +32,11 @@ class ProviderGuideTests(unittest.TestCase):
         self.assertIn("Terminal:", result.stdout)
         self.assertIn("ChatGPT:", result.stdout)
 
+    def test_project_setup_noninteractive_does_not_enroll(self):
+        result = self.invoke("--providers", "chatgpt", "--project", "/tmp/unused")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("Sin TTY", result.stdout)
+
     def test_reject_invalid_and_mixed_options(self):
         for args in (("--providers", "unknown"), ("--providers", "both", "--configure"),
                      ("--providers", "both", "--bridge-setup", "/tmp/unused")):

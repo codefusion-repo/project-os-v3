@@ -1029,12 +1029,13 @@ def main(argv=None):
     args = parser.parse_args(argv)
     try:
         if args.providers:
-            if any(value for key, value in vars(args).items() if key != 'providers'):
-                parser.error('--providers no se combina con otras opciones')
+            if any(value for key, value in vars(args).items() if key not in ('providers', 'project')) or (args.project and args.providers == 'terminal'):
+                parser.error('--providers solo admite --project para chatgpt o both')
             spec = importlib.util.spec_from_file_location('provider_setup', ROOT / 'tools/provider_setup.py')
             provider_setup = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(provider_setup)
-            return provider_setup.guide(args.providers, ROOT, interactive=sys.stdin.isatty() and sys.stdout.isatty())
+            return provider_setup.guide(args.providers, ROOT, interactive=sys.stdin.isatty() and sys.stdout.isatty(),
+                                        project=args.project, local=project_local)
         if args.bridge_setup:
             if any(value for key, value in vars(args).items() if key != 'bridge_setup'):
                 parser.error('--bridge-setup no se combina con otras opciones')
