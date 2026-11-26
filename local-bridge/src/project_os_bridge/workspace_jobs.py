@@ -5,6 +5,7 @@ supply a fixed executor for a single disposable execution job.
 """
 import os
 import re
+import json
 
 from .github_context import PROJECT
 from .methodology import SHA
@@ -52,7 +53,8 @@ def authorize_request(policy, principal, request, *, execute=False):
         policy.require(principal, op, project)
 
 
-def submit_workspace(jobs, principal, project, expected_sha, profile, request_key, *, image_id=None):
+def submit_workspace(jobs, principal, project, expected_sha, profile, request_key, *, image_id=None,
+                     authorize=lambda: None):
     runtime = local_runtime(jobs.probe.root)
     jobs.policy.require(principal, "submit", "disposable")
     jobs.policy.require(principal, "workspace_materialize", project)
@@ -66,8 +68,33 @@ def submit_workspace(jobs, principal, project, expected_sha, profile, request_ke
     authorize_request(jobs.policy, principal, request, execute=execute)
     # Admission checks the mapping and immutable commit before queueing.
     prepare_workspace(*args)
+    local_runtime(jobs.probe.root)
+    _, current_entry, current_root = _binding(*args)
+    if binding_digest(current_entry, current_root) != request["binding"]:
+        raise PermissionError("WORKSPACE_BINDING_CHANGED")
+    authorize()
     return jobs.submit(principal, "disposable", "workspace_execute" if execute else "workspace_prepare",
                        request_key, workspace=request)
+
+
+def require_workspace_job(jobs, principal, job_id):
+    """Revalidate ownership and the frozen mapping before HTTP disclosure."""
+    if not isinstance(job_id, str) or not re.fullmatch(r"[0-9a-f]{32}", job_id):
+        raise PermissionError("DENIED")
+    runtime = local_runtime(jobs.probe.root)
+    with jobs.transaction() as conn:
+        row = conn.execute(
+            "SELECT jobs.principal, jobs.workflow, workspace_inputs.request "
+            "FROM jobs JOIN workspace_inputs ON jobs.id=workspace_inputs.job_id "
+            "WHERE jobs.id=?", (job_id,)).fetchone()
+        if not row or row["principal"] != principal or row["workflow"] != "workspace_prepare":
+            raise PermissionError("DENIED")
+        request = json.loads(row["request"])
+    authorize_request(jobs.policy, principal, request)
+    _, entry, root = _binding(runtime, jobs.policy, principal, request["project"],
+                              request["expected_sha"], request["profile"])
+    if binding_digest(entry, root) != request["binding"]:
+        raise PermissionError("DENIED")
 
 
 def run_workspace(jobs, row, *, executor=None):

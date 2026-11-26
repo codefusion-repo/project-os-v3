@@ -51,7 +51,14 @@ def fixture_enabled(verifier, image, context_id=None):
         return False
 
 
-def build_server(verifier, jobs, fixture_reader=None, *, fixture_image=None, diagnostics=None, context_id=None, github_provider=None, maintenance=None):
+def build_server(verifier, jobs, fixture_reader=None, *, fixture_image=None, diagnostics=None, context_id=None, github_provider=None, maintenance=None, workspace_candidate=False):
+    if workspace_candidate:
+        from .workspace_jobs import local_runtime
+        if (jobs.workflows != frozenset({"workspace_prepare"}) or jobs.probe.root == verifier.state_dir
+                or fixture_reader is not None or fixture_image is not None or github_provider is not None
+                or maintenance is not None or diagnostics is not None):
+            raise ValueError("Dedicated workspace preparation candidate required")
+        local_runtime(jobs.probe.root)
     if github_provider is not None and (type(github_provider) not in (GitHubContext, MultiProjectContext) or fixture_image is not None or fixture_reader is not None):
         raise ValueError("Invalid GitHub context configuration")
     mcp = MCPServer("Project OS authenticated disposable jobs",
@@ -85,6 +92,9 @@ def build_server(verifier, jobs, fixture_reader=None, *, fixture_image=None, dia
                     result["installation"] = {"status": "receipt_observed", **installed_receipt()}
                 except (OSError, ValueError, TypeError, RecursionError):
                     pass  # No private paths or exception details.
+            if workspace_candidate:
+                result["workspace_prepare_registered"] = True
+                result["workspace_execution_available"] = False
             if maintenance is not None:
                 result["maintenance_registered"] = True
                 result["maintenance_authorized"] = maintenance.enabled()
@@ -177,20 +187,72 @@ def build_server(verifier, jobs, fixture_reader=None, *, fixture_image=None, dia
                 raise PermissionError("DENIED")
             return {"job_id":jobs.submit(actor,"disposable","git_fixture_check",request_key)}
 
+    if workspace_candidate:
+        from .workspace_jobs import submit_workspace, require_workspace_job
+
+        @mcp.tool(annotations=write)
+        async def submit_workspace_job(project: StrictStr, expected_sha: StrictStr,
+                                       profile: StrictStr, request_key: StrictStr) -> dict:
+            """Prepare an exact committed revision in the dedicated candidate workspace.
+            No execution, image selection, arbitrary paths, commands or source disclosure."""
+            actor = principal()
+            token = get_access_token()
+
+            def check():
+                if (principal() != actor or token.expires_at is None
+                        or token.expires_at <= time.time()):
+                    raise PermissionError("DENIED")
+
+            def submit():
+                try:
+                    check()
+                    job = submit_workspace(jobs, actor, project, expected_sha, profile,
+                                           request_key, authorize=check)
+                    require_workspace_job(jobs, actor, job)
+                    check()
+                    return {"job_id": job}
+                except PermissionError:
+                    raise PermissionError("DENIED") from None
+                except (OSError, ValueError, TypeError):
+                    raise ValueError("WORKSPACE_UNAVAILABLE_OR_INVALID_REQUEST") from None
+                except Exception:
+                    raise RuntimeError("WORKSPACE_SUBMISSION_FAILED") from None
+
+            return await asyncio.to_thread(submit)
+
+    def workspace_access(actor, job_id):
+        if workspace_candidate:
+            try:
+                require_workspace_job(jobs, actor, job_id)
+            except (PermissionError, OSError, ValueError, TypeError):
+                raise PermissionError("DENIED") from None
+            if principal() != actor:
+                raise PermissionError("DENIED")
+
     @mcp.tool(annotations=read)
     def get_job_status(job_id: str) -> dict:
         """Read the caller's disposable job result."""
-        return jobs.get(principal(),job_id)
+        actor = principal()
+        workspace_access(actor, job_id)
+        result = jobs.get(actor, job_id)
+        workspace_access(actor, job_id)
+        return result
 
     @mcp.tool(annotations=read)
     def get_job_evidence(job_id: str) -> dict:
         """Read the caller's persisted result and transitions; never execute a job."""
-        return jobs.evidence(principal(),job_id)
+        actor = principal()
+        workspace_access(actor, job_id)
+        result = jobs.evidence(actor, job_id)
+        workspace_access(actor, job_id)
+        return result
 
     @mcp.tool(annotations=write)
     def cancel_job(job_id: str) -> dict:
         """Cancel the caller's queued disposable job; running jobs are not cancellable."""
-        return {"cancelled":jobs.cancel(principal(),job_id)}
+        actor = principal()
+        workspace_access(actor, job_id)
+        return {"cancelled":jobs.cancel(actor,job_id)}
 
     if fixture_reader is not None:
         @mcp.tool(annotations=read)
@@ -318,9 +380,9 @@ class LocalAuthorizationMiddleware:
         await self.app(scope, receive, send)
 
 
-def build_http_app(verifier, jobs, fixture_reader=None, *, audit=None, limit=120, fixture_image=None, diagnostics=None, context_id=None, github_provider=None, maintenance=None):
+def build_http_app(verifier, jobs, fixture_reader=None, *, audit=None, limit=120, fixture_image=None, diagnostics=None, context_id=None, github_provider=None, maintenance=None, workspace_candidate=False):
     """Use the same authenticated ASGI stack in production and HTTP tests."""
-    server = build_server(verifier, jobs, fixture_reader, fixture_image=fixture_image, diagnostics=diagnostics, context_id=context_id, github_provider=github_provider, maintenance=maintenance)
+    server = build_server(verifier, jobs, fixture_reader, fixture_image=fixture_image, diagnostics=diagnostics, context_id=context_id, github_provider=github_provider, maintenance=maintenance, workspace_candidate=workspace_candidate)
     app = server.streamable_http_app(
         stateless_http=True, json_response=True, max_request_body_size=65536,
         host="127.0.0.1",

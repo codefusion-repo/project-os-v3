@@ -1047,6 +1047,107 @@ class AuthTests(unittest.TestCase):
                         self.assertTrue(denied.json()["result"].get("isError", False))
                         self.assertEqual(submit.call_count, 1)
 
+    def test_workspace_candidate_http_materializes_exact_revision(self):
+        from project_os_bridge.workspace_jobs import MARKER, RUNTIME
+        from project_os_bridge.worker import run_pending
+        source = self.root / "synthetic"
+        source.mkdir(mode=0o700)
+        def git(*args):
+            return subprocess.check_output(["git", "-C", str(source), *args]).decode().strip()
+        git("init", "-q")
+        git("config", "user.name", "Fixture")
+        git("config", "user.email", "fixture@example.invalid")
+        git("remote", "add", "origin", "https://github.com/example/demo.git")
+        for name, value in ((".gitignore", ".project-os/\n"),
+                            ("pubspec.yaml", "name: demo\n"), ("pubspec.lock", "packages: {}\n"),
+                            ("package.json", '{"name":"demo"}\n'), ("package-lock.json", "{}\n")):
+            (source / name).write_text(value)
+        git("add", ".")
+        git("commit", "-qm", "fixture")
+        sha = git("rev-parse", "HEAD")
+        (source / "pubspec.yaml").write_text("dirty\n")
+        config_dir = source / ".project-os"
+        config_dir.mkdir(mode=0o700)
+        config = config_dir / "config.json"
+        config.touch(mode=0o600)
+        config.write_text(json.dumps({"version": 2, "repositories": ["example/demo"],
+            "github_context": {"project": "demo", "repository": "example/demo", "repository_id": 1}}))
+        state = self.root / "workspace"
+        state.mkdir(mode=0o700)
+        (state / MARKER).touch(mode=0o600)
+        runtime = state / RUNTIME
+        runtime.touch(mode=0o600)
+        runtime.write_text(json.dumps({"tunnel": "fixture", "tunnel_id": "fixture", "image": None,
+            "github_projects": {"demo": {"config": str(config), "repository": "example/demo", "repository_id": 1}}}))
+        policy = Policy([(SUBJECT, op, "disposable") for op in ("submit", "read", "cancel")]
+                        + [(SUBJECT, op, "demo") for op in
+                           ("workspace_prepare", "workspace_materialize", "flutter-test", "expo-test")])
+        jobs = Jobs(state, policy, workflows=("workspace_prepare",))
+        app = build_http_app(self.verifier, jobs, workspace_candidate=True)
+        headers = {"Accept": "application/json, text/event-stream", "Authorization": "Bearer " + self.token()}
+        def call(client, method, params):
+            response = client.post("/mcp", headers=headers,
+                json={"jsonrpc": "2.0", "id": 1, "method": method, "params": params})
+            self.assertEqual(response.status_code, 200)
+            return response.json()["result"]
+        def tool(client, name, **arguments):
+            return call(client, "tools/call", {"name": name, "arguments": arguments})
+        def payload(result):
+            self.assertFalse(result.get("isError", False), result)
+            return json.loads(result["content"][0]["text"])
+        with TestClient(app, base_url="http://127.0.0.1:8765") as client:
+            init = call(client, "initialize", {"protocolVersion": "2025-11-25",
+                "capabilities": {}, "clientInfo": {"name": "test", "version": "1"}})
+            headers["MCP-Protocol-Version"] = init["protocolVersion"]
+            tools = {item["name"] for item in call(client, "tools/list", {})["tools"]}
+            self.assertIn("submit_workspace_job", tools)
+            self.assertNotIn("submit_workspace_execute", tools)
+            ids = []
+            for profile in ("flutter-test", "expo-test"):
+                args = {"project": "demo", "expected_sha": sha, "profile": profile, "request_key": profile}
+                first = payload(tool(client, "submit_workspace_job", **args))
+                self.assertEqual(first, payload(tool(client, "submit_workspace_job", **args)))
+                ids.append(first["job_id"])
+            for change in ({"project": "other"}, {"expected_sha": "HEAD"}, {"profile": "flutter-apk-debug"},
+                           {"profile": "shell"}, {"profile": "flutter-test", "request_key": "expo-test"}):
+                args = {"project": "demo", "expected_sha": sha, "profile": "expo-test", "request_key": "invalid"}
+                args.update(change)
+                self.assertTrue(tool(client, "submit_workspace_job", **args).get("isError", False))
+            with jobs.transaction() as conn:
+                self.assertEqual(conn.execute("SELECT count(*) FROM jobs").fetchone()[0], 2)
+            run_pending(jobs)
+            for job in ids:
+                evidence = payload(tool(client, "get_job_evidence", job_id=job))
+                self.assertEqual(evidence["state"], "SUCCEEDED")
+                self.assertEqual(evidence["result"]["head"], sha)
+                self.assertTrue(evidence["result"]["workspace_materialized"])
+                self.assertFalse(evidence["result"]["execution_available"])
+                self.assertNotIn(str(self.root), json.dumps(evidence))
+                self.assertEqual((state / ("workspace-" + job) / "pubspec.yaml").read_text(), "name: demo\n")
+            self.assertEqual((source / "pubspec.yaml").read_text(), "dirty\n")
+            # Removing the exact mapping denies further submission and disclosure.
+            data = json.loads(runtime.read_text())
+            data["github_projects"] = {}
+            runtime.write_text(json.dumps(data))
+            self.assertTrue(tool(client, "get_job_evidence", job_id=ids[0]).get("isError", False))
+            self.assertTrue(tool(client, "get_job_status", job_id=ids[0]).get("isError", False))
+            self.assertTrue(tool(client, "submit_workspace_job", project="demo", expected_sha=sha,
+                                 profile="expo-test", request_key="revoked").get("isError", False))
+            with jobs.transaction() as conn:
+                self.assertEqual(conn.execute("SELECT count(*) FROM jobs").fetchone()[0], 2)
+            (state / MARKER).unlink()
+            self.assertTrue(tool(client, "cancel_job", job_id=ids[0]).get("isError", False))
+
+    def test_workspace_candidate_cannot_register_on_active_state_or_execution_queue(self):
+        jobs = Jobs(self.root, Policy([]), workflows=("workspace_prepare",))
+        with self.assertRaises(ValueError):
+            build_http_app(self.verifier, jobs, workspace_candidate=True)
+        candidate = self.root / "candidate"
+        candidate.mkdir(mode=0o700)
+        jobs = Jobs(candidate, Policy([]), workflows=("workspace_prepare", "workspace_execute"))
+        with self.assertRaises(ValueError):
+            build_http_app(self.verifier, jobs, workspace_candidate=True)
+
     def test_http_transport(self):
         policy=Policy((SUBJECT,op,"disposable") for op in ("submit","read","cancel","github_read"))
         jobs=Jobs(self.root,policy)
