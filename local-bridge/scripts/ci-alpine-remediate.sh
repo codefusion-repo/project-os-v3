@@ -230,22 +230,34 @@ fi
 # Release subuid-owned layers through the same context before the EXIT trap removes it.
 "${runtime[@]}" - "$context" "$image" <<'PY'
 from pathlib import Path
+import re
 import sys
-from project_os_bridge.podman_context import FIXTURE_TAG, PodmanContext
+from project_os_bridge.podman_context import PodmanContext
 
 context = PodmanContext(Path(sys.argv[1]))
 identity = context.identity()
 context.require_import(identity, sys.argv[2])
 
-def require_empty(*args):
+def inventory(*args):
     result = context.run(identity, *args, capture=True)
-    if result.returncode or result.stdout.strip():
-        raise SystemExit("Unexpected contents in disposable fixture store")
+    if result.returncode:
+        raise SystemExit("Could not read the disposable fixture store inventory")
+    return {line.removeprefix(b"sha256:") for line in result.stdout.splitlines()}
 
-require_empty("ps", "--all", "--quiet")
-if context.run(identity, "rmi", FIXTURE_TAG, timeout=30).returncode:
+if inventory("ps", "--all", "--quiet"):
+    raise SystemExit("Containers remain in the disposable fixture store")
+image_ids = inventory("image", "inspect", "--format", "{{.Id}}", sys.argv[2])
+if (len(image_ids) != 1 or not re.fullmatch(rb"[0-9a-f]{64}", next(iter(image_ids)))
+        or image_ids != inventory("image", "ls", "--all", "--quiet", "--no-trunc")):
+    raise SystemExit("Expected only the pinned image in the disposable fixture store")
+image_id = next(iter(image_ids)).decode("ascii")
+# OCI import can leave an additional local alias. Remove only the verified image.
+if context.run(identity, "image", "untag", image_id).returncode:
+    raise SystemExit("Could not untag the pinned image in the disposable fixture store")
+if context.run(identity, "rmi", "--no-prune", image_id, timeout=30).returncode:
     raise SystemExit("Could not remove the pinned image from the disposable fixture store")
-require_empty("image", "ls", "--all", "--quiet")
+if inventory("image", "ls", "--all", "--quiet", "--no-trunc"):
+    raise SystemExit("Images remain in the disposable fixture store")
 print("DISPOSABLE_CONTEXT_IMAGE_REMOVED")
 PY
 echo 'ALPINE_REMEDIATION_EVIDENCE_PASS'
