@@ -6,7 +6,8 @@ from pathlib import Path
 from unittest.mock import patch
 
 from project_os_bridge.core import Policy
-from project_os_bridge.workspace_preflight import FLUTTER_PROFILES, prepare_flutter
+from project_os_bridge.workspace_preflight import FLUTTER_PROFILES, prepare_workspace, materialize_workspace
+from project_os_bridge.workspace_profiles import PROFILES, artifact_identity
 
 
 class WorkspacePreflightTests(unittest.TestCase):
@@ -26,6 +27,8 @@ class WorkspacePreflightTests(unittest.TestCase):
         manifest = self.project / "android/app/src/main/AndroidManifest.xml"
         manifest.parent.mkdir(parents=True)
         manifest.write_text("<manifest/>\n")
+        (self.project / "package.json").write_text('{"name":"demo"}\n')
+        (self.project / "package-lock.json").write_text('{"lockfileVersion":3}\n')
         self.git("add", ".")
         self.git("commit", "-qm", "fixture")
         self.sha = self.git("rev-parse", "HEAD")
@@ -44,19 +47,19 @@ class WorkspacePreflightTests(unittest.TestCase):
                          "repository": "example/demo", "repository_id": 123}}}
         self.runtime.write_text(json.dumps(self.data))
         self.policy = Policy(("operator", op, "demo")
-                             for op in ("workspace_prepare", *FLUTTER_PROFILES))
+                             for op in ("workspace_prepare", "workspace_materialize", *PROFILES))
 
     def git(self, *args):
         return subprocess.check_output(["git", "-C", str(self.project), *args]).decode().strip()
 
     def prepare(self, profile="flutter-test", sha=None, policy=None, principal="operator", project="demo"):
-        return prepare_flutter(self.runtime, self.policy if policy is None else policy,
+        return prepare_workspace(self.runtime, self.policy if policy is None else policy,
                                principal, project, self.sha if sha is None else sha, profile)
 
     def test_exact_revision_and_no_checkout_mutation(self):
         (self.project / "pubspec.yaml").write_text("dirty changes\n")
         before = self.git("status", "--porcelain")
-        for profile in FLUTTER_PROFILES:
+        for profile in PROFILES:
             result = self.prepare(profile)
             self.assertEqual(result["head"], self.sha)
             self.assertEqual(result["tree"], self.git("rev-parse", self.sha + "^{tree}"))
@@ -123,3 +126,68 @@ class WorkspacePreflightTests(unittest.TestCase):
         with patch("project_os_bridge.workspace_preflight.git", side_effect=revoke):
             with self.assertRaises(PermissionError):
                 self.prepare()
+
+    def materialize(self, profile="expo-test", sha=None, job="a" * 32, policy=None):
+        parent = self.root / "workspaces"
+        parent.mkdir(mode=0o700, exist_ok=True)
+        return materialize_workspace(self.runtime, self.policy if policy is None else policy,
+                                     "operator", "demo", self.sha if sha is None else sha,
+                                     profile, parent, job)
+
+    def test_materialization_exact_bytes_both_frameworks(self):
+        (self.project / "pubspec.yaml").write_text("dirty\n")
+        (self.project / "untracked.txt").write_text("not committed")
+        before = self.git("status", "--porcelain")
+        one = self.materialize("flutter-test")
+        two = self.materialize("expo-test", job="b" * 32)
+        self.assertTrue(one["workspace_materialized"])
+        self.assertFalse(two["execution_available"])
+        self.assertEqual(one["workspace_sha256"], two["workspace_sha256"])
+        for job in ("a" * 32, "b" * 32):
+            dest = self.root / "workspaces" / ("workspace-" + job)
+            self.assertEqual((dest / "pubspec.yaml").read_text(), "name: demo\n")
+            self.assertFalse((dest / ".git").exists())
+            self.assertFalse((dest / ".project-os").exists())
+            self.assertFalse((dest / "untracked.txt").exists())
+        self.assertEqual(self.git("status", "--porcelain"), before)
+        with self.assertRaises(FileExistsError):
+            self.materialize()
+
+    def test_managed_expo_does_not_require_native_tree(self):
+        self.git("rm", "android/app/src/main/AndroidManifest.xml")
+        self.git("commit", "-qm", "managed expo")
+        self.assertTrue(self.materialize("expo-apk-debug", sha=self.git("rev-parse", "HEAD"))
+                        ["workspace_materialized"])
+
+    def test_sensitive_path_and_symlink_rejected_before_export(self):
+        for filename in (".env", "link"):
+            with self.subTest(filename=filename):
+                path = self.project / filename
+                if filename == "link":
+                    path.symlink_to("pubspec.yaml")
+                else:
+                    path.write_text("synthetic only")
+                self.git("add", filename)
+                self.git("commit", "-qm", "unsafe fixture")
+                with self.assertRaises((PermissionError, ValueError)):
+                    self.materialize(sha=self.git("rev-parse", "HEAD"))
+                self.assertFalse((self.root / "workspaces" / ("workspace-" + "a" * 32)).exists())
+                self.git("rm", filename)
+                self.git("commit", "-qm", "remove fixture")
+
+    def test_materialization_grant_separate_and_file_limit(self):
+        with self.assertRaises(PermissionError):
+            self.materialize(policy=Policy([("operator", "workspace_prepare", "demo"),
+                                             ("operator", "expo-test", "demo")]))
+        with patch("project_os_bridge.workspace_preflight.MAX_FILE", 1):
+            with self.assertRaises(ValueError):
+                self.materialize()
+        self.assertFalse((self.root / "workspaces" / ("workspace-" + "a" * 32)).exists())
+
+    def test_profile_contract_and_artifact_identity(self):
+        self.assertEqual(PROFILES["flutter-apk-debug"].artifact_kind, "apk")
+        self.assertEqual(PROFILES["expo-apk-debug"].artifact_kind, "apk")
+        self.assertEqual(artifact_identity("apk", "app.apk", b"synthetic"),
+                         artifact_identity("apk", "app.apk", b"synthetic"))
+        self.assertNotEqual(artifact_identity("apk", "app.apk", b"one")["sha256"],
+                            artifact_identity("apk", "app.apk", b"two")["sha256"])

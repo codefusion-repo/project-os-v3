@@ -10,6 +10,7 @@ from .core import Jobs, Policy
 from .git_fixture import GitFixture, SHA, FILE
 from .workos_auth import private_directory, private_file
 from .worker import run_pending
+from .workspace_profiles import artifact_identity
 
 MARKER = "local-package-mode"
 PRINCIPAL = "local-package"
@@ -108,8 +109,8 @@ def run_package(jobs, row):
         with zipfile.ZipFile(io.BytesIO(raw)) as archive:
             if archive.namelist() != [FILE] or archive.read(FILE) != data:
                 raise RuntimeError("PACKAGE_VERIFICATION_FAILED")
-        result["steps"].append({"step": "build", "exit_code": 0, "artifact": ARTIFACT,
-                                "sha256": hashlib.sha256(raw).hexdigest(), "size": len(raw)})
+        result["steps"].append({"step": "build", "exit_code": 0,
+                                **artifact_identity("zip", ARTIFACT, raw)})
         return "SUCCEEDED", result
     except (PermissionError, ValueError, FileExistsError):
         result["error"] = "PACKAGE_PREFLIGHT_BLOCKED"

@@ -172,11 +172,11 @@ Las extensiones de PR y contexto de proyecto son propuestas; empezar por issues/
 | build_project | Compilar mediante perfil autorizado |
 | workspace_changes | Recuperar diff resultante para review |
 
-Ejemplos conceptuales de perfiles: frontend (build, typecheck, lint, tests); backend (tests unitarios, integración, comprobaciones de Django); mobile (análisis, tests, compilación APK). Los perfiles definen operaciones y permisos; no son comandos libres ni perfiles ya disponibles. Pueden compartir handlers. Aceptación: Browser solicita una revisión real autorizada y recibe exit codes de build/tests, logs acotados, identidad de artefactos y diff cuando aplique, preservando cambios ajenos y exclusividad del worktree. [#16](https://github.com/codefusion-repo/project-os-v3/issues/16).
+El núcleo de preparación, jobs, validación, builds y evidencia es agnóstico al proyecto, framework y plataforma, según aclaración ratificada del PM en #16. Flutter y Expo/React Native son los primeros perfiles de referencia, sin acoplar el núcleo ni imponer Android a otros proyectos. Ejemplos adicionales: frontend (build, typecheck, lint, tests); backend (tests unitarios, integración, comprobaciones de Django); mobile (análisis, tests, compilación APK). Los perfiles definen operaciones y permisos; no son comandos libres ni perfiles ya disponibles. Pueden compartir handlers. Aceptación: Browser solicita una revisión real autorizada y recibe exit codes de build/tests, logs acotados, identidad de artefactos y diff cuando aplique, preservando cambios ajenos y exclusividad del worktree. [#16](https://github.com/codefusion-repo/project-os-v3/issues/16).
 
 #### C. Android QA — LB-08 (#17)
 
-Reutilizar el emulador existente de Android Studio iniciado y autorizado por el PM en Windows. Browser solicita build y QA; Local Bridge en WSL2 compila o selecciona el APK; ADB Attach conecta con ese emulador; se instala, prueba y recupera evidencia y el mismo APK. No iniciar otro emulador, usar dispositivos personales ni cambiar Windows sin autorización.
+Android QA es agnóstico al framework productor del APK (Flutter, Expo/React Native, Android nativo u otros compatibles). Reutilizar el emulador existente de Android Studio iniciado y autorizado por el PM en Windows. Browser solicita build y QA; Local Bridge en WSL2 compila o selecciona el APK; ADB Attach conecta con ese emulador; se instala, prueba y recupera evidencia y el mismo APK. No iniciar otro emulador, usar dispositivos personales ni cambiar Windows sin autorización.
 
 | Interfaz candidata | Responsabilidad |
 |---|---|
