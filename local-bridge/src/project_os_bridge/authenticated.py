@@ -169,7 +169,13 @@ def build_server(verifier, jobs, fixture_reader=None, *, fixture_image=None, dia
                     repo = provider.require(actor, project)
 
                     def check_session():
-                        if principal() != actor or token.expires_at is None or token.expires_at <= time.time():
+                        # The legacy reader also uses its own ThreadPoolExecutor.
+                        # Its threads have no MCP request ContextVar; use only
+                        # this request's already authenticated token and live gate.
+                        if (not verifier.enabled() or token.subject != actor
+                                or actor != verifier.subject or token.client_id != verifier.client_id
+                                or SCOPE not in token.scopes or token.expires_at is None
+                                or token.expires_at <= time.time()):
                             raise PermissionError("DENIED")
 
                     check_session()
