@@ -5,6 +5,7 @@ import re
 import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
+from types import MappingProxyType
 from concurrent.futures import ThreadPoolExecutor
 
 from .core import Policy
@@ -13,7 +14,7 @@ from .core import Policy
 class GitHubReader:
     def __init__(self, policy: Policy, repositories: dict, config_dir: Path):
         self.policy = policy
-        self.repositories = dict(repositories)
+        self.repositories = MappingProxyType(dict(repositories))
         self.config_dir = config_dir
         if not config_dir.is_absolute() or config_dir.resolve(strict=True) != config_dir:
             raise ValueError("Dedicated canonical gh config required")
@@ -29,6 +30,10 @@ class GitHubReader:
         ):
             raise ValueError("Unknown repository")
         return repo
+
+    def authorized_repository(self, principal, project):
+        """Resolve an exact locally configured repository after policy evaluation."""
+        return self._repo(principal, project)
 
     def _request(self, endpoint):
         # Explicit GET, no caller-defined endpoint, no inherited tokens or Git config.
@@ -70,6 +75,7 @@ class GitHubReader:
         # Bounded pagination; never silently imply exhaustive results.
         error = None
         for page in range(1, 6):
+            self._repo(principal, project)
             result = self._request(f"{prefix}/comments?per_page=100&page={page}")
             if not result["complete"] or not isinstance(result.get("data"), list):
                 complete = False
@@ -86,6 +92,7 @@ class GitHubReader:
         else:
             complete = False
             error = "PAGE_LIMIT"
+        self._repo(principal, project)
         return {"complete":complete,"issue":issue,"comments":comments,"comments_error":error,
                 "retrieved_at":datetime.now(timezone.utc).isoformat(),
                 "source":"github.com","untrusted_content":True}
@@ -99,5 +106,6 @@ class GitHubReader:
         unique = list(dict.fromkeys(numbers))
         with ThreadPoolExecutor(max_workers=2) as pool:
             results = list(pool.map(lambda n: self.issue_context(principal,project,n),unique))
+        self._repo(principal, project)
         return {"complete":all(x["complete"] for x in results),
                 "issues":dict(zip(unique,results))}

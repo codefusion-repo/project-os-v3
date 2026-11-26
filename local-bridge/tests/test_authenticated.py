@@ -16,6 +16,8 @@ from project_os_bridge.core import Jobs, Policy
 from project_os_bridge.security import Audit, AuditObservationError, MAX_AUDIT_BYTES, AUTH_AUDIT_NAME
 from project_os_bridge.workos_auth import AuthOutcome, auth_outcome
 from project_os_bridge.github_fixture import SyntheticGitHubReader
+from project_os_bridge.github import GitHubReader
+from project_os_bridge.github_context import GitHubContext
 
 ISSUER="https://fixture.authkit.app"
 RESOURCE="https://api.openai.com/v1/mcp/tunnel_fixture"
@@ -526,6 +528,54 @@ class AuthTests(unittest.TestCase):
                     self.assertEqual(result, first_result)
             with jobs.transaction() as conn:
                 self.assertEqual(conn.execute("SELECT count(*) FROM jobs").fetchone()[0], 1)
+
+    def test_candidate_github_context_authenticated_and_revocable(self):
+        jobs = Jobs(self.root, Policy([]))
+        reader = GitHubReader(Policy([(SUBJECT, "github_read", "demo")]),
+                              {"demo": "example/demo"}, self.root)
+        grants = {(SUBJECT, "demo", "example/demo")}
+        provider = GitHubContext(reader, lambda *grant: grant in grants)
+        app = build_http_app(self.verifier, jobs, github_provider=provider)
+        headers = {"Accept": "application/json, text/event-stream",
+                   "Authorization": "Bearer " + self.token()}
+        init = {"jsonrpc": "2.0", "id": 1, "method": "initialize",
+                "params": {"protocolVersion": "2025-11-25", "capabilities": {},
+                           "clientInfo": {"name": "test", "version": "1"}}}
+        call = {"jsonrpc": "2.0", "id": 2, "method": "tools/call",
+                "params": {"name": "github_context", "arguments": {"project": "demo", "numbers": [1]}}}
+
+        def fake(endpoint):
+            if "/comments?" in endpoint:
+                return {"complete": True, "data": []}
+            return {"complete": True, "data": {"number": 1, "title": "candidate-context", "comments": 0}}
+
+        with patch.object(reader, "_request", side_effect=fake) as request:
+            with TestClient(app, base_url="http://127.0.0.1:8765") as client:
+                response = client.post("/mcp", headers=headers, json=init)
+                self.assertEqual(response.status_code, 200)
+                headers["MCP-Protocol-Version"] = response.json()["result"]["protocolVersion"]
+                listing = client.post("/mcp", headers=headers, json={"jsonrpc": "2.0", "id": 3, "method": "tools/list", "params": {}})
+                self.assertIn("github_context", {tool["name"] for tool in listing.json()["result"]["tools"]})
+                result = client.post("/mcp", headers=headers, json=call)
+                self.assertEqual(result.status_code, 200)
+                self.assertFalse(result.json()["result"].get("isError", False))
+                self.assertIn("candidate-context", result.text)
+                self.assertEqual(request.call_count, 2)
+                denied = client.post("/mcp", headers={**headers, "Authorization": "Bearer " + self.token({"sub": "user_other"})}, json=call)
+                self.assertEqual(denied.status_code, 401)
+                self.assertEqual(request.call_count, 2)
+
+                def revoke(endpoint):
+                    grants.clear()
+                    return fake(endpoint)
+                request.side_effect = revoke
+                denied = client.post("/mcp", headers=headers, json=call)
+                self.assertTrue(denied.json()["result"].get("isError", False))
+                self.assertNotIn("candidate-context", denied.text)
+                count = request.call_count
+                denied = client.post("/mcp", headers=headers, json=call)
+                self.assertTrue(denied.json()["result"].get("isError", False))
+                self.assertEqual(request.call_count, count)
 
     def test_http_transport(self):
         policy=Policy((SUBJECT,op,"disposable") for op in ("submit","read","cancel","github_read"))
