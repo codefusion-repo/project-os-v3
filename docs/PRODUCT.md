@@ -141,6 +141,8 @@ No duplicar en MCP creación/modificación de issues, comentarios, ramas/commits
 
 #### A. Contexto eficiente desde GitHub — LB-06 (#15)
 
+**Dogfooding progresivo ratificado por el PM (2026-11-26):** [decisión #15](https://github.com/codefusion-repo/project-os-v3/issues/15#issuecomment-7186180465). Usar `codefusion-repo/project-os-v3` como primer repositorio real de lectura agrupada, para apoyar el desarrollo de las siguientes capacidades y medir invocaciones Browser, peticiones upstream, latencia, volumen y completitud. No ampliar a otros repositorios ni escrituras MCP. El [PR #36 integrado](https://github.com/codefusion-repo/project-os-v3/pull/36#issuecomment-7186147361) acredita el incremento descartable, no una instalación. Mantener los gates de host, credencial, auditoría, aislamiento, review y mantenimiento; el uso real solo procede tras satisfacerlos. No se convierte esta decisión en un grant permanente ni se presume ahorro.
+
 El primer entregable es contexto real agrupado de issues y comentarios autorizados, reutilizando [GitHubReader](../local-bridge/src/project_os_bridge/github.py). En la base integrada del 2026-11-26, issue_context obtiene issue y comentarios; batch_issues acepta de uno a cinco números, deduplica y usa concurrencia acotada. Existen autorización, límites de respuesta/paginación y metadatos de completitud/frescura. El lector real no está expuesto por MCP: el handler visible de contexto es sintético. No confundir código parcial o mocks con capacidad real habilitada.
 
 | Interfaz candidata | Responsabilidad |

@@ -1,10 +1,10 @@
-"""Candidate delivery boundary for real GitHub issue context; no startup wiring."""
+"""Bounded delivery boundary for GitHub issue context."""
 import json
 import re
 import unicodedata
 from datetime import datetime, timezone
 
-from .github import GitHubReader
+from .github import GitHubReader, GitHubReadError
 
 MAX_CONTEXT_BYTES = 512 * 1024
 MAX_TEXT = 16_384
@@ -21,6 +21,7 @@ SENSITIVE = re.compile(
 ERRORS = frozenset({
     "RESPONSE_LIMIT", "GH_FAILED_OR_TIMEOUT", "GH_UNAVAILABLE_OR_INVALID_JSON",
     "INVALID_RESPONSE", "AGGREGATE_LIMIT", "PAGE_LIMIT", "RESOURCE_MISMATCH",
+    "GH_RATE_LIMIT", "GH_HTTP_ERROR",
 })
 
 
@@ -160,14 +161,15 @@ class GitHubContext:
 
     authorize(principal, project, repository) must return True only for a current
     local grant. It is supplied by trusted application code, never by tool input.
-    No production configuration constructs this candidate yet.
+    Operational construction is explicit and separately gated.
     """
 
-    def __init__(self, reader: GitHubReader, authorize):
+    def __init__(self, reader: GitHubReader, authorize, *, audit=None):
         if type(reader) is not GitHubReader or not callable(authorize):
             raise ValueError("Real reader and explicit grant evaluator required")
         self.reader = reader
         self.authorize = authorize
+        self.audit = audit
 
     def require(self, principal, project):
         try:
@@ -190,13 +192,20 @@ class GitHubContext:
                 raise PermissionError("DENIED")
 
         check_access()
-        raw = self.reader.batch_issues(principal, project, numbers, check_access=check_access)
+        try:
+            raw = self.reader.batch_issues(principal, project, numbers, check_access=check_access)
+            failure = None
+        except GitHubReadError as exc:
+            failure = _error(str(exc))
+            raw = {"complete": False, "issues": {}}
         check_access()
         response = {
             "complete": raw["complete"], "issues": {}, "omitted_issues": [],
-            "error": None, "retrieved_at": datetime.now(timezone.utc).isoformat(),
+            "error": failure, "retrieved_at": datetime.now(timezone.utc).isoformat(),
             "source": "github.com", "untrusted_content": True,
         }
+        if failure is not None:
+            response["omitted_issues"] = list(dict.fromkeys(numbers))
         # Reserve space for all omission identifiers and error metadata.
         budget = MAX_CONTEXT_BYTES - 1024
         for number, item in raw["issues"].items():

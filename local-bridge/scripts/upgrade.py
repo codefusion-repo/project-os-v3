@@ -246,7 +246,7 @@ def maintenance(root, bound_python, *, action):
         else:
             check_unit(root, bound_python, fenced=True)
         for name in ("allow-authenticated-probe", "allow-operational-diagnostics",
-                     "fixture-image", "local-fixture-mode"):
+                     "fixture-image", "local-fixture-mode", "allow-github-context"):
             if os.path.lexists(state / name):
                 raise PermissionError("Opt-ins or fixture binding present")
         check_jobs(state)
