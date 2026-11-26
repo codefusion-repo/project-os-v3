@@ -14,8 +14,10 @@ from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.x509.oid import NameOID, ExtendedKeyUsageOID
 
-from .workos_auth import load_config, private_directory, private_file
+from .workos_auth import load_config, private_directory
 from .isolated import IMAGE
+from .podman_context import PodmanContext
+from .vertical import bound_context
 
 SAFE_PATH = re.compile(r"/[A-Za-z0-9_./-]+")
 
@@ -87,7 +89,7 @@ WantedBy=default.target
 """
 
 
-def prepare_service(root, tunnel, runtime_key, image=None):
+def prepare_service(root, tunnel, runtime_key, image=None, *, podman_context=None):
     if os.getuid() == 0:
         raise PermissionError("Unprivileged account required")
     checked_path(root)
@@ -103,10 +105,10 @@ def prepare_service(root, tunnel, runtime_key, image=None):
         raise ValueError("Invalid runtime key format")
     if image is not None and not IMAGE.fullmatch(image):
         raise ValueError("Locally approved digest required")
+    if (image is None) != (podman_context is None):
+        raise PermissionError("Fixture image and Podman context must be supplied together")
     if image is not None:
-        binding = root / "state" / "fixture-image"
-        if private_file(binding).st_size > 1024 or binding.read_text() != image + "\n":
-            raise PermissionError("Existing validated image binding required")
+        PodmanContext(podman_context).identity(bound_context(root / "state", image))
     python = Path(sys.executable)
     if not SAFE_PATH.fullmatch(str(python)) or not python.is_absolute():
         raise ValueError("Unsupported Python path")
@@ -116,9 +118,10 @@ def prepare_service(root, tunnel, runtime_key, image=None):
     # Never replace existing credentials or certificates, even after failure.
     service.mkdir(mode=0o700)
     generate_tls(service)
-    write_new(service / "runtime.json", json.dumps({
-        "tunnel":str(tunnel), "tunnel_id":verifier.resource.rsplit("/",1)[-1], "image":image
-    }).encode())
+    runtime = {"tunnel":str(tunnel), "tunnel_id":verifier.resource.rsplit("/",1)[-1], "image":image}
+    if podman_context is not None:
+        runtime["podman_context"] = str(podman_context)
+    write_new(service / "runtime.json", json.dumps(runtime).encode())
     write_new(service / "tunnel.yaml", b"{}\n")
     unit = render_unit(root, python)
     write_new(service / "runtime-key", runtime_key.encode("ascii"))
@@ -136,5 +139,6 @@ def interactive_prepare(root, allow_fixture=True):
     with warnings.catch_warnings():
         warnings.simplefilter("error", getpass.GetPassWarning)
         key = getpass.getpass("Runtime API key (Read + Use only): ")
-    prepare_service(root, tunnel, key, image)
+    context = Path(input("Prepared private Podman context (absolute path): ").strip()) if image else None
+    prepare_service(root, tunnel, key, image, podman_context=context)
     print("Private service prepared; not linked, enabled, started or authorized.")

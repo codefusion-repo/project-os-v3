@@ -7,7 +7,8 @@ umask 077
 export XDG_RUNTIME_DIR="/run/user/$(id -u)"
 repo="$(cd -- "$(dirname -- "$0")/../.." && pwd)"
 work="$(mktemp -d "$RUNNER_TEMP/alpine-remediation.XXXXXXXX")"
-trap 'rm -rf -- "$work"' EXIT
+context_parent=
+trap 'rm -rf -- "$work"; if [ -n "$context_parent" ]; then rm -rf -- "$context_parent"; fi' EXIT
 mkdir "$work/packages" "$work/context" "$work/home" "$work/cache" "$work/state"
 # Only public-image scanner evidence; no container bytes, state or credentials.
 evidence_dir="$RUNNER_TEMP/lb-oci-evidence"
@@ -125,11 +126,8 @@ for d in [data['config'], *data['layers']]:
     assert len(raw) == d['size'] and hashlib.sha256(raw).hexdigest() == value
 print('OCI_LAYOUT_VERIFIED', digest)
 PY
-# Re-import exact audited manifest; reject any local identity mismatch.
-loaded="$(podman pull --quiet "oci:$work/oci:candidate")"
-podman tag "$loaded" "$tag"
+# The positive fixture imports the audited layout into its execution context after the scan.
 image="${tag%:*}@$digest"
-[ "$(podman image inspect --format '{{.Digest}}' "$image")" = "$digest" ]
 echo "CANDIDATE_MANIFEST $digest"
 archive=trivy_0.76.2_Linux-64bit.tar.gz
 curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' --max-time 180 -o "$work/$archive" "https://github.com/aquasecurity/trivy/releases/download/v0.76.2/$archive"
@@ -173,18 +171,18 @@ if [ "$mode" = residual ]; then
   echo 'RESIDUAL_EXPECTED_REJECTION_PASS; candidate remains BLOCKED; no post-audit execution'
   exit 0
 fi
-podman run --rm --pull=never --network=none --read-only --cap-drop=ALL --security-opt=no-new-privileges --entrypoint python "$image" -I -B -c 'import ctypes, pathlib, platform, socket, sqlite3, ssl, sys; assert sys.version_info[:2]==(3,12); assert platform.machine()=="x86_64"; assert pathlib.Path("/lib/ld-musl-x86_64.so.1").exists(); ctypes.CDLL("libkrb5.so.3"); assert sqlite3.connect(":memory:").execute("select 1").fetchone()==(1,); assert ssl.OPENSSL_VERSION; assert {n for _,n in socket.if_nameindex()} <= {"lo"}; print("PYTHON_MUSL_PASS", sys.version.split()[0])'
-if [ "$mode" = residual ]; then
-  podman run --rm --pull=never --network=none --read-only --cap-drop=ALL --security-opt=no-new-privileges --entrypoint python "$image" -I -B -c 'import importlib.metadata as m, ssl, zlib; assert m.version("pip") == "26.2"; assert zlib.decompress(zlib.compress(b"fixture")) == b"fixture"; assert ssl.create_default_context(); print("RESIDUAL_COMPAT_PASS", ssl.OPENSSL_VERSION, zlib.ZLIB_RUNTIME_VERSION)'
-elif [ "$mode" = fixture-only ]; then
-  podman run --rm --pull=never --network=none --read-only --cap-drop=ALL --security-opt=no-new-privileges --entrypoint python "$image" -I -B -c 'import importlib.util as u, importlib.metadata as m, pathlib, shutil, ssl, sysconfig, zlib; assert all(u.find_spec(n) is None for n in ("pip", "setuptools", "ensurepip")); assert not {d.metadata["Name"].lower() for d in m.distributions()} & {"pip", "setuptools"}; assert not any(shutil.which(n) for n in ("pip","pip3","pip3.12")); assert not list(pathlib.Path(sysconfig.get_path("stdlib")).glob("ensurepip/_bundled/*.whl")); assert ssl.create_default_context(); assert zlib.decompress(zlib.compress(b"fixture")) == b"fixture"; print("FIXTURE_ONLY_COMPAT_PASS", ssl.OPENSSL_VERSION, zlib.ZLIB_RUNTIME_VERSION)'
-fi
 python3 -m venv "$work/venv"
 "$work/venv/bin/python" -m pip --isolated install --index-url https://pypi.org/simple --only-binary=:all: --require-hashes -r "$repo/local-bridge/requirements-linux-py312.lock"
 "$work/venv/bin/python" -m pip check
+# Podman 4.9.3 limits runroot to 50 bytes. Keep the native execution root short.
+context_parent="$(mktemp -d /tmp/lboci.XXXXXXXX)"
+context="$context_parent/context"
+runtime=(env "PYTHONPATH=$repo/local-bridge/src" "$work/venv/bin/python" -B)
+"${runtime[@]}" -m project_os_bridge.podman_context --context "$context" prepare
+[ "$("${runtime[@]}" -m project_os_bridge.podman_context --context "$context" import-layout "$work/oci" "$digest")" = "$image" ]
 fixture=0
-PYTHONPATH="$repo/local-bridge/src" "$work/venv/bin/python" -m project_os_bridge.vertical --state-dir "$work/state" --request-key ci-alpine-remediation --image "$image" > "$work/evidence.json" || fixture=$?
-python3 - "$repo/local-bridge/src" "$work/evidence.json" "$image" <<'PY' || fixture=1
+PYTHONPATH="$repo/local-bridge/src" "$work/venv/bin/python" -m project_os_bridge.vertical --state-dir "$work/state" --request-key ci-alpine-remediation --image "$image" --podman-context "$context" > "$work/evidence.json" || fixture=$?
+python3 - "$repo/local-bridge/src" "$work/evidence.json" "$image" "$mode" <<'PY' || fixture=1
 import json, sys
 from pathlib import Path
 sys.path.insert(0, sys.argv[1])
@@ -195,13 +193,17 @@ v = r['steps'][-1]
 print('ALPINE_FIXTURE', json.dumps({'state':e['state'], 'image':r.get('image'), 'validation':v, 'events':[x['state'] for x in e['events']]}, sort_keys=True))
 assert e['state'] == 'SUCCEEDED' and r['image'] == sys.argv[3]
 assert r['steps'][1]['original_unchanged'] is True and v['cleanup_verified'] is True
-assert len(v['checks']) == 10 and v['exit_code'] == 0
+from project_os_bridge.isolated import CHECKS, ISOLATION_CHECKS, RUNTIME_COMPATIBILITY, PACKAGE_ABSENCE
+assert v['checks'] == CHECKS and v['isolation_checks'] == ISOLATION_CHECKS and v['exit_code'] == 0
+expected = RUNTIME_COMPATIBILITY + (PACKAGE_ABSENCE if sys.argv[4] == 'fixture-only' else ())
+assert v['compatibility_checks'] == list(expected)
+print('FIXTURE_IMAGE_COMPATIBILITY_PASS')
 PY
 if [ "$fixture" != 0 ]; then exit 1; fi
 # New CLI processes must recover exactly the original durable result without rerunning.
 job_id="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["id"])' "$work/evidence.json")"
 PYTHONPATH="$repo/local-bridge/src" "$work/venv/bin/python" -m project_os_bridge.vertical --state-dir "$work/state" --evidence-job-id "$job_id" > "$work/recovered.json"
-PYTHONPATH="$repo/local-bridge/src" "$work/venv/bin/python" -m project_os_bridge.vertical --state-dir "$work/state" --request-key ci-alpine-remediation --image "$image" > "$work/replay.json"
+PYTHONPATH="$repo/local-bridge/src" "$work/venv/bin/python" -m project_os_bridge.vertical --state-dir "$work/state" --request-key ci-alpine-remediation --image "$image" --podman-context "$context" > "$work/replay.json"
 python3 - "$work/evidence.json" "$work/recovered.json" "$work/replay.json" <<'PY'
 import json, sys
 from pathlib import Path
@@ -211,11 +213,44 @@ assert [e['state'] for e in a['events']] == ['QUEUED', 'RUNNING', 'SUCCEEDED']
 print('ALPINE_FIXTURE_REPLAY_PASS')
 PY
 if [ "$mode" = fixture-only ]; then
-  "$work/venv/bin/python" -I "$repo/local-bridge/scripts/ci-reconcile-fixture.py" "$image"
+  "$work/venv/bin/python" -I "$repo/local-bridge/scripts/ci-reconcile-fixture.py" "$image" "$context"
 fi
 echo "ALPINE_EVIDENCE_COMPLETE mode=$mode audit=$audit locks=1"
 # A failed command in a non-final AND-list is exempt from errexit. Explicitly fail here.
 if [ "$audit" != 0 ] || [ "$fixture" != 0 ] || [ ! -f "$lock" ] || [ ! -f "$manifest_lock" ]; then
   exit 1
 fi
+# Release subuid-owned layers through the same context before the EXIT trap removes it.
+"${runtime[@]}" - "$context" "$image" <<'PY'
+from pathlib import Path
+import re
+import sys
+from project_os_bridge.podman_context import PodmanContext
+
+context = PodmanContext(Path(sys.argv[1]))
+identity = context.identity()
+context.require_import(identity, sys.argv[2])
+
+def inventory(*args):
+    result = context.run(identity, *args, capture=True)
+    if result.returncode:
+        raise SystemExit("Could not read the disposable fixture store inventory")
+    return {line.removeprefix(b"sha256:") for line in result.stdout.splitlines()}
+
+if inventory("ps", "--all", "--quiet"):
+    raise SystemExit("Containers remain in the disposable fixture store")
+image_ids = inventory("image", "inspect", "--format", "{{.Id}}", sys.argv[2])
+if (len(image_ids) != 1 or not re.fullmatch(rb"[0-9a-f]{64}", next(iter(image_ids)))
+        or image_ids != inventory("image", "ls", "--all", "--quiet", "--no-trunc")):
+    raise SystemExit("Expected only the pinned image in the disposable fixture store")
+image_id = next(iter(image_ids)).decode("ascii")
+# OCI import can leave an additional local alias. Remove only the verified image.
+if context.run(identity, "image", "untag", image_id).returncode:
+    raise SystemExit("Could not untag the pinned image in the disposable fixture store")
+if context.run(identity, "rmi", "--no-prune", image_id, timeout=30).returncode:
+    raise SystemExit("Could not remove the pinned image from the disposable fixture store")
+if inventory("image", "ls", "--all", "--quiet", "--no-trunc"):
+    raise SystemExit("Images remain in the disposable fixture store")
+print("DISPOSABLE_CONTEXT_IMAGE_REMOVED")
+PY
 echo 'ALPINE_REMEDIATION_EVIDENCE_PASS'

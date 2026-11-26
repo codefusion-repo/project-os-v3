@@ -80,7 +80,7 @@ References: https://modelcontextprotocol.io/specification/2026-07-28/basic/autho
 
 ## Optional integrated disposable Git job
 
-After the expanded isolation gate passes locally, stop the HTTP server and restart with the same private config/state plus `--fixture-image IMAGE_AT_DIGEST` (replace with the locally approved, already installed exact image digest). Do not use an arbitrary or remote-provided image. This enables only `submit_git_fixture(request_key)`; all code and paths are fixed. Refresh tool discovery. Use one unique request key, read status and `get_job_evidence(job_id)`, replay the same key, and compare evidence after restart. Missing image binding denies new submissions and blocks queued fixture dispatch. Stop the process before changing local configuration; no in-flight cancellation guarantee. No real repository access.
+After the expanded isolation gate passes locally, stop the HTTP server and restart with the same private config/state plus `--fixture-image IMAGE_AT_DIGEST --podman-context /absolute/private/context` (replace with the locally approved exact image digest and prepared context). Do not use an arbitrary or remote-provided image. This enables only `submit_git_fixture(request_key)`; all code and paths are fixed. Refresh tool discovery. Use one unique request key, read status and `get_job_evidence(job_id)`, replay the same key, and compare evidence after restart. Missing binding denies new submissions. Missing or changed binding or context blocks queued fixture dispatch. The supervised service requires the existing binding. Stop the process before changing local configuration; no in-flight cancellation guarantee. No real repository access.
 
 ## Private loopback TLS (production transport prerequisite)
 

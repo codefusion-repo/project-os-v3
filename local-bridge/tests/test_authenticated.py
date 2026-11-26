@@ -6,7 +6,7 @@ import unittest
 import httpx
 from pathlib import Path
 from http import HTTPStatus
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 from cryptography.hazmat.primitives.asymmetric import rsa
 import jwt
 from starlette.testclient import TestClient
@@ -613,8 +613,9 @@ class AuthTests(unittest.TestCase):
         jobs=Jobs(self.root,Policy((SUBJECT,op,"disposable") for op in OPERATIONS),
                   workflows=("probe_check","git_fixture_check"))
         jobs.submit(SUBJECT,"disposable","probe_check","old-probe")
-        bind_image(jobs,image)
-        app=build_http_app(self.verifier,jobs,fixture_image=image)
+        context=Mock(identity=Mock(return_value="1"*64))
+        bind_image(jobs,image,context.identity())
+        app=build_http_app(self.verifier,jobs,fixture_image=image,context_id="1"*64)
         headers={"Accept":"application/json, text/event-stream","Authorization":"Bearer "+self.token()}
         def call(client,method,params):
             return client.post("/mcp",headers=headers,json={"jsonrpc":"2.0","id":1,"method":method,"params":params}).json()["result"]
@@ -630,11 +631,13 @@ class AuthTests(unittest.TestCase):
             (self.root/"fixture-image").unlink()
             self.assertTrue(tool(client,"submit_git_fixture",request_key="denied").get("isError"))
             with patch("project_os_bridge.vertical.run_git_fixture") as run:
-                run_pending(jobs,fixture_image=image,fixture_allowed=lambda:False)
+                run_pending(jobs,fixture_image=image,podman_context=context,context_id="1"*64,
+                            fixture_allowed=lambda:False)
                 run.assert_not_called()
             evidence=json.loads(tool(client,"get_job_evidence",job_id=job)["content"][0]["text"])
             self.assertEqual(evidence["state"],"BLOCKED")
-            self.assertEqual([e["state"] for e in evidence["events"]],["QUEUED","RUNNING","BLOCKED"])
+            self.assertEqual([e["state"] for e in evidence["events"]],["QUEUED","BLOCKED"])
+            self.assertFalse(jobs.pending_effects())
 
 
     def test_operational_diagnostics_auth_and_revocation(self):
