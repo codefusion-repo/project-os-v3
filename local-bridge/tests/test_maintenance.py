@@ -70,6 +70,34 @@ class MaintenanceTests(unittest.TestCase):
         self.launch.assert_called_once()
         self.assertEqual(self.service.status("request-1")["state"], "BLOCKED")
 
+    def test_wrong_approved_digest_blocks_before_quiescence(self):
+        # Real preflight and run state machine; only external dependencies are
+        # doubled. A syntactically valid but different digest must not cause
+        # service, checkout, fence, rollback, or opt-in changes.
+        result = self.submit(wheel="5" * 64)
+        m.save(self.root / "service/runtime.json", {"image": None})
+        markers = {name: (self.service.state / name).read_bytes()
+                   for name in (m.FLAG, m.FLAGS[0], m.FLAGS[2])}
+        evidence = approval_evidence()
+        with patch.object(self.service, "lifecycle") as lifecycle, \
+                patch.object(self.service, "idle_jobs"), \
+                patch.object(self.service, "checkout", return_value=(OLD, "main")), \
+                patch.object(self.service, "coordinator") as coordinator, \
+                patch.object(m, "git") as git, \
+                patch.object(m, "api", side_effect=evidence):
+            self.assertFalse(self.service.run(result["id"]))
+        lifecycle.assert_called_once_with("status")
+        coordinator.assert_not_called()
+        git.assert_not_called()
+        self.assertEqual(self.service.status("request-1")["state"], "BLOCKED")
+        self.assertEqual(self.service.status("request-1")["stage"], "preflight")
+        self.assertEqual(m.receipt(self.service.venv), PREVIOUS)
+        for name, before in markers.items():
+            self.assertEqual((self.service.state / name).read_bytes(), before)
+        self.assertFalse((self.service.state / m.FLAGS[1]).exists())
+        self.assertFalse((self.service.venv.parent / ".venv-install.rollback").exists())
+        self.assertFalse((self.service.venv.parent / ".venv-install.guard").exists())
+
     def test_default_deny_and_unsafe_marker(self):
         marker = self.service.state / m.FLAG
         marker.unlink()
@@ -238,18 +266,28 @@ class MaintenanceTests(unittest.TestCase):
             self.service.status("request-1")
 
 
+def approval_evidence():
+    run = {"id": 123, "workflow_id": m.WORKFLOW_ID, "path": m.WORKFLOW_PATH,
+           "repository": {"id": m.REPO_ID}, "head_repository": {"id": m.REPO_ID},
+           "event": "push", "head_branch": "main", "head_sha": NEW,
+           "status": "completed", "conclusion": "success", "check_suite_id": 456,
+           "run_attempt": 2}
+    required = [{"context": name, "integration_id": m.APP_ID} for name in ("tests", "probe", "other")]
+    rules = [{"type": "pull_request"},
+             {"type": "required_status_checks", "parameters": {"required_status_checks": required}}]
+    checks = [{"name": row["context"], "app": {"id": m.APP_ID}, "head_sha": NEW,
+               "check_suite": {"id": 456}, "status": "completed", "conclusion": "success"} for row in required]
+    artifact = {"name": "maintenance-wheel-2-" + WHEEL, "expired": False,
+                "workflow_run": {"id": 123, "repository_id": m.REPO_ID,
+                                 "head_repository_id": m.REPO_ID,
+                                 "head_branch": "main", "head_sha": NEW}}
+    return [run, rules, {"total_count": len(checks), "check_runs": checks},
+            {"total_count": 1, "artifacts": [artifact]}, {"object": {"sha": NEW}}]
+
+
 class ApprovalTests(unittest.TestCase):
     def evidence(self):
-        run = {"id": 123, "workflow_id": m.WORKFLOW_ID, "path": m.WORKFLOW_PATH,
-               "repository": {"id": m.REPO_ID}, "head_repository": {"id": m.REPO_ID},
-               "event": "push", "head_branch": "main", "head_sha": NEW,
-               "status": "completed", "conclusion": "success", "check_suite_id": 456}
-        required = [{"context": name, "integration_id": m.APP_ID} for name in ("tests", "probe", "other")]
-        rules = [{"type": "pull_request"},
-                 {"type": "required_status_checks", "parameters": {"required_status_checks": required}}]
-        checks = [{"name": row["context"], "app": {"id": m.APP_ID}, "head_sha": NEW,
-                   "check_suite": {"id": 456}, "status": "completed", "conclusion": "success"} for row in required]
-        return [run, rules, {"total_count": len(checks), "check_runs": checks}, {"object": {"sha": NEW}}]
+        return approval_evidence()
 
     def check(self, evidence):
         req = m.request("update", OLD, NEW, WHEEL, 123, m.request_id("test"))
@@ -260,7 +298,7 @@ class ApprovalTests(unittest.TestCase):
         self.check(self.evidence())
         for index, field, value in ((0, "event", "pull_request"), (0, "head_sha", OLD),
                                     (0, "conclusion", "failure"), (2, "total_count", 4),
-                                    (3, "object", {"sha": OLD})):
+                                    (4, "object", {"sha": OLD})):
             evidence = self.evidence()
             evidence[index][field] = value
             with self.assertRaises(ValueError):
@@ -271,3 +309,29 @@ class ApprovalTests(unittest.TestCase):
             evidence[2]["check_runs"][0][field] = value
             with self.assertRaises(ValueError):
                 self.check(evidence)
+
+    def test_wheel_evidence_must_be_unique_current_and_exact(self):
+        for field, value in (("name", "maintenance-wheel-1-" + WHEEL),
+                             ("name", "maintenance-wheel-2-" + "5" * 64),
+                             ("expired", True)):
+            evidence = self.evidence()
+            evidence[3]["artifacts"][0][field] = value
+            with self.subTest(field=field, value=value), self.assertRaises(ValueError):
+                self.check(evidence)
+        for field, value in (("id", 124), ("repository_id", 1),
+                             ("head_repository_id", 1), ("head_branch", "other"),
+                             ("head_sha", OLD)):
+            evidence = self.evidence()
+            evidence[3]["artifacts"][0]["workflow_run"][field] = value
+            with self.subTest(field=field), self.assertRaises(ValueError):
+                self.check(evidence)
+        for count in (0, 2):
+            evidence = self.evidence()
+            evidence[3]["artifacts"] *= count
+            evidence[3]["total_count"] = count
+            with self.subTest(count=count), self.assertRaises(ValueError):
+                self.check(evidence)
+        evidence = self.evidence()
+        evidence[3]["total_count"] = 2
+        with self.assertRaises(ValueError):
+            self.check(evidence)

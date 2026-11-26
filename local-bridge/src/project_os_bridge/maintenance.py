@@ -198,6 +198,34 @@ def api(path):
         conn.close()
 
 
+def approved_wheel(req, run):
+    # The successful probe publishes its validated install receipt under an
+    # immutable artifact name containing the attempt and wheel digest.
+    # GitHub's public metadata is sufficient; no ZIP download, redirect,
+    # credentials or CI log parsing. The archive digest is NOT the wheel digest.
+    attempt = run["run_attempt"]
+    if type(attempt) is not int or attempt < 1:
+        raise ValueError("Invalid CI attempt")
+    prefix = f"maintenance-wheel-{attempt}-"
+    evidence = api("/actions/runs/" + str(req["ci_run_id"]) + "/artifacts?per_page=100")
+    artifacts = evidence["artifacts"]
+    if evidence["total_count"] != len(artifacts):
+        raise ValueError("Incomplete wheel evidence")
+    matches = [a for a in artifacts if a["name"].startswith(prefix)]
+    if len(matches) != 1:
+        raise ValueError("Missing or ambiguous wheel evidence")
+    artifact = matches[0]
+    identity = artifact["workflow_run"]
+    if (artifact["expired"] is not False
+            or identity["id"] != req["ci_run_id"]
+            or identity["repository_id"] != REPO_ID
+            or identity["head_repository_id"] != REPO_ID
+            or identity["head_branch"] != "main"
+            or identity["head_sha"] != req["target_sha"]
+            or artifact["name"] != prefix + req["wheel_sha256"]):
+        raise ValueError("Unapproved wheel digest")
+
+
 def approved_main(req):
     sha = req["target_sha"]
     run = api("/actions/runs/" + str(req["ci_run_id"]))
@@ -227,6 +255,7 @@ def approved_main(req):
               and c["status"] == "completed" and c["conclusion"] == "success"}
     if not required <= passed:
         raise ValueError("Required CI check failed")
+    approved_wheel(req, run)
     if api("/git/ref/heads/main")["object"]["sha"] != sha:
         raise ValueError("Target is not current main")
 
