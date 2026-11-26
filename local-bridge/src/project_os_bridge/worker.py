@@ -27,7 +27,7 @@ def exclusive_worker(jobs: Jobs):
 
 
 def run_pending(jobs: Jobs, *, fixture_image=None, podman_context=None, context_id=None,
-                enabled=lambda: True, fixture_allowed=lambda: True):
+                enabled=lambda: True, fixture_allowed=lambda: True, workspace_executor=None):
     """Drain queued disposable jobs, no shell, no repo access."""
     from .vertical import bound_context, run_git_fixture
 
@@ -58,9 +58,9 @@ def run_pending(jobs: Jobs, *, fixture_image=None, podman_context=None, context_
                 if row["workflow"] == "probe_check":
                     result = jobs.probe.read()
                     state = "SUCCEEDED"
-                elif row["workflow"] == "workspace_prepare":
+                elif row["workflow"] in {"workspace_prepare", "workspace_execute"}:
                     from .workspace_jobs import run_workspace
-                    state, result = run_workspace(jobs, row)
+                    state, result = run_workspace(jobs, row, executor=workspace_executor)
                 elif row["workflow"] == "fixture_package":
                     from .workspace_fixture import run_package
                     state, result = run_package(jobs, row)

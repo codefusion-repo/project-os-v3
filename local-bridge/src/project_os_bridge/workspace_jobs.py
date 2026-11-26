@@ -1,6 +1,7 @@
 """Durable preparation jobs for the dedicated disposable workspace profile.
 
-Not registered by the authenticated service. No executable runner is enabled.
+Not registered by the authenticated service. A trusted internal CI caller may
+supply a fixed executor for a single disposable execution job.
 """
 import os
 import re
@@ -30,9 +31,12 @@ def local_runtime(root):
     return runtime
 
 
-def authorize_request(policy, principal, request):
+def authorize_request(policy, principal, request, *, execute=False):
+    fields = {"project", "profile", "expected_sha", "binding"}
+    if execute:
+        fields.add("image_id")
     if (not isinstance(request, dict)
-            or set(request) != {"project", "profile", "expected_sha", "binding"}
+            or set(request) != fields
             or any(not isinstance(value, str) for value in request.values())
             or not PROJECT.fullmatch(request["project"])
             or not SHA.fullmatch(request["expected_sha"])
@@ -40,11 +44,15 @@ def authorize_request(policy, principal, request):
         raise ValueError("INVALID_WORKSPACE_REQUEST")
     profile_for(request["profile"])
     project = request["project"]
+    if execute:
+        if not re.fullmatch(r"sha256:[0-9a-f]{64}", request["image_id"]):
+            raise ValueError("INVALID_EXECUTION_IMAGE")
+        policy.require(principal, "workspace_execute", project)
     for op in ("workspace_prepare", "workspace_materialize", request["profile"]):
         policy.require(principal, op, project)
 
 
-def submit_workspace(jobs, principal, project, expected_sha, profile, request_key):
+def submit_workspace(jobs, principal, project, expected_sha, profile, request_key, *, image_id=None):
     runtime = local_runtime(jobs.probe.root)
     jobs.policy.require(principal, "submit", "disposable")
     jobs.policy.require(principal, "workspace_materialize", project)
@@ -52,24 +60,44 @@ def submit_workspace(jobs, principal, project, expected_sha, profile, request_ke
     _, entry, root = _binding(*args)
     request = {"project": project, "profile": profile, "expected_sha": expected_sha,
                "binding": binding_digest(entry, root)}
-    authorize_request(jobs.policy, principal, request)
+    execute = image_id is not None
+    if execute:
+        request["image_id"] = image_id
+    authorize_request(jobs.policy, principal, request, execute=execute)
     # Admission checks the mapping and immutable commit before queueing.
     prepare_workspace(*args)
-    return jobs.submit(principal, "disposable", "workspace_prepare", request_key, workspace=request)
+    return jobs.submit(principal, "disposable", "workspace_execute" if execute else "workspace_prepare",
+                       request_key, workspace=request)
 
 
-def run_workspace(jobs, row):
+def run_workspace(jobs, row, *, executor=None):
     request = row["workspace"]
     result = {"operation": "prepare", "profile": request["profile"],
               "head": request["expected_sha"], "execution_available": False}
     try:
         runtime = local_runtime(jobs.probe.root)
-        authorize_request(jobs.policy, row["principal"], request)
+        execute = row["workflow"] == "workspace_execute"
+        authorize_request(jobs.policy, row["principal"], request, execute=execute)
+        if execute and executor is None:
+            return "BLOCKED", {**result, "reason": "EXECUTION_BACKEND_UNAVAILABLE"}
         snapshot = materialize_workspace(runtime, jobs.policy, row["principal"], request["project"],
                                          request["expected_sha"], request["profile"],
                                          jobs.probe.root, row["id"], expected_binding=request["binding"])
         local_runtime(jobs.probe.root)
-        return "SUCCEEDED", {**result, **snapshot}
+        if not execute:
+            return "SUCCEEDED", {**result, **snapshot}
+        authorize_request(jobs.policy, row["principal"], request, execute=True)
+        _, entry, root = _binding(runtime, jobs.policy, row["principal"], request["project"],
+                                  request["expected_sha"], request["profile"])
+        if binding_digest(entry, root) != request["binding"]:
+            raise PermissionError("WORKSPACE_BINDING_CHANGED")
+        # Trusted internal caller only; production service supplies no executor.
+        execution = executor(jobs.probe.root / ("workspace-" + row["id"]), row, snapshot)
+        if type(execution.get("exit_code")) is not int:
+            raise ValueError("EXECUTION_EVIDENCE_INVALID")
+        return ("SUCCEEDED" if execution["exit_code"] == 0 else "FAILED",
+                {**result, **snapshot, "operation": "execute", "execution_available": True,
+                 "reason": None, "execution": execution})
     except (PermissionError, ValueError, FileExistsError, FileNotFoundError):
         return "BLOCKED", {**result, "reason": "WORKSPACE_PREFLIGHT_BLOCKED"}
     except (OSError, RuntimeError):

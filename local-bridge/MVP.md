@@ -16,6 +16,8 @@ The first LB-07 disposable package slice uses the existing fixture CLI, GitFixtu
 
 CI-only mobile smoke exercises registered Flutter analyze/test and Expo typecheck/test commands against durable synthetic workspace preparation, with exact observed toolchain, lockfile, image and exit evidence. It is not an approved local OCI profile or APK build. The operational execution gate remains closed.
 
+CI-only Flutter APK reference adds a single-use workspace_execute workflow with immutable image ID and separate execute grant, reusing Jobs and the worker. The trusted CI-only executor is absent in the service; no production dispatch, no arbitrary command contract. This records actual execution and APK evidence when CI succeeds; interruption is not replayed. Fresh VM scope is not a replacement for local OCI effect reconciliation.
+
 ## Methodology invariant
 
 Local Bridge is an optional capability provider, not a replacement for the Project OS coordination methodology. All agents must preserve the versioned rules, workflows, skills, templates and adapters specified in [PROJECT_OS.md](../PROJECT_OS.md), regardless of execution provider. GitHub artifacts must use the applicable template and verified evidence; local job success does not waive review, authorization or closeout gates. No provider may silently change the pinned methodology version of an adopted repository.

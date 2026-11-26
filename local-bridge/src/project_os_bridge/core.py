@@ -34,7 +34,7 @@ class Jobs:
         self.probe = Probe(root)
         self.policy = policy
         self.workflows = frozenset(workflows)
-        if not self.workflows <= {"probe_check", "git_fixture_check", "fixture_package", "workspace_prepare"}:
+        if not self.workflows <= {"probe_check", "git_fixture_check", "fixture_package", "workspace_prepare", "workspace_execute"}:
             raise ValueError("Unknown workflow configuration")
         self.db = root / "jobs.sqlite3"
         import os
@@ -59,7 +59,7 @@ class Jobs:
                 c.execute("""CREATE TABLE IF NOT EXISTS package_inputs (
                     job_id TEXT PRIMARY KEY, expected_sha TEXT NOT NULL)""")
 
-            if "workspace_prepare" in self.workflows:
+            if self.workflows & {"workspace_prepare", "workspace_execute"}:
                 c.execute("""CREATE TABLE IF NOT EXISTS workspace_inputs (
                     job_id TEXT PRIMARY KEY, request TEXT NOT NULL)""")
 
@@ -117,9 +117,9 @@ class Jobs:
                 raise ValueError("Full fixture SHA required")
         elif expected_sha is not None:
             raise ValueError("Unexpected revision parameter")
-        if workflow == "workspace_prepare":
+        if workflow in {"workspace_prepare", "workspace_execute"}:
             from .workspace_jobs import authorize_request
-            authorize_request(self.policy, principal, workspace)
+            authorize_request(self.policy, principal, workspace, execute=workflow == "workspace_execute")
             workspace = json.dumps(workspace, sort_keys=True, separators=(",", ":"))
         elif workspace is not None:
             raise ValueError("Unexpected workspace parameters")
@@ -136,7 +136,7 @@ class Jobs:
                                            (row["id"],)).fetchone()
                     if not parameters or parameters["expected_sha"] != expected_sha:
                         raise ValueError("Idempotency conflict")
-                if workflow == "workspace_prepare":
+                if workflow in {"workspace_prepare", "workspace_execute"}:
                     parameters = c.execute("SELECT request FROM workspace_inputs WHERE job_id=?",
                                            (row["id"],)).fetchone()
                     if not parameters or parameters["request"] != workspace:
@@ -156,8 +156,11 @@ class Jobs:
             if workflow == "fixture_package" and c.execute(
                     "SELECT count(*) FROM jobs WHERE workflow='fixture_package'").fetchone()[0] >= 8:
                 raise QueueLimitError("FIXTURE_STORAGE_LIMIT")
-            if workflow == "workspace_prepare" and c.execute(
-                    "SELECT count(*) FROM jobs WHERE workflow='workspace_prepare'").fetchone()[0] >= 8:
+            if workflow == "workspace_execute" and c.execute(
+                    "SELECT 1 FROM jobs WHERE workflow='workspace_execute' LIMIT 1").fetchone():
+                raise QueueLimitError("DISPOSABLE_EXECUTION_ALREADY_USED")
+            if workflow in {"workspace_prepare", "workspace_execute"} and c.execute(
+                    "SELECT count(*) FROM jobs WHERE workflow IN ('workspace_prepare','workspace_execute')").fetchone()[0] >= 8:
                 raise QueueLimitError("WORKSPACE_STORAGE_LIMIT")
             job_id = uuid.uuid4().hex
             stamp = now()
@@ -165,7 +168,7 @@ class Jobs:
                       (job_id,principal,resource,workflow,request_key,"QUEUED",None,stamp,stamp))
             if workflow == "fixture_package":
                 c.execute("INSERT INTO package_inputs VALUES(?,?)", (job_id, expected_sha))
-            if workflow == "workspace_prepare":
+            if workflow in {"workspace_prepare", "workspace_execute"}:
                 c.execute("INSERT INTO workspace_inputs VALUES(?,?)", (job_id, workspace))
             self.event(c, job_id, "QUEUED")
             return job_id
@@ -212,7 +215,7 @@ class Jobs:
                                                (row["id"],)).fetchone()
                         if not parameters or not re.fullmatch(r"[0-9a-f]{40}", parameters["expected_sha"]):
                             raise PermissionError("Missing package revision")
-                    if row["workflow"] == "workspace_prepare":
+                    if row["workflow"] in {"workspace_prepare", "workspace_execute"}:
                         from .workspace_jobs import authorize_request
                         parameters = c.execute("SELECT request FROM workspace_inputs WHERE job_id=?",
                                                (row["id"],)).fetchone()
@@ -220,7 +223,8 @@ class Jobs:
                             raise PermissionError("Missing workspace request")
                         try:
                             workspace = json.loads(parameters["request"])
-                            authorize_request(self.policy, row["principal"], workspace)
+                            authorize_request(self.policy, row["principal"], workspace,
+                                              execute=row["workflow"] == "workspace_execute")
                         except (ValueError, TypeError):
                             raise PermissionError("Invalid workspace request") from None
                     if row["workflow"] == "git_fixture_check":
@@ -233,7 +237,7 @@ class Jobs:
                     continue
                 self.transition(c,row["id"],"QUEUED","RUNNING")
                 claimed = dict(row)
-                if row["workflow"] == "workspace_prepare":
+                if row["workflow"] in {"workspace_prepare", "workspace_execute"}:
                     claimed["workspace"] = workspace
                 if row["workflow"] == "fixture_package":
                     claimed["expected_sha"] = parameters["expected_sha"]

@@ -259,3 +259,46 @@ class WorkspacePreflightTests(unittest.TestCase):
         run_pending(jobs)
         self.assertEqual(jobs.get("operator", job)["state"], "BLOCKED")
         self.assertFalse((jobs.probe.root / ("workspace-" + job)).exists())
+
+    def test_execution_requires_explicit_grant_and_backend(self):
+        jobs = self.workspace_queue()
+        image = "sha256:" + "a" * 64
+        with self.assertRaises(PermissionError):
+            submit_workspace(jobs, "operator", "demo", self.sha, "expo-test", "no-grant",
+                             image_id=image)
+        policy = Policy([*jobs.policy.grants, ("operator", "workspace_execute", "demo")])
+        jobs = Jobs(jobs.probe.root, policy, workflows=("workspace_execute",))
+        job = submit_workspace(jobs, "operator", "demo", self.sha, "expo-test", "execute",
+                               image_id=image)
+        run_pending(jobs)
+        self.assertEqual(jobs.get("operator", job)["state"], "BLOCKED")
+        self.assertFalse((jobs.probe.root / ("workspace-" + job)).exists())
+        self.assertEqual(job, submit_workspace(jobs, "operator", "demo", self.sha, "expo-test",
+                                               "execute", image_id=image))
+        with self.assertRaises(ValueError):
+            submit_workspace(jobs, "operator", "demo", self.sha, "expo-test", "execute",
+                             image_id="sha256:" + "b" * 64)
+
+    def test_execution_result_is_durable_and_no_replay(self):
+        jobs = self.workspace_queue()
+        policy = Policy([*jobs.policy.grants, ("operator", "workspace_execute", "demo")])
+        jobs = Jobs(jobs.probe.root, policy, workflows=("workspace_execute",))
+        image = "sha256:" + "a" * 64
+        job = submit_workspace(jobs, "operator", "demo", self.sha, "expo-test", "execute",
+                               image_id=image)
+        def executor(workspace, row, snapshot):
+            self.assertEqual(row["workspace"]["image_id"], image)
+            self.assertEqual((workspace / "pubspec.yaml").read_text(), "name: demo\n")
+            return {"exit_code": 7, "image_id": image}
+        with patch("builtins.print"):
+            run_pending(jobs, workspace_executor=executor)
+        result = Jobs(jobs.probe.root, policy, workflows=("workspace_execute",)).evidence("operator", job)
+        self.assertEqual(result["state"], "FAILED")
+        self.assertEqual(result["result"]["execution"]["exit_code"], 7)
+        self.assertEqual(result["result"]["operation"], "execute")
+        with patch("builtins.print") as unused:
+            run_pending(jobs, workspace_executor=lambda *args: self.fail("must not replay"))
+            unused.assert_not_called()
+        from project_os_bridge.core import QueueLimitError
+        with self.assertRaises(QueueLimitError):
+            submit_workspace(jobs, "operator", "demo", self.sha, "expo-test", "new", image_id=image)

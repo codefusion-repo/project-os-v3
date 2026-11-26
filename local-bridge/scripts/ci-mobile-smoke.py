@@ -9,16 +9,19 @@ import re
 import subprocess
 import tempfile
 import uuid
+import io
+import stat
+import tarfile
 
 from project_os_bridge.core import Jobs, Policy
 from project_os_bridge.workspace_jobs import MARKER, RUNTIME, submit_workspace
-from project_os_bridge.workspace_profiles import PROFILES
+from project_os_bridge.workspace_profiles import PROFILES, artifact_identity
 from project_os_bridge.worker import run_pending
 
 FLUTTER_VERSION = "3.35.7"
 FLUTTER_SHA256 = "146df531f9ac6a11a918013c1a70faafc053d4811c8cb69a413fd70748d51c3d"
 NODE_VERSION = "22.16.0"
-BASE = "docker.io/library/node:" + NODE_VERSION + "-bookworm"
+BASE = "docker.io/library/node@sha256:71bcbb3b215b3fa84b5b167585675072f4c270855e37a599803f1a58141a0716"
 EXPO_VERSION = "54.0.37"
 RN_VERSION = "0.81.5"
 
@@ -95,6 +98,21 @@ USER $UID:$GID
 RUN test "$(node --version)" = v22.16.0 && npm --version && npm install --package-lock-only --ignore-scripts --no-audit --no-fund && npm ci --ignore-scripts --no-audit --no-fund
 """
 
+# CI-only candidate Android SDK. Official archive checksum:
+# https://developer.android.com/studio#command-line-tools-only
+ANDROID_SETUP = """USER root
+RUN apt-get update && apt-get install -y --no-install-recommends openjdk-17-jdk-headless && rm -rf /var/lib/apt/lists/*
+ENV JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64 ANDROID_HOME=/opt/android-sdk ANDROID_SDK_ROOT=/opt/android-sdk
+ENV PATH=/opt/android-sdk/cmdline-tools/latest/bin:/opt/android-sdk/platform-tools:$PATH
+RUN mkdir -p /opt/android-sdk/cmdline-tools && curl --fail --show-error --silent --location --retry 2 https://dl.google.com/android/repository/commandlinetools-linux-15859902_latest.zip -o /tmp/android.zip && echo '4e4c464f145a7512b57d088ac6c278c03c9eea610886b35a5e0804e74eedf583  /tmp/android.zip' | sha256sum -c - && unzip -q /tmp/android.zip -d /tmp/android-tools && mv /tmp/android-tools/cmdline-tools /opt/android-sdk/cmdline-tools/latest && rm /tmp/android.zip && chown -R "$UID:$GID" /opt/android-sdk
+USER $UID:$GID
+RUN yes | sdkmanager --licenses >/dev/null && sdkmanager 'platform-tools' 'platforms;android-35' 'platforms;android-36' 'build-tools;35.0.0' 'build-tools;36.0.0' 'ndk;27.0.12077973'
+RUN flutter precache --android && flutter create --platforms=android --project-name=synthetic_mobile --org=com.example --no-pub /home/smoke/generated && cp -a /home/smoke/generated/android /fixture/android
+RUN printf 'org.gradle.jvmargs=-Xmx2g -XX:MaxMetaspaceSize=512m -Dfile.encoding=UTF-8\\nandroid.useAndroidX=true\\norg.gradle.workers.max=2\\norg.gradle.daemon=false\\n' > android/gradle.properties
+RUN flutter pub get && flutter build apk --debug --no-pub
+RUN tar --exclude=android/local.properties --exclude=android/.gradle --exclude=android/.kotlin --exclude=android/app/build --exclude=android/build --exclude=android/app/src/main/java/io/flutter/plugins/GeneratedPluginRegistrant.java -cf /home/smoke/android-source.tar android && rm -rf /fixture/build /fixture/android /fixture/.dart_tool && mkdir -p /home/smoke/.gradle/init.d && printf 'gradle.startParameter.offline = true\\n' > /home/smoke/.gradle/init.d/ci-offline.gradle
+"""
+
 def command(argv, *, timeout=180, capture=False):
     return subprocess.run(argv, check=True, timeout=timeout,
                           stdout=subprocess.PIPE if capture else None,
@@ -109,7 +127,12 @@ def write_files(folder, files):
     for name, data in files.items():
         path = folder / name
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(data)
+        if isinstance(data, bytes):
+            path.write_bytes(data)
+        else:
+            path.write_text(data)
+        if name == "android/gradlew":
+            path.chmod(0o700)
 
 
 def git(root, *args):
@@ -121,7 +144,7 @@ def private_json(path, value):
     path.write_text(json.dumps(value))
 
 
-def prepare(folder, files, lock, lock_bytes, profiles):
+def prepare(folder, files, lock, lock_bytes, profiles, *, image_id=None, executor=None):
     source = folder / "source"
     source.mkdir(mode=0o700)
     write_files(source, {**files, ".gitignore": ".project-os/\n"})
@@ -131,6 +154,8 @@ def prepare(folder, files, lock, lock_bytes, profiles):
     git(source, "config", "user.email", "synthetic@example.invalid")
     git(source, "remote", "add", "origin", "https://github.com/example/synthetic.git")
     git(source, "add", ".")
+    if image_id is not None:
+        git(source, "add", "-f", "android")  # Only generated synthetic native source.
     git(source, "commit", "-qm", "synthetic mobile source")
     revision = git(source, "rev-parse", "HEAD")
     config_dir = source / ".project-os"
@@ -148,13 +173,15 @@ def prepare(folder, files, lock, lock_bytes, profiles):
     principal = "ci-mobile"
     policy = Policy([(principal, "submit", "disposable"), (principal, "read", "disposable"),
                      *((principal, op, "synthetic") for op in
-                       ("workspace_prepare", "workspace_materialize", *profiles))])
-    jobs = Jobs(state, policy, workflows=("workspace_prepare",))
-    ids = {profile: submit_workspace(jobs, principal, "synthetic", revision, profile, profile)
-           for profile in profiles}
-    run_pending(jobs)
+                       ("workspace_prepare", "workspace_materialize", "workspace_execute", *profiles))])
+    workflow = "workspace_execute" if image_id is not None else "workspace_prepare"
+    jobs = Jobs(state, policy, workflows=(workflow,))
+    ids = {profile: submit_workspace(jobs, principal, "synthetic", revision, profile, profile,
+                                     image_id=image_id) for profile in profiles}
+    run_pending(jobs, workspace_executor=executor)
+    jobs = Jobs(state, policy, workflows=(workflow,))
     evidence = {profile: jobs.evidence(principal, job) for profile, job in ids.items()}
-    if any(item["state"] != "SUCCEEDED" or item["result"]["head"] != revision
+    if image_id is None and any(item["state"] != "SUCCEEDED" or item["result"]["head"] != revision
            or item["result"]["execution_available"] is not False for item in evidence.values()):
         raise RuntimeError("WORKSPACE_PREPARATION_FAILED")
     return state, ids, evidence
@@ -168,10 +195,91 @@ def container_args(image):
             "--env", "EXPO_OFFLINE=1", "--env", "EXPO_NO_TELEMETRY=1"]
 
 
+def native_files(image):
+    raw = command([*container_args(image), image, "cat", "/home/smoke/android-source.tar"],
+                  capture=True)
+    if not 0 < len(raw) <= 8 * 1024 * 1024:
+        raise RuntimeError("NATIVE_SOURCE_LIMIT")
+    files = {}
+    with tarfile.open(fileobj=io.BytesIO(raw), mode="r:") as archive:
+        for item in archive:
+            if item.isdir():
+                continue
+            if (not item.isfile() or not re.fullmatch(r"android/[A-Za-z0-9_./+@ -]+", item.name)
+                    or any(part in {"", ".", ".."} for part in item.name.split("/"))
+                    or item.name in files or item.size > 2 * 1024 * 1024):
+                raise RuntimeError("INVALID_NATIVE_SOURCE")
+            files[item.name] = archive.extractfile(item).read()
+    if "android/app/src/main/AndroidManifest.xml" not in files:
+        raise RuntimeError("NATIVE_MANIFEST_MISSING")
+    return files
+
+
+def apk_executor(image, output):
+    """CI-only fixed Flutter APK operation. No local service registration."""
+    def execute(workspace, row, snapshot):
+        request = row["workspace"]
+        if request["profile"] != "flutter-apk-debug" or request["image_id"] != image:
+            raise PermissionError("UNEXPECTED_CI_PROFILE")
+        name = "mobile-smoke-" + row["id"]
+        artifacts = output / ("apk-" + row["id"])
+        artifacts.mkdir(mode=0o700)
+        # The image has no warmup build outputs or native tree. Offline Gradle
+        # consumes only the pre-acquired toolchain/cache and prepared source.
+        setup = ('set -eu; cmp /source/pubspec.lock /fixture/pubspec.lock; '
+                 'test ! -e /fixture/build; test ! -e /fixture/android; '
+                 'cp -a /source/. /fixture/; flutter pub get --offline; '
+                 'cmp /source/pubspec.lock pubspec.lock; "$@"; '
+                 'apk=build/app/outputs/flutter-apk/app-debug.apk; '
+                 'test -f "$apk"; test ! -L "$apk"; '
+                 '/opt/android-sdk/build-tools/36.0.0/apksigner verify --print-certs "$apk"; '
+                 '/opt/android-sdk/build-tools/36.0.0/aapt dump badging "$apk" | head -n 1; '
+                 'cp "$apk" /output/app-debug.apk')
+        argv = PROFILES[request["profile"]].argv
+        args = [*container_args(image), "--name", name, "--mount",
+                f"type=bind,src={workspace},dst=/source,readonly", "--mount",
+                f"type=bind,src={artifacts},dst=/output", image, "/bin/sh", "-c",
+                setup, "profile", *argv]
+        try:
+            proc = subprocess.run(args, stdin=subprocess.DEVNULL, timeout=900, check=False)
+            code = proc.returncode
+        except subprocess.TimeoutExpired:
+            subprocess.run(["docker", "rm", "-f", name], timeout=30, check=False,
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            code = 124
+        # Confirm exact name absent. The VM and queue are single-use; never
+        # retry interrupted work or reuse this execution state.
+        names = command(["docker", "ps", "-a", "--filter", "name=^/" + name + "$",
+                         "--format", "{{.Names}}"], capture=True)
+        if names.strip():
+            code = 125
+        result = {"image_id": image, "argv": list(argv), "exit_code": code,
+                  "cleanup_verified": not bool(names.strip()),
+                  "workspace_sha256": snapshot["workspace_sha256"]}
+        if code == 0:
+            apk = artifacts / "app-debug.apk"
+            info = apk.lstat()
+            if (not stat.S_ISREG(info.st_mode) or info.st_nlink != 1
+                    or not 0 < info.st_size <= 256 * 1024 * 1024):
+                raise RuntimeError("APK_IDENTITY_INVALID")
+            raw = apk.read_bytes()
+            if len(raw) != info.st_size:
+                raise RuntimeError("APK_IDENTITY_INVALID")
+            result["artifact"] = artifact_identity("apk", "app-debug.apk", raw)
+            with apk.open("rb") as stream:
+                os.fsync(stream.fileno())
+        print("MOBILE_PROFILE_EXIT", request["profile"], code, flush=True)
+        return result
+    return execute
+
+
 def main():
     if os.environ.get("GITHUB_ACTIONS") != "true" or os.environ.get("RUNNER_OS") != "Linux":
         raise RuntimeError("Disposable Linux CI only")
     stack = os.environ["MOBILE_STACK"]
+    apk = os.environ.get("MOBILE_APK") == "1"
+    if apk and stack != "flutter":
+        raise RuntimeError("APK reference currently Flutter only")
     if stack not in {"flutter", "expo"} or os.getuid() == 0:
         raise RuntimeError("Invalid smoke profile or runner")
     checkout = Path.cwd()
@@ -181,7 +289,7 @@ def main():
     output.mkdir(mode=0o700, exist_ok=False)
     record = {"scope": "trusted-synthetic-ci-only", "ci_sha": os.environ["GITHUB_SHA"],
               "run_id": os.environ["GITHUB_RUN_ID"], "attempt": os.environ["GITHUB_RUN_ATTEMPT"],
-              "stack": stack, "steps": []}
+              "stack": stack, "mode": "apk" if apk else "validation", "steps": []}
     evidence_file = output / "result.json"
 
     def save():
@@ -199,15 +307,14 @@ def main():
                 if stack == "flutter" else
                 (EXPO_FILES, "package-lock.json", ("expo-typecheck", "expo-test"), EXPO_SETUP))
             write_files(seed, files)
+            if apk:
+                setup += ANDROID_SETUP
+                profiles = ("flutter-apk-debug",)
             (context / "Dockerfile").write_text(COMMON + setup)
             # Acquisition is confined to a synthetic project in a fresh CI VM.
             # Resolve the public base once, then build and run by immutable identity.
             command(["docker", "pull", BASE], timeout=300)
-            digests = json.loads(command(["docker", "image", "inspect", "--format",
-                                          "{{json .RepoDigests}}", BASE], capture=True))
-            base = next((value for value in digests if re.fullmatch(r"(?:docker\.io/library/)?node@sha256:[0-9a-f]{64}", value)), None)
-            if base is None:
-                raise RuntimeError("BASE_DIGEST_UNAVAILABLE")
+            base = BASE
             record["base_image"] = base
             record["requested_toolchain"] = ({"flutter": FLUTTER_VERSION, "archive_sha256": FLUTTER_SHA256}
                 if stack == "flutter" else {"node": NODE_VERSION, "expo": EXPO_VERSION, "react_native": RN_VERSION})
@@ -215,7 +322,7 @@ def main():
             iid = folder / "image-id"
             command(["docker", "build", "--iidfile", str(iid), "--build-arg", "BASE=" + base,
                      "--build-arg", f"UID={os.getuid()}", "--build-arg", f"GID={os.getgid()}",
-                     str(context)], timeout=1000)
+                     str(context)], timeout=1800 if apk else 1000)
             image = iid.read_text().strip()
             if not re.fullmatch(r"sha256:[0-9a-f]{64}", image):
                 raise RuntimeError("IMAGE_ID_UNAVAILABLE")
@@ -236,6 +343,21 @@ def main():
                 raise RuntimeError("LOCKFILE_LIMIT")
             (output / lock).write_bytes(lock_bytes)
             record["lock_sha256"] = sha256(lock_bytes)
+            if apk:
+                files = {**files, **native_files(image)}
+                record["android_sdk"] = command([*container_args(image), image, "sdkmanager", "--list_installed"],
+                                                capture=True).decode("utf-8", "replace")[:16000]
+                record["java"] = command([*container_args(image), image, "java", "-version"], capture=True).decode("utf-8", "replace")
+                _, _, executed = prepare(folder, files, lock, lock_bytes, profiles, image_id=image,
+                                         executor=apk_executor(image, output))
+                record["execution"] = executed
+                save()
+                result = executed["flutter-apk-debug"]
+                if result["state"] != "SUCCEEDED" or result["result"]["execution"]["exit_code"] != 0:
+                    raise RuntimeError("APK_EXECUTION_FAILED")
+                record["status"] = "success"
+                save()
+                return
             state, ids, prepared = prepare(folder, files, lock, lock_bytes, profiles)
             record["preparation"] = prepared
             save()
