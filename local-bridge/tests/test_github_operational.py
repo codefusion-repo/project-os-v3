@@ -210,6 +210,36 @@ class OperationalGitHubTests(unittest.TestCase):
                 audit.record("partial")
         self.assertEqual(len((self.state / AUDIT_NAME).read_text().splitlines()), 2)
 
+    def test_audit_offline_rotation_preserves_history_and_resumes(self):
+        audit = GitHubContextAudit(self.state)
+        audit.record("admitted")
+        audit.record("complete", event="methodology_context")
+        active = self.state / AUDIT_NAME
+        before = active.read_bytes()
+        with patch("project_os_bridge.github_operational.MAX_AUDIT", len(before)):
+            with self.assertRaises(OSError):
+                audit.record("admitted")
+            self.assertEqual(active.read_bytes(), before)
+            # No concurrent readers/writers in this disposable offline test.
+            archive_dir = self.root / "audit-archive"
+            archive_dir.mkdir(mode=0o700)
+            archive = archive_dir / AUDIT_NAME
+            self.assertFalse(archive.exists())
+            active.rename(archive)
+            self.assertEqual(archive.read_bytes(), before)
+            self.assertFalse(active.exists())
+            # Recreate the writer as on restart; capacity applies only to
+            # the active sidecar, not retained archive bytes.
+            resumed = GitHubContextAudit(self.state)
+            resumed.record("admitted")
+            self.assertEqual(len(active.read_text().splitlines()), 1)
+        resumed.record("complete")
+        self.assertEqual([json.loads(line)["outcome"] for line in
+                          active.read_text().splitlines()], ["admitted", "complete"])
+        self.assertEqual(active.stat().st_mode & 0o777, 0o600)
+        self.assertEqual(active.stat().st_nlink, 1)
+        self.assertEqual(archive.read_bytes(), before)
+
     def test_http_rate_limit_and_generic_error(self):
         for raw in (
                 b"HTTP/2.0 429 Too Many Requests\r\nRetry-After: 10\r\n\r\n{}",
