@@ -80,11 +80,14 @@ def build_server(verifier, jobs, fixture_reader=None, *, fixture_image=None, dia
             result = {"status":"ready","caller_identity_verified":True,"repository_access":False,"mode":"authenticated-disposable",
                       "git_fixture_available":fixture_enabled(verifier, fixture_image, context_id)}
             result["installation"] = {"status": "unavailable"}
-            if fixture_image is None and fixture_reader is None:
+            if fixture_image is None and (fixture_reader is None or diagnostics is not None):
                 try:
                     result["installation"] = {"status": "receipt_observed", **installed_receipt()}
                 except (OSError, ValueError, TypeError, RecursionError):
                     pass  # No private paths or exception details.
+            if maintenance is not None:
+                result["maintenance_registered"] = True
+                result["maintenance_authorized"] = maintenance.enabled()
             if github_provider is not None:
                 if type(github_provider) is MultiProjectContext:
                     available = github_provider.available(actor)
@@ -125,12 +128,14 @@ def build_server(verifier, jobs, fixture_reader=None, *, fixture_image=None, dia
         def maintenance_authorized():
             actor = principal()
             jobs.policy.require(actor, "maintenance", "installation")
-            if not maintenance.enabled():
+            token = get_access_token()
+            if token.expires_at is None or token.expires_at <= time.time() or not maintenance.enabled():
                 raise PermissionError("DENIED")
 
         # A transient user service, not the MCP worker, performs the operation.
         # The request is durable before dispatch; status is never a replay.
-        @mcp.tool(annotations=write)
+        @mcp.tool(annotations=ToolAnnotations(read_only_hint=False, destructive_hint=True,
+                                              idempotent_hint=True, open_world_hint=True))
         async def maintenance_update(expected_sha: StrictStr, target_sha: StrictStr,
                                      wheel_sha256: StrictStr, ci_run_id: StrictInt,
                                      request_key: StrictStr) -> dict:
@@ -140,7 +145,8 @@ def build_server(verifier, jobs, fixture_reader=None, *, fixture_image=None, dia
                                            target_sha, wheel_sha256, ci_run_id, request_key,
                                            authorize=maintenance_authorized)
 
-        @mcp.tool(annotations=write)
+        @mcp.tool(annotations=ToolAnnotations(read_only_hint=False, destructive_hint=True,
+                                              idempotent_hint=True, open_world_hint=False))
         async def maintenance_rollback(expected_sha: StrictStr, target_sha: StrictStr,
                                        wheel_sha256: StrictStr, request_key: StrictStr) -> dict:
             """Restore only the immediately retained, reviewed runtime matching the supplied SHA and digest."""
@@ -505,8 +511,10 @@ def main():
             grants.append((verifier.subject, "diagnostics_read", "host"))
             # Registration is limited to the reviewed non-fixture supervised profile.
             # The separate owner-private flag is checked on every call and dispatch.
-            maintenance = Maintenance(root, Path(sys.prefix).parents[1])
-            grants.append((verifier.subject, "maintenance", "installation"))
+            venv = Path(sys.prefix)
+            if venv.name == ".venv" and venv.parent.name == "local-bridge":
+                maintenance = Maintenance(root, venv.parents[1])
+                grants.append((verifier.subject, "maintenance", "installation"))
         jobs = Jobs(args.state_dir, Policy(grants), workflows=workflows)
         if jobs.pending_effects():
             parser.error("RECONCILIATION_REQUIRED; stop and use local reconciliation")

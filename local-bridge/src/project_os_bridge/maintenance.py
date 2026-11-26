@@ -5,7 +5,7 @@ The runner reuses the reviewed lifecycle and upgrade coordinator. A local
 operator remains responsible for recovery if the only MCP transport goes down.
 """
 import argparse
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 from datetime import datetime, timezone
 import fcntl
 import hashlib
@@ -15,6 +15,7 @@ import os
 from pathlib import Path
 import re
 import ssl
+import sqlite3
 import stat
 import subprocess
 import sys
@@ -150,7 +151,9 @@ def validate_record(record):
 
 def public(record):
     # No filesystem paths, request key, principal, markers, logs or exceptions.
-    return {**record["request"], "state": record["state"], "stage": record["stage"]}
+    return {**record["request"], "state": record["state"], "stage": record["stage"],
+            "updated_at": record["updated_at"],
+            "readiness_basis": "local_tls_and_anonymous_401" if record["state"] == "SUCCEEDED" else None}
 
 
 def clean_env():
@@ -220,7 +223,8 @@ def approved_main(req):
     if result["total_count"] != len(checks):
         raise ValueError("Incomplete checks")
     passed = {(c["name"], c["app"]["id"]) for c in checks
-              if c["head_sha"] == sha and c["status"] == "completed" and c["conclusion"] == "success"}
+              if c["head_sha"] == sha and c["check_suite"]["id"] == run["check_suite_id"]
+              and c["status"] == "completed" and c["conclusion"] == "success"}
     if not required <= passed:
         raise ValueError("Required CI check failed")
     if api("/git/ref/heads/main")["object"]["sha"] != sha:
@@ -272,16 +276,19 @@ class Maintenance:
         path = self.store / (ident + ".json")
         if os.path.lexists(path):
             result = validate_record(read_json(path))
-            if result["request"]["id"] != ident or result["state"] not in TERMINAL:
+            if result["request"]["id"] != ident:
                 raise ValueError("Invalid historical request")
             return result
         return None
 
     def status(self, key):
         ident = request_id(key)
-        with self.locked():
-            record = self.lookup(ident)
-            return public(record) if record else {"state": "NOT_FOUND"}
+        try:
+            with self.locked():
+                record = self.lookup(ident)
+                return public(record) if record else {"state": "NOT_FOUND"}
+        except (OSError, ValueError, KeyError, TypeError, RuntimeError):
+            raise ValueError("MAINTENANCE_STATUS_UNAVAILABLE") from None
 
     def transition(self, record, state, stage):
         record.update(state=state, stage=stage, updated_at=datetime.now(timezone.utc).isoformat())
@@ -376,12 +383,30 @@ class Maintenance:
     def rollback_tx(self):
         return read_json(self.venv.parent / ".venv-install.rollback/transaction.json")
 
+    def idle_jobs(self):
+        # Early read-only check to avoid a predictable service outage. The
+        # existing coordinator repeats the authoritative check after stop.
+        db = self.state / "jobs.sqlite3"
+        info = db.lstat()
+        if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
+                or info.st_nlink != 1 or info.st_mode & 0o077 or info.st_size > 128 * 1024 * 1024):
+            raise PermissionError("Unsafe jobs database")
+        with closing(sqlite3.connect(db.as_uri() + "?mode=ro", uri=True, timeout=1)) as conn:
+            conn.execute("PRAGMA query_only=ON")
+            conn.execute("BEGIN")
+            if conn.execute("SELECT 1 FROM jobs WHERE state IS NULL OR state NOT IN "
+                            "('SUCCEEDED','FAILED','BLOCKED','CANCELLED','INTERRUPTED') LIMIT 1").fetchone():
+                raise RuntimeError("Pending jobs")
+            if conn.execute("SELECT 1 FROM fixture_effects WHERE resolved_at IS NULL LIMIT 1").fetchone():
+                raise RuntimeError("Unresolved effects")
+
     def preflight(self, record):
         req = record["request"]
         if not self.enabled() or receipt(self.venv) != record["previous"]:
             raise PermissionError("Maintenance admission changed")
         # Only the exact running, linked, disabled non-fixture instance.
         self.lifecycle("status")
+        self.idle_jobs()
         head, branch = self.checkout()
         if os.path.lexists(self.venv.parent / ".venv-install.guard/active.json"):
             raise RuntimeError("Unresolved install")
@@ -396,6 +421,10 @@ class Maintenance:
                 raise ValueError("Main moved")
             git(self.kit, "merge-base", "--is-ancestor", head, target)
             git(self.kit, "merge-base", "--is-ancestor", req["expected_sha"], target)
+            if os.path.lexists(self.venv.parent / ".venv-install.rollback"):
+                tx = self.rollback_tx()
+                if tx["sha"] == target:
+                    raise ValueError("Retained transaction for target; reconcile locally")
         else:
             # Do not fetch or choose an arbitrary historical revision. The
             # existing transaction identifies the only eligible predecessor.
@@ -481,6 +510,9 @@ class Maintenance:
         mutated = False
         try:
             head, branch = self.preflight(record)
+            self.idle_jobs()
+            if not self.enabled() or receipt(self.venv) != record["previous"]:
+                raise PermissionError("Maintenance admission changed")
             with self.locked():
                 self.transition(record, "RUNNING", "quiescing")
             mutated = True
@@ -494,6 +526,8 @@ class Maintenance:
                 self.transition(record, "RUNNING", "stopped")
             if self.checkout() != (head, branch):
                 raise RuntimeError("Checkout changed")
+            # After quiescence the local coordinator must still verify locks,
+            # stopped unit, all-principal jobs and the persistent fence.
             if req["action"] == "update":
                 target = req["target_sha"]
                 if branch == "main":
