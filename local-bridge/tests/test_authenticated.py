@@ -81,9 +81,13 @@ class AuthTests(unittest.TestCase):
         # The same signed token is rejected under the original zero leeway.
         now = int(time.time())
         fixed = datetime.fromtimestamp(now, timezone.utc)
-        with patch("jwt.api_jwt.datetime", wraps=datetime) as clock, \
+        class FrozenDatetime(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return fixed.astimezone(tz) if tz is not None else fixed.replace(tzinfo=None)
+
+        with patch("jwt.api_jwt.datetime", FrozenDatetime), \
                 patch("project_os_bridge.workos_auth.time.time", return_value=now):
-            clock.now.return_value = fixed
             token = self.token({"iat": now + 3, "nbf": now + 3, "exp": now + 300})
             with self.assertRaises(jwt.exceptions.ImmatureSignatureError):
                 jwt.decode(token, self.key.public_key(), algorithms=["RS256"],
