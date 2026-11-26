@@ -227,4 +227,25 @@ echo "ALPINE_EVIDENCE_COMPLETE mode=$mode audit=$audit locks=1"
 if [ "$audit" != 0 ] || [ "$fixture" != 0 ] || [ ! -f "$lock" ] || [ ! -f "$manifest_lock" ]; then
   exit 1
 fi
+# Release subuid-owned layers through the same context before the EXIT trap removes it.
+"${runtime[@]}" - "$context" "$image" <<'PY'
+from pathlib import Path
+import sys
+from project_os_bridge.podman_context import FIXTURE_TAG, PodmanContext
+
+context = PodmanContext(Path(sys.argv[1]))
+identity = context.identity()
+context.require_import(identity, sys.argv[2])
+
+def require_empty(*args):
+    result = context.run(identity, *args, capture=True)
+    if result.returncode or result.stdout.strip():
+        raise SystemExit("Unexpected contents in disposable fixture store")
+
+require_empty("ps", "--all", "--quiet")
+if context.run(identity, "rmi", FIXTURE_TAG, timeout=30).returncode:
+    raise SystemExit("Could not remove the pinned image from the disposable fixture store")
+require_empty("image", "ls", "--all", "--quiet")
+print("DISPOSABLE_CONTEXT_IMAGE_REMOVED")
+PY
 echo 'ALPINE_REMEDIATION_EVIDENCE_PASS'
