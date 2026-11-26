@@ -21,11 +21,16 @@ class GitHubContextTests(unittest.TestCase):
 
     def fixture(self, endpoint):
         number = int(endpoint.split("/")[4])
+        repository_url = "https://api.github.com/repos/example/demo"
+        issue_url = f"{repository_url}/issues/{number}"
         if "/comments?" in endpoint:
             return {"complete": True, "data": [{"id": number, "body": "Context",
+                                                "issue_url": issue_url,
+                                                "url": f"{repository_url}/issues/comments/{number}",
                                                 "internal": "DO_NOT_RETURN"}]}
         return {"complete": True, "data": {"number": number, "title": "Issue",
-                                            "body": "Requirements", "comments": 1,
+                                            "body": "Requirements", "comments": 1, "state": "open",
+                                            "repository_url": repository_url, "url": issue_url,
                                             "internal": "DO_NOT_RETURN"}}
 
     def test_batch_projection_and_deduplication(self):
@@ -80,8 +85,10 @@ class GitHubContextTests(unittest.TestCase):
         def large(endpoint):
             if "/comments?" not in endpoint:
                 return self.fixture(endpoint)
+            original = self.fixture(endpoint)["data"][0]
             return {"complete": True, "data": [
-                {"id": i+1, "body": "\u2603"*16000} for i in range(5)]}
+                {**original, "id": i+1, "url": f"https://api.github.com/repos/example/demo/issues/comments/{i+1}",
+                 "body": "\u2603"*16000} for i in range(5)]}
         with patch.object(self.reader, "_request", side_effect=large):
             result = self.context.read("owner", "demo", [1, 2, 3, 4, 5])
         self.assertFalse(result["complete"])
@@ -124,3 +131,110 @@ class GitHubContextTests(unittest.TestCase):
             result = self.context.read("owner", "demo", [1])
         self.assertFalse(result["complete"])
         self.assertEqual(result["issues"][1]["comments"][0]["body"], "text")
+
+    def test_issue_identity_mismatch_and_missing_fields(self):
+        for field, value in (
+                ("repository_url", "https://api.github.com/repos/example/other"),
+                ("url", "https://api.github.com/repos/example/other/issues/1"),
+                ("url", "https://api.github.com/repos/example/demo/issues/2"),
+                ("url", "https://api.github.com/repos/example/demo/issues/1?redirect=1"),
+                ("url", "https://api.github.com/repos/example/demo/issues/1#fragment"),
+                ("number", 2), ("repository_url", None), ("url", None)):
+            with self.subTest(field=field, value=value):
+                def fake(endpoint):
+                    result = self.fixture(endpoint)
+                    if "/comments?" not in endpoint:
+                        result["data"]["body"] = "WRONG_RESOURCE_FIXTURE"
+                        if value is None:
+                            result["data"].pop(field)
+                        else:
+                            result["data"][field] = value
+                    return result
+                with patch.object(self.reader, "_request", side_effect=fake):
+                    result = self.context.read("owner", "demo", [1])
+                self.assertFalse(result["complete"])
+                self.assertEqual(result["issues"][1]["issue"]["error"], "RESOURCE_MISMATCH")
+                self.assertEqual(result["issues"][1]["comments"], [])
+                self.assertNotIn("WRONG_RESOURCE_FIXTURE", json.dumps(result))
+                self.assertNotIn("example/other", json.dumps(result))
+
+    def test_comment_identity_mismatch_discards_collection(self):
+        for field, value in (
+                ("issue_url", "https://api.github.com/repos/example/other/issues/1"),
+                ("issue_url", "https://api.github.com/repos/example/demo/issues/2"),
+                ("url", "https://api.github.com/repos/example/other/issues/comments/1"),
+                ("url", "https://api.github.com/repos/example/demo/issues/comments/2"),
+                ("issue_url", None), ("url", None)):
+            with self.subTest(field=field, value=value):
+                def fake(endpoint):
+                    result = self.fixture(endpoint)
+                    if "/comments?" in endpoint:
+                        raw = result["data"][0]
+                        wrong = {**raw, "body": "WRONG_COMMENT_FIXTURE"}
+                        if value is None:
+                            wrong.pop(field)
+                        else:
+                            wrong[field] = value
+                        result["data"].append(wrong)
+                    else:
+                        result["data"]["comments"] = 2
+                    return result
+                with patch.object(self.reader, "_request", side_effect=fake):
+                    result = self.context.read("owner", "demo", [1])
+                item = result["issues"][1]
+                self.assertFalse(result["complete"])
+                self.assertEqual(item["comments_error"], "RESOURCE_MISMATCH")
+                self.assertEqual(item["comments"], [])
+                self.assertNotIn("WRONG_COMMENT_FIXTURE", json.dumps(result))
+                self.assertNotIn("example/other", json.dumps(result))
+
+    def test_missing_or_invalid_issue_fields_are_incomplete(self):
+        for field, value in (
+                ("title", None), ("body", None), ("state", None), ("comments", None),
+                ("title", 1), ("title", ""), ("body", []), ("state", "unknown"),
+                ("comments", True), ("comments", -1), ("comments", "1")):
+            with self.subTest(field=field, value=value):
+                def fake(endpoint):
+                    result = self.fixture(endpoint)
+                    if "/comments?" not in endpoint:
+                        if value is None:
+                            result["data"].pop(field)
+                        else:
+                            result["data"][field] = value
+                    return result
+                with patch.object(self.reader, "_request", side_effect=fake):
+                    result = self.context.read("owner", "demo", [1])
+                self.assertFalse(result["complete"])
+                self.assertEqual(result["issues"][1]["issue"]["error"], "INVALID_RESPONSE")
+
+    def test_missing_or_invalid_comment_body_is_incomplete(self):
+        for value in (None, [], 1):
+            with self.subTest(value=value):
+                def fake(endpoint):
+                    result = self.fixture(endpoint)
+                    if "/comments?" in endpoint:
+                        if value is None:
+                            result["data"][0].pop("body")
+                        else:
+                            result["data"][0]["body"] = value
+                    return result
+                with patch.object(self.reader, "_request", side_effect=fake):
+                    result = self.context.read("owner", "demo", [1])
+                self.assertFalse(result["complete"])
+                self.assertEqual(result["issues"][1]["comments_error"], "INVALID_RESPONSE")
+                self.assertEqual(result["issues"][1]["comments"], [])
+
+    def test_null_issue_body_and_case_insensitive_repository_identity(self):
+        def fake(endpoint):
+            result = self.fixture(endpoint)
+            if "/comments?" not in endpoint:
+                result["data"]["body"] = None
+                result["data"]["repository_url"] = "https://api.github.com/repos/Example/Demo"
+                result["data"]["url"] = "https://api.github.com/repos/Example/Demo/issues/1"
+            return result
+        with patch.object(self.reader, "_request", side_effect=fake):
+            result = self.context.read("owner", "demo", [1])
+        self.assertTrue(result["complete"])
+        self.assertIsNone(result["issues"][1]["issue"]["data"]["body"])
+        self.assertNotIn("repository_url", json.dumps(result))
+        self.assertNotIn("issue_url", json.dumps(result))

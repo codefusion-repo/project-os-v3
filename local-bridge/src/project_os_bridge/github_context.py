@@ -20,7 +20,7 @@ SENSITIVE = re.compile(
 )
 ERRORS = frozenset({
     "RESPONSE_LIMIT", "GH_FAILED_OR_TIMEOUT", "GH_UNAVAILABLE_OR_INVALID_JSON",
-    "INVALID_RESPONSE", "AGGREGATE_LIMIT", "PAGE_LIMIT",
+    "INVALID_RESPONSE", "AGGREGATE_LIMIT", "PAGE_LIMIT", "RESOURCE_MISMATCH",
 })
 
 
@@ -63,26 +63,77 @@ def _error(value):
     return value if isinstance(value, str) and value in ERRORS else "INVALID_RESPONSE"
 
 
-def _issue(number, item):
+def _resource_url(value, repository, suffix=""):
+    # Compare only repository names case-insensitively (GitHub semantics).
+    # No redirects, query strings, fragments, escaping or alternate hosts
+    # are accepted as identity evidence. Never fetch these upstream URLs.
+    prefix = "https://api.github.com/repos/"
+    if not isinstance(value, str) or not value.isascii() or not value.startswith(prefix):
+        return False
+    path = value[len(prefix):]
+    if suffix:
+        if not path.endswith(suffix):
+            return False
+        path = path[:-len(suffix)]
+    return path.lower() == repository.lower()
+
+
+def _issue_error(data, repository, number):
+    if not isinstance(data, dict):
+        return "INVALID_RESPONSE"
+    if (type(data.get("number")) is not int or data["number"] != number
+            or not _resource_url(data.get("repository_url"), repository)
+            or not _resource_url(data.get("url"), repository, f"/issues/{number}")):
+        return "RESOURCE_MISMATCH"
+    # Null is valid for an issue body, but absent is not.
+    if (not isinstance(data.get("title"), str) or not data["title"].strip()
+            or "body" not in data or not (data["body"] is None or isinstance(data["body"], str))
+            or data.get("state") not in ("open", "closed")
+            or type(data.get("comments")) is not int or not 0 <= data["comments"] <= 2**63 - 1):
+        return "INVALID_RESPONSE"
+    return None
+
+
+def _comment_error(data, repository, number):
+    if not isinstance(data, dict) or type(data.get("id")) is not int or not 0 < data["id"] <= 2**63 - 1:
+        return "INVALID_RESPONSE"
+    if (not _resource_url(data.get("issue_url"), repository, f"/issues/{number}")
+            or not _resource_url(data.get("url"), repository, f"/issues/comments/{data['id']}")):
+        return "RESOURCE_MISMATCH"
+    if not isinstance(data.get("body"), str):
+        return "INVALID_RESPONSE"
+    return None
+
+
+def _issue(repository, number, item):
     issue = item.get("issue", {})
     data = issue.get("data")
     complete = item.get("complete") is True
-    if (issue.get("complete") is True and isinstance(data, dict)
-            and type(data.get("number")) is int and data["number"] == number):
+    issue_error = (_issue_error(data, repository, number) if issue.get("complete") is True
+                   else _error(issue.get("error")))
+    if issue_error is None:
         record, altered = _project_fields(
             data, ("number", "title", "body", "state", "comments", "created_at", "updated_at", "closed_at"))
-        result = {"complete": True, "data": record}
+        result = {"complete": not altered, "data": record}
+        issue_valid = True
     else:
         record, altered = {}, False
-        result = {"complete": False, "error": _error(issue.get("error"))}
+        result = {"complete": False, "error": issue_error}
+        issue_valid = False
         complete = False
     comments, seen = [], set()
     comment_error = item.get("comments_error")
     comment_error = _error(comment_error) if comment_error is not None else None
-    if result["complete"]:
+    if issue_valid:
         for raw in item.get("comments", []):
-            if (not isinstance(raw, dict) or type(raw.get("id")) is not int
-                    or not 0 < raw["id"] <= 2**63 - 1 or raw["id"] in seen):
+            error = _comment_error(raw, repository, number)
+            if error == "RESOURCE_MISMATCH":
+                # An inconsistent page invalidates the entire comment collection.
+                comments.clear()
+                comment_error = error
+                complete = False
+                break
+            if error is not None or raw["id"] in seen:
                 complete = False
                 comment_error = "INVALID_RESPONSE"
                 continue
@@ -90,7 +141,7 @@ def _issue(number, item):
             comment, changed = _project_fields(raw, ("id", "body", "created_at", "updated_at"))
             comments.append(comment)
             altered |= changed
-        if "comments" in record and record["comments"] != len(comments):
+        if record["comments"] != len(comments):
             complete = False
             comment_error = comment_error or "COUNT_MISMATCH"
     retrieved_at, timestamp_changed = _text(item.get("retrieved_at"))
@@ -149,7 +200,7 @@ class GitHubContext:
         # Reserve space for all omission identifiers and error metadata.
         budget = MAX_CONTEXT_BYTES - 1024
         for number, item in raw["issues"].items():
-            projected = _issue(number, item)
+            projected = _issue(repo, number, item)
             response["issues"][number] = projected
             if _size(response) > budget:
                 del response["issues"][number]

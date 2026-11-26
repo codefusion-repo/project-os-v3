@@ -547,7 +547,10 @@ class AuthTests(unittest.TestCase):
         def fake(endpoint):
             if "/comments?" in endpoint:
                 return {"complete": True, "data": []}
-            return {"complete": True, "data": {"number": 1, "title": "candidate-context", "comments": 0}}
+            return {"complete": True, "data": {"number": 1, "title": "candidate-context", "comments": 0,
+                                                    "body": None, "state": "open",
+                                                    "repository_url": "https://api.github.com/repos/example/demo",
+                                                    "url": "https://api.github.com/repos/example/demo/issues/1"}}
 
         with patch.object(reader, "_request", side_effect=fake) as request:
             with TestClient(app, base_url="http://127.0.0.1:8765") as client:
@@ -614,7 +617,10 @@ class AuthTests(unittest.TestCase):
             def fake(endpoint):
                 if "/comments?" in endpoint:
                     return {"complete": True, "data": []}
-                return {"complete": True, "data": {"number": 1, "title": "expiry-fixture-context", "comments": 0}}
+                return {"complete": True, "data": {"number": 1, "title": "expiry-fixture-context", "comments": 0,
+                                                    "body": None, "state": "open",
+                                                    "repository_url": "https://api.github.com/repos/example/demo",
+                                                    "url": "https://api.github.com/repos/example/demo/issues/1"}}
 
             with patch.object(reader, "_request", side_effect=fake) as request:
                 with TestClient(app, base_url="http://127.0.0.1:8765") as client:
