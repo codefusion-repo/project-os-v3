@@ -217,7 +217,11 @@ class PodmanContext:
             raise ContextError("Fixture image was not imported into this context")
         self.check_image(identity, image)
 
-    def import_layout(self, layout, digest):
+    def import_layout(self, layout, digest, *, kind="fixture"):
+        tags = {"fixture": FIXTURE_TAG, "mobile-validation": "localhost/project-os-mobile-ci:validation"}
+        if kind not in tags:
+            raise ValueError("Unknown local import kind")
+        tag = tags[kind]
         if not DIGEST.fullmatch(digest) or not SAFE_PATH.fullmatch(str(layout)):
             raise ValueError("Canonical OCI layout and locked digest required")
         private_directory(layout.parent)
@@ -231,7 +235,7 @@ class PodmanContext:
             raise ValueError("Unexpected OCI layout digest")
         identity = self.identity()
         pin = self.root / "image"
-        image = FIXTURE_TAG.split(":", 1)[0] + "@" + digest
+        image = tag.rsplit(":", 1)[0] + "@" + digest
         with (self.root / "identity").open("rb") as lock:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
             self.host(identity)
@@ -241,7 +245,7 @@ class PodmanContext:
                 if loaded.returncode or not re.fullmatch(r"(?:sha256:)?[0-9a-f]{64}", image_id):
                     raise ValueError("OCI layout import failed")
                 self.check_image(identity, image_id, digest)
-                if self.run(identity, "tag", image_id, FIXTURE_TAG).returncode:
+                if self.run(identity, "tag", image_id, tag).returncode:
                     raise ValueError("OCI image tag failed")
                 self.check_image(identity, image)
                 with pin.open("x") as file:

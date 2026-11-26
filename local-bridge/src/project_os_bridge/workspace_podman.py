@@ -62,7 +62,8 @@ class WorkspacePodman:
         lock, install = VALIDATION[profile]
         # Image contract: reviewed offline toolchain/cache, /fixture writable
         # only in the disposable container layer. No writable host mount.
-        setup = ("set -eu; cp -a /source/. /fixture/; " + install +
+        setup = ("set -eu; cmp /source/" + lock + " " + lock +
+                 "; cp -a /source/. /fixture/; " + install +
                  "; cmp /source/" + lock + " " + lock + '; exec "$@"')
         argv = profile_for(profile).argv
         args = ["run", "--rm", "--name", name, "--label", "io.project-os.fixture=" + token,

@@ -87,7 +87,7 @@ jobs:
   mobile-profile-smoke:
     # CI-only trusted synthetic projects; not an approved local execution image.
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
@@ -103,7 +103,16 @@ jobs:
         run: |
           python3 -m venv "$RUNNER_TEMP/mobile-bridge"
           "$RUNNER_TEMP/mobile-bridge/bin/python" -m pip install --require-hashes --only-binary=:all: -r local-bridge/requirements-linux-py312.lock
-      - name: Materialize synthetic revision and execute registered profile commands offline
+      - name: Require rootless Podman and OCI conversion tools
+        run: |
+          command -v podman
+          if ! command -v skopeo >/dev/null; then
+            sudo apt-get update
+            sudo apt-get install -y --no-install-recommends skopeo
+          fi
+          podman --version
+          skopeo --version
+      - name: Materialize synthetic revision and execute registered profile commands through rootless Podman
         env:
           MOBILE_STACK: ${{ matrix.stack }}
           PYTHONPATH: local-bridge/src

@@ -17,6 +17,8 @@ from project_os_bridge.core import Jobs, Policy
 from project_os_bridge.workspace_jobs import MARKER, RUNTIME, submit_workspace
 from project_os_bridge.workspace_profiles import PROFILES, artifact_identity
 from project_os_bridge.worker import run_pending
+from project_os_bridge.podman_context import PodmanContext
+from project_os_bridge.workspace_podman import WorkspacePodman
 
 FLUTTER_VERSION = "3.35.7"
 FLUTTER_SHA256 = "146df531f9ac6a11a918013c1a70faafc053d4811c8cb69a413fd70748d51c3d"
@@ -162,7 +164,7 @@ def private_json(path, value):
     path.write_text(json.dumps(value))
 
 
-def prepare(folder, files, lock, lock_bytes, profiles, *, image_id=None, executor=None):
+def prepare(folder, files, lock, lock_bytes, profiles, *, image_id=None, executor=None, backend=None):
     source = folder / "source"
     source.mkdir(mode=0o700)
     write_files(source, {**files, ".gitignore": ".project-os/\n"})
@@ -192,14 +194,14 @@ def prepare(folder, files, lock, lock_bytes, profiles, *, image_id=None, executo
     policy = Policy([(principal, "submit", "disposable"), (principal, "read", "disposable"),
                      *((principal, op, "synthetic") for op in
                        ("workspace_prepare", "workspace_materialize", "workspace_execute", *profiles))])
-    workflow = "workspace_execute" if image_id is not None else "workspace_prepare"
+    workflow = "workspace_execute" if image_id is not None or backend is not None else "workspace_prepare"
     jobs = Jobs(state, policy, workflows=(workflow,))
     ids = {profile: submit_workspace(jobs, principal, "synthetic", revision, profile, profile,
-                                     image_id=image_id) for profile in profiles}
-    run_pending(jobs, workspace_executor=executor)
+                                     image_id=image_id, backend=backend) for profile in profiles}
+    run_pending(jobs, workspace_executor=executor, workspace_backend=backend)
     jobs = Jobs(state, policy, workflows=(workflow,))
     evidence = {profile: jobs.evidence(principal, job) for profile, job in ids.items()}
-    if image_id is None and any(item["state"] != "SUCCEEDED" or item["result"]["head"] != revision
+    if image_id is None and backend is None and any(item["state"] != "SUCCEEDED" or item["result"]["head"] != revision
            or item["result"]["execution_available"] is not False for item in evidence.values()):
         raise RuntimeError("WORKSPACE_PREPARATION_FAILED")
     return state, ids, evidence
@@ -305,6 +307,7 @@ def apk_executor(image, output, profile):
 def main():
     if os.environ.get("GITHUB_ACTIONS") != "true" or os.environ.get("RUNNER_OS") != "Linux":
         raise RuntimeError("Disposable Linux CI only")
+    os.umask(0o077)
     stack = os.environ["MOBILE_STACK"]
     apk = os.environ.get("MOBILE_APK") == "1"
     if stack not in {"flutter", "expo"} or os.getuid() == 0:
@@ -337,6 +340,10 @@ def main():
             if apk:
                 setup += ANDROID_SETUP + (FLUTTER_ANDROID_SETUP if stack == "flutter" else EXPO_ANDROID_SETUP) + ANDROID_EXPORT
                 profiles = (stack + "-apk-debug",)
+            else:
+                setup += ("RUN rm -rf /fixture/lib /fixture/test /fixture/.dart_tool /fixture/pubspec.yaml\n"
+                          if stack == "flutter" else
+                          "RUN rm -f /fixture/index.tsx /fixture/value.cjs /fixture/value.test.cjs /fixture/app.json /fixture/tsconfig.json /fixture/package.json\n")
             (context / "Dockerfile").write_text(COMMON + setup)
             # Acquisition is confined to a synthetic project in a fresh CI VM.
             # Resolve the public base once, then build and run by immutable identity.
@@ -397,40 +404,67 @@ def main():
                 record["status"] = "success"
                 save()
                 return
-            state, ids, prepared = prepare(folder, files, lock, lock_bytes, profiles)
-            record["preparation"] = prepared
+            # Import the exact acquired candidate into a private rootless store,
+            # not the Docker/default Podman store used for image acquisition.
+            tag = "localhost/project-os-mobile-ci:validation"
+            command(["docker", "tag", image, tag])
+            layout = folder / "oci"
+            command(["skopeo", "copy", "--format", "oci", "docker-daemon:" + tag,
+                     "oci:" + str(layout) + ":candidate"], timeout=600)
+            index = json.loads((layout / "index.json").read_bytes())
+            manifests = index["manifests"]
+            if len(manifests) != 1:
+                raise RuntimeError("MOBILE_OCI_MANIFEST_COUNT")
+            digest = manifests[0]["digest"]
+            if not re.fullmatch(r"sha256:[0-9a-f]{64}", digest):
+                raise RuntimeError("MOBILE_OCI_DIGEST")
+            manifest = (layout / "blobs/sha256" / digest.split(":")[1]).read_bytes()
+            if "sha256:" + sha256(manifest) != digest:
+                raise RuntimeError("MOBILE_OCI_MANIFEST_INTEGRITY")
+            config = json.loads(manifest)["config"]["digest"]
+            if config != image:
+                raise RuntimeError("MOBILE_OCI_CONFIG_IDENTITY")
+            record["oci_manifest"] = digest
+            record["oci_config"] = config
+            record["backend"] = "WorkspacePodman"
             save()
-            # The same materialized revision feeds each fixed registered command.
-            # No dependency download in this phase. The only host mount is the
-            # private synthetic source, read-only; never a host SDK or socket.
-            for profile in profiles:
-                workspace = state / ("workspace-" + ids[profile])
-                argv = PROFILES[profile].argv
-                # Copy the checked-out bytes into the image's disposable writable
-                # layer, preserving its pre-acquired cache and dependency closure.
-                setup_cmd = ("set -eu; cmp /source/" + lock + " /fixture/" + lock +
-                             "; cp -a /source/. /fixture/; " +
-                             ("flutter pub get --offline; cmp /source/pubspec.lock pubspec.lock; "
-                              if stack == "flutter" else "npm ci --offline --ignore-scripts --no-audit --no-fund; cmp /source/package-lock.json package-lock.json; ") +
-                             'exec "$@"')
-                name = "mobile-smoke-" + uuid.uuid4().hex
-                args = [*container_args(image), "--name", name, "--mount",
-                        f"type=bind,src={workspace},dst=/source,readonly", image,
-                        "/bin/sh", "-c", setup_cmd, "profile", *argv]
-                try:
-                    proc = subprocess.run(args, stdin=subprocess.DEVNULL, timeout=300, check=False)
-                    code = proc.returncode
-                except subprocess.TimeoutExpired:
-                    subprocess.run(["docker", "rm", "-f", name], timeout=30, check=False,
-                                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                    code = 124
+            # The short context path follows the existing Podman runroot limit.
+            # Retain the private store until the disposable VM is destroyed.
+            parent = Path(tempfile.mkdtemp(prefix="lbmob.", dir="/tmp")).resolve()
+            ctx = PodmanContext(parent / "context")
+            identity = ctx.prepare()
+            imported = ctx.import_layout(layout, digest, kind="mobile-validation")
+            host = ctx.host(identity)
+            record["podman"] = {"rootless": host["security"]["rootless"],
+                                "seccomp": host["security"]["seccompEnabled"],
+                                "cgroup_version": host["cgroupVersion"],
+                                "context_id": identity, "image": imported}
+            save()
+            backend = WorkspacePodman(ctx, {profile: imported for profile in profiles})
+            state, ids, executed = prepare(folder, files, lock, lock_bytes, profiles, backend=backend)
+            record["execution"] = executed
+            save()
+            # Reopen existing DB; confirm no unresolved effects or replay.
+            principal = "ci-mobile"
+            policy = Policy([(principal, "read", "disposable")])
+            jobs = Jobs(state, policy, workflows=("workspace_execute",))
+            if jobs.pending_effects():
+                raise RuntimeError("MOBILE_PODMAN_RECONCILIATION_REQUIRED")
+            for profile, item in executed.items():
+                result = item.get("result") or {}
+                execution = result.get("execution") or {}
+                if (item["state"] != "SUCCEEDED" or execution.get("exit_code") != 0
+                        or execution.get("cleanup_verified") is not True
+                        or execution.get("image_id") != digest
+                        or execution.get("workspace_sha256") != result.get("workspace_sha256")
+                        or result.get("workspace_materialized") is not True
+                        or jobs.evidence(principal, ids[profile]) != item):
+                    raise RuntimeError("MOBILE_PODMAN_PROFILE_FAILED")
                 record["steps"].append({"profile": profile, "job_id": ids[profile],
-                    "workspace_sha256": prepared[profile]["result"]["workspace_sha256"],
-                    "argv": list(argv), "exit_code": code})
-                save()
-                print("MOBILE_PROFILE_EXIT", profile, code, flush=True)
-                if code != 0:
-                    raise RuntimeError("PROFILE_FAILED")
+                    "workspace_sha256": result["workspace_sha256"],
+                    "argv": list(PROFILES[profile].argv), "exit_code": execution["exit_code"]})
+                print("MOBILE_PROFILE_EXIT", profile, execution["exit_code"], flush=True)
+            record["pending_effects"] = 0
             record["status"] = "success"
             save()
     except Exception:
