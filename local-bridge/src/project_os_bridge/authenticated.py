@@ -7,6 +7,7 @@ from contextlib import contextmanager
 import os
 import ssl
 import subprocess
+import sys
 import threading
 import time
 from pathlib import Path
@@ -38,6 +39,7 @@ from .podman_context import PodmanContext
 from .workos_auth import private_file, private_directory
 from .readiness import read_metadata, verify_metadata
 from .diagnostics import Diagnostics, Section
+from .maintenance import Maintenance
 
 
 def fixture_enabled(verifier, image, context_id=None):
@@ -49,7 +51,7 @@ def fixture_enabled(verifier, image, context_id=None):
         return False
 
 
-def build_server(verifier, jobs, fixture_reader=None, *, fixture_image=None, diagnostics=None, context_id=None, github_provider=None):
+def build_server(verifier, jobs, fixture_reader=None, *, fixture_image=None, diagnostics=None, context_id=None, github_provider=None, maintenance=None):
     if github_provider is not None and (type(github_provider) not in (GitHubContext, MultiProjectContext) or fixture_image is not None or fixture_reader is not None):
         raise ValueError("Invalid GitHub context configuration")
     mcp = MCPServer("Project OS authenticated disposable jobs",
@@ -118,6 +120,42 @@ def build_server(verifier, jobs, fixture_reader=None, *, fixture_image=None, dia
                 raise PermissionError("DENIED")
             jobs.policy.require(actor, "diagnostics_read", "host")
             return evidence
+
+    if maintenance is not None and fixture_image is None:
+        def maintenance_authorized():
+            actor = principal()
+            jobs.policy.require(actor, "maintenance", "installation")
+            if not maintenance.enabled():
+                raise PermissionError("DENIED")
+
+        # A transient user service, not the MCP worker, performs the operation.
+        # The request is durable before dispatch; status is never a replay.
+        @mcp.tool(annotations=write)
+        async def maintenance_update(expected_sha: StrictStr, target_sha: StrictStr,
+                                     wheel_sha256: StrictStr, ci_run_id: StrictInt,
+                                     request_key: StrictStr) -> dict:
+            """Request an update of the canonical installation to an exact approved main SHA and wheel."""
+            maintenance_authorized()
+            return await asyncio.to_thread(maintenance.submit, "update", expected_sha,
+                                           target_sha, wheel_sha256, ci_run_id, request_key,
+                                           authorize=maintenance_authorized)
+
+        @mcp.tool(annotations=write)
+        async def maintenance_rollback(expected_sha: StrictStr, target_sha: StrictStr,
+                                       wheel_sha256: StrictStr, request_key: StrictStr) -> dict:
+            """Restore only the immediately retained, reviewed runtime matching the supplied SHA and digest."""
+            maintenance_authorized()
+            return await asyncio.to_thread(maintenance.submit, "rollback", expected_sha,
+                                           target_sha, wheel_sha256, None, request_key,
+                                           authorize=maintenance_authorized)
+
+        @mcp.tool(annotations=read)
+        async def maintenance_status(request_key: StrictStr) -> dict:
+            """Read the durable result of the specified maintenance request; never dispatch or retry."""
+            maintenance_authorized()
+            result = await asyncio.to_thread(maintenance.status, request_key)
+            maintenance_authorized()
+            return result
 
     @mcp.tool(annotations=write)
     def submit_probe_job(request_key: str) -> dict:
@@ -274,9 +312,9 @@ class LocalAuthorizationMiddleware:
         await self.app(scope, receive, send)
 
 
-def build_http_app(verifier, jobs, fixture_reader=None, *, audit=None, limit=120, fixture_image=None, diagnostics=None, context_id=None, github_provider=None):
+def build_http_app(verifier, jobs, fixture_reader=None, *, audit=None, limit=120, fixture_image=None, diagnostics=None, context_id=None, github_provider=None, maintenance=None):
     """Use the same authenticated ASGI stack in production and HTTP tests."""
-    server = build_server(verifier, jobs, fixture_reader, fixture_image=fixture_image, diagnostics=diagnostics, context_id=context_id, github_provider=github_provider)
+    server = build_server(verifier, jobs, fixture_reader, fixture_image=fixture_image, diagnostics=diagnostics, context_id=context_id, github_provider=github_provider, maintenance=maintenance)
     app = server.streamable_http_app(
         stateless_http=True, json_response=True, max_request_body_size=65536,
         host="127.0.0.1",
@@ -462,8 +500,13 @@ def main():
         operations = OPERATIONS if args.fixture_image else ("submit","read","cancel")
         workflows = ("probe_check","git_fixture_check") if args.fixture_image else ("probe_check",)
         grants = [(verifier.subject, op, "disposable") for op in operations]
+        maintenance = None
         if diagnostics is not None:
             grants.append((verifier.subject, "diagnostics_read", "host"))
+            # Registration is limited to the reviewed non-fixture supervised profile.
+            # The separate owner-private flag is checked on every call and dispatch.
+            maintenance = Maintenance(root, Path(sys.prefix).parents[1])
+            grants.append((verifier.subject, "maintenance", "installation"))
         jobs = Jobs(args.state_dir, Policy(grants), workflows=workflows)
         if jobs.pending_effects():
             parser.error("RECONCILIATION_REQUIRED; stop and use local reconciliation")
@@ -477,7 +520,7 @@ def main():
         fixture = (None if github_provider is not None else
                    SyntheticGitHubReader(Policy([(verifier.subject,"github_read","disposable")]),args.state_dir))
         app = build_http_app(verifier,jobs,fixture,fixture_image=args.fixture_image,diagnostics=diagnostics,
-                             context_id=context_id,github_provider=github_provider)
+                             context_id=context_id,github_provider=github_provider,maintenance=maintenance)
         import uvicorn
         server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=args.port,
                                               access_log=False, **tls))
