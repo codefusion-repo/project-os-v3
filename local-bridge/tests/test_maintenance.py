@@ -73,8 +73,11 @@ class MaintenanceTests(unittest.TestCase):
     def test_default_deny_and_unsafe_marker(self):
         marker = self.service.state / m.FLAG
         marker.unlink()
-        for make in (lambda: marker.symlink_to(self.service.state / m.FLAGS[0]),
-                     lambda: marker.touch(mode=0o644)):
+        def unsafe_mode():
+            marker.touch(mode=0o600)
+            # Installer tests run under umask 077; force the negative mode.
+            marker.chmod(0o644)
+        for make in (lambda: marker.symlink_to(self.service.state / m.FLAGS[0]), unsafe_mode):
             make()
             self.assertFalse(self.service.enabled())
             with self.assertRaises(PermissionError):
