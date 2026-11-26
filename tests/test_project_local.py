@@ -260,6 +260,29 @@ class Projects(unittest.TestCase):
             self.assertEqual(local.read_config(workspace)['repositories'], ['org/whole'])
             self.assertEqual(local.read_config(child)['repositories'], ['org/front'])
 
+    def test_configure_preserves_github_context_and_prompt_does_not_disclose_binding(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = repo(Path(temp) / 'workspace')
+            binding = {'project': 'demo', 'repository': 'org/a', 'repository_id': 123456789}
+            local.save_config(root, {'version': 2, 'name': 'demo', 'repositories': ['org/a'],
+                                     'github_context': binding})
+            result = execute('--project', root, '--configure', '--name', 'renamed', '--repo', 'org/b')
+            self.assertEqual(result.returncode, 0, result.stderr)
+            data = local.read_config(root)
+            self.assertEqual(data['github_context'], binding)
+            self.assertEqual(data['name'], 'renamed')
+            self.assertEqual(data['repositories'], ['org/a', 'org/b'])
+            before = (root / '.project-os/config.json').read_bytes()
+            generated = execute('--project', root, '--workflow', 'continue')
+            self.assertEqual(generated.returncode, 0, generated.stderr)
+            prompt = next((root / '.project-os/prompts').glob('*.md')).read_text()
+            self.assertNotIn(str(binding['repository_id']), prompt)
+            self.assertEqual((root / '.project-os/config.json').read_bytes(), before)
+            for invalid in ({**binding, 'repository_id': True}, {**binding, 'repository': 'org/other'}):
+                with self.assertRaises(local.ProjectError):
+                    local.save_config(root, {**data, 'github_context': invalid})
+            self.assertEqual((root / '.project-os/config.json').read_bytes(), before)
+
     def test_configure_multiple_checkouts_without_publishing_local_paths(self):
         with tempfile.TemporaryDirectory() as temp:
             root = repo(Path(temp) / 'workspace')

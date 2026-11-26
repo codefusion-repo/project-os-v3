@@ -654,6 +654,51 @@ class AuthTests(unittest.TestCase):
                     self.assertTrue(response.json()["result"].get("isError", False))
                     request.assert_called_once_with("repos/example/demo/issues/1")
 
+    def test_operational_context_audit_denies_disclosure_on_failure(self):
+        from project_os_bridge.github_operational import GitHubContextAudit, AUDIT_NAME
+        jobs = Jobs(self.root, Policy([]))
+        reader = GitHubReader(Policy([(SUBJECT, "github_read", "demo")]),
+                              {"demo": "example/demo"}, self.root)
+        audit = GitHubContextAudit(self.root)
+        provider = GitHubContext(reader, lambda *grant: grant == (SUBJECT, "demo", "example/demo"),
+                                 audit=audit)
+        app = build_http_app(self.verifier, jobs, github_provider=provider)
+        headers = {"Accept": "application/json, text/event-stream",
+                   "Authorization": "Bearer " + self.token()}
+        init = {"jsonrpc": "2.0", "id": 1, "method": "initialize",
+                "params": {"protocolVersion": "2025-11-25", "capabilities": {},
+                           "clientInfo": {"name": "test", "version": "1"}}}
+        call = {"jsonrpc": "2.0", "id": 2, "method": "tools/call",
+                "params": {"name": "github_context", "arguments": {"project": "demo", "numbers": [1]}}}
+        def fake(endpoint):
+            if "/comments?" in endpoint:
+                return {"complete": True, "data": []}
+            return {"complete": True, "data": {"number": 1, "title": "audit-fixture-content", "comments": 0,
+                                               "body": None, "state": "open",
+                                               "repository_url": "https://api.github.com/repos/example/demo",
+                                               "url": "https://api.github.com/repos/example/demo/issues/1"}}
+        with patch.object(reader, "_request", side_effect=fake) as request:
+            with TestClient(app, base_url="http://127.0.0.1:8765") as client:
+                response = client.post("/mcp", headers=headers, json=init)
+                self.assertEqual(response.status_code, 200)
+                headers["MCP-Protocol-Version"] = response.json()["result"]["protocolVersion"]
+                response = client.post("/mcp", headers=headers, json=call)
+                self.assertIn("audit-fixture-content", response.text)
+                self.assertEqual(request.call_count, 2)
+                records = [json.loads(line) for line in (self.root / AUDIT_NAME).read_text().splitlines()]
+                self.assertEqual([r["outcome"] for r in records], ["admitted", "complete"])
+                with patch.object(audit, "record", side_effect=OSError("private fixture")):
+                    denied = client.post("/mcp", headers=headers, json=call)
+                    self.assertTrue(denied.json()["result"].get("isError", False))
+                    self.assertNotIn("private fixture", denied.text)
+                    self.assertEqual(request.call_count, 2)
+                with patch.object(audit, "record", side_effect=[None, OSError("private fixture")]):
+                    denied = client.post("/mcp", headers=headers, json=call)
+                    self.assertTrue(denied.json()["result"].get("isError", False))
+                    self.assertNotIn("audit-fixture-content", denied.text)
+                    self.assertNotIn("private fixture", denied.text)
+                    self.assertEqual(request.call_count, 4)
+
     def test_http_transport(self):
         policy=Policy((SUBJECT,op,"disposable") for op in ("submit","read","cancel","github_read"))
         jobs=Jobs(self.root,policy)

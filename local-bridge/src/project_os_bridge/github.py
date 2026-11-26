@@ -11,11 +11,57 @@ from concurrent.futures import ThreadPoolExecutor
 from .core import Policy
 
 
+class GitHubReadError(RuntimeError):
+    """Fixed upstream error category; no raw response text."""
+
+
+def _http_result(raw, exit_code):
+    """Classify bounded gh --include output without returning headers."""
+    head, sep, body = raw.partition(b"\r\n\r\n")
+    if not sep:
+        head, sep, body = raw.partition(b"\n\n")
+    lines = head.splitlines()
+    status = re.fullmatch(rb"HTTP/\d(?:\.\d)? ([1-5]\d\d)(?: [^\r\n]*)?", lines[0]) if lines else None
+    if not sep or status is None:
+        return {"complete": False, "error": "GH_FAILED_OR_TIMEOUT" if exit_code else "INVALID_RESPONSE"}
+    code = int(status[1])
+    headers = {}
+    for line in lines[1:]:
+        key, colon, value = line.partition(b":")
+        if not colon:
+            return {"complete": False, "error": "INVALID_RESPONSE"}
+        headers.setdefault(key.lower(), []).append(value.strip())
+    if code == 429 or (code == 403 and (
+            b"0" in headers.get(b"x-ratelimit-remaining", [])
+            or bool(headers.get(b"retry-after")))):
+        return {"complete": False, "error": "GH_RATE_LIMIT"}
+    if code == 403:
+        try:
+            error = json.loads(body)
+            message = error.get("message", "") if isinstance(error, dict) else ""
+            if isinstance(message, str) and "secondary rate limit" in message.lower():
+                return {"complete": False, "error": "GH_RATE_LIMIT"}
+        except (ValueError, UnicodeError):
+            pass
+    if code != 200:
+        return {"complete": False, "error": "GH_HTTP_ERROR"}
+    if exit_code:
+        return {"complete": False, "error": "GH_FAILED_OR_TIMEOUT"}
+    try:
+        return {"complete": True, "data": json.loads(body)}
+    except (ValueError, UnicodeError):
+        return {"complete": False, "error": "GH_UNAVAILABLE_OR_INVALID_JSON"}
+
+
 class GitHubReader:
-    def __init__(self, policy: Policy, repositories: dict, config_dir: Path):
+    def __init__(self, policy: Policy, repositories: dict, config_dir: Path, *, repository_ids=None):
         self.policy = policy
         self.repositories = MappingProxyType(dict(repositories))
         self.config_dir = config_dir
+        ids = dict(repository_ids or {})
+        if repository_ids is not None and (set(ids) != set(repositories) or any(type(v) is not int or not 0 < v <= 2**63 - 1 for v in ids.values())):
+            raise ValueError("Invalid repository identity binding")
+        self.repository_ids = MappingProxyType(ids)
         if not config_dir.is_absolute() or config_dir.resolve(strict=True) != config_dir:
             raise ValueError("Dedicated canonical gh config required")
         st = config_dir.stat()
@@ -44,7 +90,7 @@ class GitHubReader:
             # Bound memory and disk: stream at most one MiB plus one byte;
             # timeout is enforced by a separate watchdog around the pipe read.
             import threading
-            with subprocess.Popen(["gh","api","--hostname","github.com","--method","GET",endpoint],
+            with subprocess.Popen(["gh","api","--hostname","github.com","--method","GET","--include",endpoint],
                                   env=env,cwd=self.config_dir,stdin=subprocess.DEVNULL,
                                   stdout=subprocess.PIPE,stderr=subprocess.DEVNULL) as proc:
                 timer = threading.Timer(15, proc.kill)
@@ -54,11 +100,10 @@ class GitHubReader:
                     if len(raw) > 1_048_576:
                         proc.kill()
                         return {"complete":False,"error":"RESPONSE_LIMIT"}
-                    if proc.wait() != 0:
-                        return {"complete":False,"error":"GH_FAILED_OR_TIMEOUT"}
+                    exit_code = proc.wait()
                 finally:
                     timer.cancel()
-            return {"complete":True,"data":json.loads(raw)}
+            return _http_result(raw, exit_code)
         except (OSError, ValueError):
             return {"complete":False,"error":"GH_UNAVAILABLE_OR_INVALID_JSON"}
 
@@ -66,13 +111,39 @@ class GitHubReader:
         repo = self._repo(principal, project)
         if type(number) is not int or not 1 <= number <= 2_147_483_647:
             raise ValueError("Invalid issue number")
+        self._verify_identity(principal, project, check_access)
+        return self._issue_context(principal, project, number, check_access)
+
+    def _authorized_request(self, principal, project, endpoint, check_access):
+        self._repo(principal, project)
+        if check_access is not None:
+            check_access()
+        result = self._request(endpoint)
+        if check_access is not None:
+            check_access()
+        return result
+
+    def _verify_identity(self, principal, project, check_access):
+        expected = self.repository_ids.get(project)
+        if expected is None:
+            return
+        repo = self._repo(principal, project)
+        result = self._authorized_request(principal, project, f"repos/{repo}", check_access)
+        if result.get("complete") is not True:
+            raise GitHubReadError(result.get("error", "INVALID_RESPONSE"))
+        data = result.get("data")
+        if (not isinstance(data, dict) or type(data.get("id")) is not int
+                or data["id"] != expected or not isinstance(data.get("full_name"), str)
+                or not data["full_name"].isascii() or data["full_name"].lower() != repo.lower()):
+            raise GitHubReadError("RESOURCE_MISMATCH")
+
+    def _issue_context(self, principal, project, number, check_access):
+        repo = self._repo(principal, project)
+
         def checked_request(endpoint):
-            self._repo(principal, project)
-            if check_access is not None:
-                check_access()
-            result = self._request(endpoint)
-            if check_access is not None:
-                check_access()
+            result = self._authorized_request(principal, project, endpoint, check_access)
+            if result.get("error") == "GH_RATE_LIMIT":
+                raise GitHubReadError("GH_RATE_LIMIT")
             return result
 
         prefix = f"repos/{repo}/issues/{number}"
@@ -112,8 +183,14 @@ class GitHubReader:
         if any(type(n) is not int or not 1 <= n <= 2_147_483_647 for n in numbers):
             raise ValueError("Invalid issue number")
         unique = list(dict.fromkeys(numbers))
-        with ThreadPoolExecutor(max_workers=2) as pool:
-            results = list(pool.map(lambda n: self.issue_context(principal,project,n, check_access=check_access),unique))
+        # For the operational binding, stop the batch on the first identity or
+        # rate-limit failure rather than queueing more upstream requests.
+        if project in self.repository_ids:
+            self._verify_identity(principal, project, check_access)
+            results = [self._issue_context(principal, project, n, check_access) for n in unique]
+        else:
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                results = list(pool.map(lambda n: self.issue_context(principal,project,n, check_access=check_access),unique))
         self._repo(principal, project)
         return {"complete":all(x["complete"] for x in results),
                 "issues":dict(zip(unique,results))}
