@@ -115,7 +115,7 @@ jobs:
       - name: Materialize synthetic revision and execute registered profile commands through rootless Podman
         env:
           MOBILE_STACK: ${{ matrix.stack }}
-          PYTHONPATH: local-bridge/src
+          PYTHONPATH: local-bridge/src:local-bridge/tests
         run: '"$RUNNER_TEMP/mobile-bridge/bin/python" local-bridge/scripts/ci-mobile-smoke.py'
       - name: Preserve mobile smoke evidence
         if: always()

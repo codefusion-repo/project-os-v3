@@ -1346,3 +1346,55 @@ class AuthTests(unittest.TestCase):
                                                           "arguments": {"section": "host"}})
                     self.assertTrue(result["result"]["isError"])
         diagnostics.collect.assert_not_called()
+
+def execute_workspace_http_fixture(jobs, backend, project, revision, profiles):
+    """Reuse the signed synthetic auth fixture for real disposable Podman CI."""
+    from project_os_bridge.worker import run_pending
+    AuthTests.setUpClass()
+    fixture = AuthTests()
+    try:
+        fixture.setUp()
+        app = build_http_app(fixture.verifier, jobs, workspace_candidate=True,
+                             workspace_backend=backend)
+        headers = {"Accept": "application/json, text/event-stream",
+                   "Authorization": "Bearer " + fixture.token(changes={"exp": int(time.time()) + 300})}
+        with TestClient(app, base_url="http://127.0.0.1:8765") as client:
+            def call(method, params):
+                response = client.post("/mcp", headers=headers, json={
+                    "jsonrpc": "2.0", "id": 1, "method": method, "params": params})
+                fixture.assertEqual(response.status_code, 200)
+                return response.json()["result"]
+            def raw(name, **arguments):
+                return call("tools/call", {"name": name, "arguments": arguments})
+            def payload(name, **arguments):
+                result = raw(name, **arguments)
+                fixture.assertFalse(result.get("isError", False), result)
+                return json.loads(result["content"][0]["text"])
+            init = call("initialize", {"protocolVersion": "2025-11-25",
+                "capabilities": {}, "clientInfo": {"name": "workspace-ci", "version": "1"}})
+            headers["MCP-Protocol-Version"] = init["protocolVersion"]
+            fixture.assertIn("submit_workspace_execute", {x["name"] for x in call("tools/list", {})["tools"]})
+            ids = {}
+            for profile in profiles:
+                args = {"project": project, "expected_sha": revision, "profile": profile, "request_key": profile}
+                first = payload("submit_workspace_execute", **args)
+                fixture.assertEqual(first, payload("submit_workspace_execute", **args))
+                ids[profile] = first["job_id"]
+                fixture.assertEqual(payload("get_job_status", job_id=first["job_id"])["state"], "QUEUED")
+            for profile in ("shell", "flutter-apk-debug", "expo-apk-debug"):
+                result = raw("submit_workspace_execute", project=project, expected_sha=revision,
+                             profile=profile, request_key="invalid-" + profile)
+                fixture.assertTrue(result.get("isError", False))
+            run_pending(jobs, workspace_backend=backend, enabled=fixture.verifier.enabled)
+            # New token, same authorized identity; no execution replay.
+            headers["Authorization"] = "Bearer " + fixture.token()
+            evidence = {profile: payload("get_job_evidence", job_id=job) for profile, job in ids.items()}
+            # Local opt-in revocation denies disclosure without deleting evidence.
+            fixture.flag.unlink()
+            response = client.post("/mcp", headers=headers, json={"jsonrpc": "2.0", "id": 2,
+                "method": "tools/call", "params": {"name": "get_job_evidence",
+                                                  "arguments": {"job_id": next(iter(ids.values()))}}})
+            fixture.assertEqual(response.status_code, 403)
+            return ids, evidence
+    finally:
+        fixture.doCleanups()

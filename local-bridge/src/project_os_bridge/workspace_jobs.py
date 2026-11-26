@@ -89,7 +89,7 @@ def submit_workspace(jobs, principal, project, expected_sha, profile, request_ke
                        request_key, workspace=request)
 
 
-def require_workspace_job(jobs, principal, job_id):
+def require_workspace_job(jobs, principal, job_id, *, allow_execute=False):
     """Revalidate ownership and the frozen mapping before HTTP disclosure."""
     if not isinstance(job_id, str) or not re.fullmatch(r"[0-9a-f]{32}", job_id):
         raise PermissionError("DENIED")
@@ -99,10 +99,14 @@ def require_workspace_job(jobs, principal, job_id):
             "SELECT jobs.principal, jobs.workflow, workspace_inputs.request "
             "FROM jobs JOIN workspace_inputs ON jobs.id=workspace_inputs.job_id "
             "WHERE jobs.id=?", (job_id,)).fetchone()
-        if not row or row["principal"] != principal or row["workflow"] != "workspace_prepare":
+        allowed = {"workspace_prepare", "workspace_execute"} if allow_execute else {"workspace_prepare"}
+        if not row or row["principal"] != principal or row["workflow"] not in allowed:
             raise PermissionError("DENIED")
         request = json.loads(row["request"])
-    authorize_request(jobs.policy, principal, request)
+    execute = row["workflow"] == "workspace_execute"
+    if execute and "context_id" not in request:
+        raise PermissionError("DENIED")
+    authorize_request(jobs.policy, principal, request, execute=execute)
     _, entry, root = _binding(runtime, jobs.policy, principal, request["project"],
                               request["expected_sha"], request["profile"])
     if binding_digest(entry, root) != request["binding"]:

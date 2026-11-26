@@ -231,11 +231,19 @@ def prepare(folder, files, lock, lock_bytes, profiles, *, image_id=None, executo
         "github_projects": {"synthetic": {"config": str(config), "repository": "example/synthetic",
                                          "repository_id": 1}}})
     principal = "ci-mobile"
+    if backend is not None:
+        from test_authenticated import SUBJECT
+        principal = SUBJECT
     policy = Policy([(principal, "submit", "disposable"), (principal, "read", "disposable"),
                      *((principal, op, "synthetic") for op in
                        ("workspace_prepare", "workspace_materialize", "workspace_execute", *profiles))])
     workflow = "workspace_execute" if image_id is not None or backend is not None else "workspace_prepare"
-    jobs = Jobs(state, policy, workflows=(workflow,))
+    workflows = ("workspace_prepare", "workspace_execute") if backend is not None else (workflow,)
+    jobs = Jobs(state, policy, workflows=workflows)
+    if backend is not None:
+        from test_authenticated import execute_workspace_http_fixture
+        ids, evidence = execute_workspace_http_fixture(jobs, backend, "synthetic", revision, profiles)
+        return state, ids, evidence
     ids = {profile: submit_workspace(jobs, principal, "synthetic", revision, profile, profile,
                                      image_id=image_id, backend=backend) for profile in profiles}
     run_pending(jobs, workspace_executor=executor, workspace_backend=backend)
@@ -489,9 +497,11 @@ def main():
             backend = WorkspacePodman(ctx, {profile: imported for profile in profiles})
             state, ids, executed = prepare(folder, files, lock, lock_bytes, profiles, backend=backend)
             record["execution"] = executed
+            record["admission"] = "authenticated-mcp-test-client"
             save()
             # Reopen existing DB; confirm no unresolved effects or replay.
-            principal = "ci-mobile"
+            from test_authenticated import SUBJECT
+            principal = SUBJECT
             policy = Policy([(principal, "read", "disposable")])
             jobs = Jobs(state, policy, workflows=("workspace_execute",))
             if jobs.pending_effects():

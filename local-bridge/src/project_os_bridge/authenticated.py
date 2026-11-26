@@ -51,13 +51,22 @@ def fixture_enabled(verifier, image, context_id=None):
         return False
 
 
-def build_server(verifier, jobs, fixture_reader=None, *, fixture_image=None, diagnostics=None, context_id=None, github_provider=None, maintenance=None, workspace_candidate=False):
+def build_server(verifier, jobs, fixture_reader=None, *, fixture_image=None, diagnostics=None, context_id=None, github_provider=None, maintenance=None, workspace_candidate=False, workspace_backend=None):
+    if workspace_backend is not None and not workspace_candidate:
+        raise ValueError("Dedicated workspace candidate required")
     if workspace_candidate:
         from .workspace_jobs import local_runtime
-        if (jobs.workflows != frozenset({"workspace_prepare"}) or jobs.probe.root == verifier.state_dir
+        from .workspace_podman import WorkspacePodman
+        workflows = {"workspace_prepare"}
+        if workspace_backend is not None:
+            if type(workspace_backend) is not WorkspacePodman:
+                raise ValueError("Registered Podman backend required")
+            workflows.add("workspace_execute")
+            workspace_backend.identity()
+        if (jobs.workflows != frozenset(workflows) or jobs.probe.root == verifier.state_dir
                 or fixture_reader is not None or fixture_image is not None or github_provider is not None
                 or maintenance is not None or diagnostics is not None):
-            raise ValueError("Dedicated workspace preparation candidate required")
+            raise ValueError("Dedicated workspace candidate required")
         local_runtime(jobs.probe.root)
     if github_provider is not None and (type(github_provider) not in (GitHubContext, MultiProjectContext) or fixture_image is not None or fixture_reader is not None):
         raise ValueError("Invalid GitHub context configuration")
@@ -94,7 +103,17 @@ def build_server(verifier, jobs, fixture_reader=None, *, fixture_image=None, dia
                     pass  # No private paths or exception details.
             if workspace_candidate:
                 result["workspace_prepare_registered"] = True
+                result["workspace_execution_registered"] = workspace_backend is not None
                 result["workspace_execution_available"] = False
+                if workspace_backend is not None:
+                    try:
+                        from .workspace_jobs import local_runtime
+                        local_runtime(jobs.probe.root)
+                        workspace_backend.identity()
+                        result["workspace_execution_available"] = True
+                    except (OSError, ValueError):
+                        pass
+                    result["workspace_execution_scope"] = "dedicated-candidate"
             if maintenance is not None:
                 result["maintenance_registered"] = True
                 result["maintenance_authorized"] = maintenance.enabled()
@@ -190,11 +209,7 @@ def build_server(verifier, jobs, fixture_reader=None, *, fixture_image=None, dia
     if workspace_candidate:
         from .workspace_jobs import submit_workspace, require_workspace_job
 
-        @mcp.tool(annotations=write)
-        async def submit_workspace_job(project: StrictStr, expected_sha: StrictStr,
-                                       profile: StrictStr, request_key: StrictStr) -> dict:
-            """Prepare an exact committed revision in the dedicated candidate workspace.
-            No execution, image selection, arbitrary paths, commands or source disclosure."""
+        async def submit_workspace_request(project, expected_sha, profile, request_key, *, execute):
             actor = principal()
             token = get_access_token()
 
@@ -207,8 +222,9 @@ def build_server(verifier, jobs, fixture_reader=None, *, fixture_image=None, dia
                 try:
                     check()
                     job = submit_workspace(jobs, actor, project, expected_sha, profile,
-                                           request_key, authorize=check)
-                    require_workspace_job(jobs, actor, job)
+                                           request_key, authorize=check,
+                                           backend=workspace_backend if execute else None)
+                    require_workspace_job(jobs, actor, job, allow_execute=workspace_backend is not None)
                     check()
                     return {"job_id": job}
                 except PermissionError:
@@ -220,10 +236,24 @@ def build_server(verifier, jobs, fixture_reader=None, *, fixture_image=None, dia
 
             return await asyncio.to_thread(submit)
 
+        @mcp.tool(annotations=write)
+        async def submit_workspace_job(project: StrictStr, expected_sha: StrictStr,
+                                       profile: StrictStr, request_key: StrictStr) -> dict:
+            """Prepare an exact committed revision in the dedicated candidate workspace."""
+            return await submit_workspace_request(project, expected_sha, profile, request_key, execute=False)
+
+        if workspace_backend is not None:
+            @mcp.tool(annotations=write)
+            async def submit_workspace_execute(project: StrictStr, expected_sha: StrictStr,
+                                               profile: StrictStr, request_key: StrictStr) -> dict:
+                """Queue a registered offline validation profile in the dedicated candidate.
+                Image and context are selected locally; no paths, commands or image input."""
+                return await submit_workspace_request(project, expected_sha, profile, request_key, execute=True)
+
     def workspace_access(actor, job_id):
         if workspace_candidate:
             try:
-                require_workspace_job(jobs, actor, job_id)
+                require_workspace_job(jobs, actor, job_id, allow_execute=workspace_backend is not None)
             except (PermissionError, OSError, ValueError, TypeError):
                 raise PermissionError("DENIED") from None
             if principal() != actor:
@@ -380,9 +410,9 @@ class LocalAuthorizationMiddleware:
         await self.app(scope, receive, send)
 
 
-def build_http_app(verifier, jobs, fixture_reader=None, *, audit=None, limit=120, fixture_image=None, diagnostics=None, context_id=None, github_provider=None, maintenance=None, workspace_candidate=False):
+def build_http_app(verifier, jobs, fixture_reader=None, *, audit=None, limit=120, fixture_image=None, diagnostics=None, context_id=None, github_provider=None, maintenance=None, workspace_candidate=False, workspace_backend=None):
     """Use the same authenticated ASGI stack in production and HTTP tests."""
-    server = build_server(verifier, jobs, fixture_reader, fixture_image=fixture_image, diagnostics=diagnostics, context_id=context_id, github_provider=github_provider, maintenance=maintenance, workspace_candidate=workspace_candidate)
+    server = build_server(verifier, jobs, fixture_reader, fixture_image=fixture_image, diagnostics=diagnostics, context_id=context_id, github_provider=github_provider, maintenance=maintenance, workspace_candidate=workspace_candidate, workspace_backend=workspace_backend)
     app = server.streamable_http_app(
         stateless_http=True, json_response=True, max_request_body_size=65536,
         host="127.0.0.1",
