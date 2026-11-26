@@ -121,8 +121,121 @@ El central se excluye de autodetección y no puede usarse como --project. El che
 
 ## Local Bridge: capacidades, seguridad y evidencia
 
-**Fuente de verdad funcional vigente (PM, 2026-11-26):** [decisión ratificada](https://github.com/codefusion-repo/project-os-v3/issues/8#issuecomment-7185110551) y [consolidación de capacidades en MVP.md](../local-bridge/MVP.md#production-capability-consolidation--authoritative-product-scope). El MCP complementa GitHub Connector con contexto agrupado, preparación local y validación/build, Android QA/artefactos y Codex opcional; no replica Git remoto ni ofrece shell general. Prioridad: resolver mantenimiento existente, #15, #16, #17, #18, certificación integral y benchmark. La tabla histórica de roadmap conserva criterios de producción; sus dependencias no impiden implementar y probar capacidades independientes en estado descartable. Activación real conserva todos los gates vigentes. No extender validaciones sin riesgo concreto y entregable funcional asociado; reutilizar evidencia satisfecha salvo cambio material/caducidad.
+### Consolidación funcional de producción del Local Bridge
 
+**Autoridad de producto:** esta sección define el propósito, alcance funcional, prioridades y aceptación de producción del Local Bridge. Decisión del PM [LB-PRODUCT-20261126-CAPABILITY-CONSOLIDATION-01](https://github.com/codefusion-repo/project-os-v3/issues/8#issuecomment-7185110551), precisada por el PM el 2026-11-26. Conserva el [alcance original #8](https://github.com/codefusion-repo/project-os-v3/issues/8), [MVP PR #9](https://github.com/codefusion-repo/project-os-v3/pull/9), [LB-PLAN-20261124-28](https://github.com/codefusion-repo/project-os-v3/pull/9#issuecomment-7140747952) y LB-ARCH-20261124-29. [MVP.md](../local-bridge/MVP.md) conserva el contrato técnico y el alcance demostrado del MVP, no un techo funcional de producción. PROJECT_OS.md sigue siendo la autoridad metodológica.
+
+**Objetivo:** transformar una solicitud del PM en software implementado, compilado, probado y entregado desde Browser Chat, reduciendo intervención manual, consultas repetitivas, tiempo, tokens/créditos y retrabajo. El ahorro es una hipótesis que debe medirse, no un resultado demostrado. El MCP complementa GitHub Connector con contexto eficiente y operaciones que requieren ejecución local; no reemplaza el conector ni proporciona una terminal remota genérica.
+
+#### Separación de responsabilidades
+
+| Componente | Responsabilidad |
+|---|---|
+| ChatGPT Browser | Contexto, razonamiento, implementación directa, orquestación, review y closeout autorizado según PROJECT_OS.md |
+| GitHub Connector | Issues y comentarios, código remoto, ramas y commits remotos, PRs y evidencia de review, CI alojado y merge/cierre autorizado |
+| Local Bridge MCP | Contexto agrupado, preparación de workspaces, cambios locales acotados cuando sean necesarios, compilación/tests, Android QA y artefactos, ejecución opcional de Codex |
+| GitHub | Fuente remota de código, unidades de trabajo, checks y trazabilidad |
+| PC del operador / WSL2 | Entorno de ejecución local autorizado; emulador existente en Windows cuando corresponda |
+
+No duplicar en MCP creación/modificación de issues, comentarios, ramas/commits remotos, PRs, consulta individual de código/diffs/checks remotos, merge ni cierre. Browser realiza review con evidencia del conector y de las validaciones locales. Git puede ser mecanismo interno para preparar un worktree, seleccionar un SHA y obtener un diff; no implica exponer cada comando Git. No ofrecer shell, ADB shell, filesystem ni administración general arbitrarios. Los permisos de cada proveedor son independientes.
+
+#### A. Contexto eficiente desde GitHub — LB-06 (#15)
+
+El primer entregable es contexto real agrupado de issues y comentarios autorizados, reutilizando [GitHubReader](../local-bridge/src/project_os_bridge/github.py). En la base integrada del 2026-11-26, issue_context obtiene issue y comentarios; batch_issues acepta de uno a cinco números, deduplica y usa concurrencia acotada. Existen autorización, límites de respuesta/paginación y metadatos de completitud/frescura. El lector real no está expuesto por MCP: el handler visible de contexto es sintético. No confundir código parcial o mocks con capacidad real habilitada.
+
+| Interfaz candidata | Responsabilidad |
+|---|---|
+| github_context | Contexto agrupado de issues y comentarios |
+| github_pr_context | Contexto agrupado de PR, cambios, findings y checks |
+| github_project_context | Contexto pertinente de varias unidades de trabajo autorizadas |
+
+Las dos últimas son extensiones propuestas; empezar por issues/comentarios y ampliar solo cuando reduzca consultas y aporte valor al workflow. No construir otro GitHub Connector. Aceptación: batch real autorizado y acotado, fuente, tiempo de recuperación, completitud/truncación y errores explícitos; pruebas negativas de autorización, revocación y acceso cruzado. Medir reducción de consultas. Conservar credencial dedicada read-only, grants exactos, saneamiento y demás criterios de [#15](https://github.com/codefusion-repo/project-os-v3/issues/15).
+
+#### B. Preparación de proyectos y ejecución local — LB-07 (#16)
+
+| Interfaz candidata | Responsabilidad |
+|---|---|
+| project_status | Estado local, SHA, rama y cambios pendientes |
+| prepare_workspace | Preparar revisión exacta autorizada para trabajar o validar |
+| workspace_context | Recuperar código/contexto y diff local no disponibles remotamente, cuando sea necesario |
+| apply_patch | Aplicar cambios locales acotados y guardados cuando sea necesario |
+| run_validation | Ejecutar perfiles registrados de tests, lint o análisis |
+| build_project | Compilar mediante perfil autorizado |
+| workspace_changes | Recuperar diff resultante para review |
+
+Ejemplos conceptuales de perfiles: frontend (build, typecheck, lint, tests); backend (tests unitarios, integración, comprobaciones de Django); mobile (análisis, tests, compilación APK). Los perfiles definen operaciones y permisos; no son comandos libres ni perfiles ya disponibles. Pueden compartir handlers. Aceptación: Browser solicita una revisión real autorizada y recibe exit codes de build/tests, logs acotados, identidad de artefactos y diff cuando aplique, preservando cambios ajenos y exclusividad del worktree. [#16](https://github.com/codefusion-repo/project-os-v3/issues/16).
+
+#### C. Android QA — LB-08 (#17)
+
+Reutilizar el emulador existente de Android Studio iniciado y autorizado por el PM en Windows. Browser solicita build y QA; Local Bridge en WSL2 compila o selecciona el APK; ADB Attach conecta con ese emulador; se instala, prueba y recupera evidencia y el mismo APK. No iniciar otro emulador, usar dispositivos personales ni cambiar Windows sin autorización.
+
+| Interfaz candidata | Responsabilidad |
+|---|---|
+| android_status | Detectar emulador autorizado y verificar boot completo |
+| android_build | Compilar y registrar el APK |
+| android_install | Instalar exactamente el APK identificado |
+| android_test | Ejecutar smoke tests y pruebas registradas |
+| android_evidence | Recuperar resultados y evidencia de QA |
+| get_artifact | Recuperar el mismo APK probado |
+
+Aceptación: identidad autorizada y boot completo, QA real y negativos, APK ligado a SHA/job/package/version/signature y digest idéntico al instalar y recuperar; entregar los bytes probados sin rebuild. Capturas, logs de aplicación y evidencia visual son extensiones útiles; definir y verificar canal de entrega a Browser, sin asumir transporte de binarios por MCP. Ver arquitectura Android Attach y [#17](https://github.com/codefusion-repo/project-os-v3/issues/17).
+
+#### D. Gestión de trabajos y evidencia — transversal
+
+| Capacidad existente | Estado en el alcance actual |
+|---|---|
+| health | Implementada |
+| operational_diagnostics | Implementada, con grant separado |
+| get_job_status | Implementada |
+| get_job_evidence | Implementada |
+| cancel_job | Implementada para trabajos en cola |
+| Recuperación e idempotencia | Implementadas para el alcance actual |
+
+Reutilizar jobs autenticados, estado durable, ownership, grants, idempotencia, exclusividad, status/evidence/cancel y reconciliación para builds, tests y Android QA; no crear otro motor de ejecución ni registro paralelo. Los trabajos largos devuelven identidad durable; evidencia vincula revisión, perfil, resultado y digest de artefacto, con logs acotados/saneados y fallos explícitos. La cancelación de trabajos activos requiere semántica segura propia; no se presume implementada.
+
+#### E. Integración opcional de Codex — LB-09 (#18)
+
+| Interfaz o capacidad candidata | Responsabilidad |
+|---|---|
+| codex_status | Consultar disponibilidad efectiva y señales soportadas de cuota |
+| codex_execute | Ejecutar implementación autorizada mediante Codex en terminal |
+| codex_execution_status | Consultar progreso y resultado |
+| Handoff | Reconciliar estado y continuar en Browser sin transferencia manual de prompts |
+
+Router pequeño auto/browser/codex, no otro motor. Browser sigue siendo implementador directo; Codex es opcional. Aplicar la arquitectura adaptativa anterior, autorización, exclusividad, disponibilidad/cuota verificadas y reconciliación antes de transferir trabajo. Aceptación: fallback browser directo cuando proceda, handoff con evidencia compartida, sin doble ejecución ni efectos inciertos. [#18](https://github.com/codefusion-repo/project-os-v3/issues/18).
+
+**Contrato de interfaces:** los nombres anteriores son candidatos derivados del producto, no APIs congeladas ni capacidades ya implementadas. Elegir el mínimo contrato tipado por entregable; pueden agruparse operaciones y compartir handlers. No introducir herramientas genéricas por anticipación.
+
+#### Recorrido de aceptación de extremo a extremo
+
+Ejemplo de producto: implementar una funcionalidad Flutter y probarla en el emulador del operador, con todos los permisos y gates aplicables.
+
+1. Recuperar requisitos, comentarios, historial y criterios del issue mediante contexto agrupado o GitHub Connector.
+2. Implementar el código y preparar la revisión mediante Browser Chat o Codex autorizado.
+3. Preparar localmente el SHA exacto a validar mediante Local Bridge.
+4. Ejecutar tests reales y compilar el APK con perfil Flutter autorizado.
+5. Instalar el APK identificado y ejecutar QA en el emulador existente autorizado mediante ADB Attach.
+6. Recuperar evidencia y el artefacto exacto probado, verificando su digest.
+7. Browser revisa criterios, diff y pruebas, y completa integración/cierre autorizado mediante GitHub Connector cuando corresponda.
+
+Resultado esperado: software implementado, compilado, probado y entregado sin que el PM copie prompts o logs entre aplicaciones. Medir tiempo transcurrido, tool calls, intervenciones PM, tokens/créditos cuando sean observables, retrabajo y calidad/resultado con evidencia comparable. Un fixture o CI verde por sí solo no demuestra este recorrido.
+
+#### Prioridad funcional y certificación
+
+| Orden | Entregable | Valor práctico |
+|---|---|---|
+| 1 | Resolver mantenimiento pendiente (#14; corrección de pruebas PR #34 ya integrada) | Recuperar base operativa |
+| 2 | Contexto GitHub agrupado real (#15) | Reducir consultas repetitivas |
+| 3 | Preparación de proyectos locales (#16) | Trabajar sobre revisiones exactas |
+| 4 | Compilación y tests locales (#16) | Validar software real |
+| 5 | Android Attach y QA (#17) | Probar aplicaciones móviles |
+| 6 | Recuperación de artefactos (#17) | Entregar APK efectivamente probado |
+| 7 | Codex y routing automático (#18) | Eliminar handoffs manuales |
+| 8 | Certificación integral y benchmark (#8) | Verificar preparación para producción |
+
+Preservar la evidencia de LB-05: protege la infraestructura del producto, pero la imagen OCI fixture-only acredita solo un fixture Python fijo, no ejecución general de Flutter, Node.js, Django, Android o Codex. Cada perfil requiere controles proporcionales y evidencia propia. No ampliar certificaciones sin un riesgo concreto y entregable asociado ni repetir evidencia satisfecha salvo cambio material o caducidad.
+
+La implementación y las pruebas descartables/CI de capacidades independientes pueden avanzar sin cerrar fases ajenas. La activación real sigue condicionada a TODOS los gates aplicables de #14, host, credenciales dedicadas, autorización por recurso, auditoría fresca, aislamiento, perfil y review. La tabla histórica de roadmap conserva criterios de producción; no cambiar runbooks ni relajar controles. Mantener #14/#8 abiertos hasta sus criterios, #28 cerrado según evidencia, Bridge detenido hasta operación autorizada, runtime restaurado y respaldo retenido según el último rollback; ningún permiso nuevo, instalación, acceso a recursos, fixture, emulador, ejecución Codex ni release se concede por esta definición. El [PASS post-merge del PR #34](https://github.com/codefusion-repo/project-os-v3/pull/34#issuecomment-7185448289) acredita corrección integrada, no actualización instalada.
 
 Contratos: [MVP y arquitectura](../local-bridge/MVP.md), [operación](../local-bridge/README.md), [seguridad](../local-bridge/SECURITY.md), [WorkOS](../local-bridge/WORKOS.md), [validación WSL/HTTPS/systemd](../local-bridge/WSL-VALIDATION.md), [OCI local](../local-bridge/OCI-LOCAL-VALIDATION.md). Mantenerlos como contratos/runbooks técnicos; snapshots de pruebas son históricos. Bridge distribuye código para un operador local y una identidad WorkOS por instancia, no cuentas, infraestructura, credenciales ni datos compartidos; sin SaaS ni RBAC colaborativo. Registra handlers fijos de probe, GitHub sintético, status/evidence/cancel y fixture Git/Podman opt-in; LB-05 incorpora [diagnóstico operativo tipado](../local-bridge/README.md#operational-diagnostics-lb-05) de solo lectura con grant separado, en HTTPS supervisado sin fixture, y colector local previo al arranque; no reemplaza evidencia efectiva ni habilita ejecución; sin shell libre, paths arbitrarios, real GitHub MCP, ejecución general, Android o Codex habilitados. El lector GitHub real local, las primitivas de cambios Git y los perfiles aislados son parciales: la existencia de código o mocks no habilita handlers sobre repositorios reales. El supervisor HTTPS, preparación de unidad systemd, locks y barrera de reconciliación existen; lifecycle de producción y certificación real siguen pendientes. Jobs SQLite ligados a principal/recurso, idempotencia, límites, autorización por solicitud/claim/dispatch, exclusividad, cancelación y recuperación; no reintentos automáticos de efectos inciertos. Ownership durable y reconciliación conservadora bloquean nuevas operaciones cuando no se verifica cleanup. No asumir que worktree o rootless son sandbox suficiente.
 
