@@ -35,7 +35,9 @@ def mount_violation(mounts, spec):
               '/sys/devices/virtual/powercap', '/sys/firmware', '/sys/fs/selinux'}
     generated = {'/etc/hosts': 'hosts', '/etc/hostname': 'hostname', '/etc/resolv.conf': 'resolv.conf',
                  '/run/.containerenv': '.containerenv'}
-    known = (set(pseudo) | readonly | masked | set(generated) | {'/', '/fixture', '/etc/passwd', '/etc/group',
+    devices = {'/dev/null': (1, 3), '/dev/zero': (1, 5), '/dev/full': (1, 7),
+               '/dev/random': (1, 8), '/dev/urandom': (1, 9), '/dev/tty': (5, 0)}
+    known = (set(pseudo) | readonly | masked | set(generated) | set(devices) | {'/', '/fixture', '/etc/passwd', '/etc/group',
              '/proc/interrupts', '/proc/schedstat', '/proc/self/fd', '/run', '/tmp', '/var/tmp', '/dev/null',
              '/dev/ptmx', '/dev/console', '/sys/fs/cgroup/systemd'})
     seen = set()
@@ -58,6 +60,10 @@ def mount_violation(mounts, spec):
             ok = root == target[5:] and 'ro' in options
         elif target in masked:
             ok = fs in {'tmpfs', 'devtmpfs'} and root in {'/', '/null'}
+        elif target in devices:
+            node = Path(target).lstat()
+            ok = (fs in {'tmpfs', 'devtmpfs'} and root == target[4:] and stat.S_ISCHR(node.st_mode)
+                  and (os.major(node.st_rdev), os.minor(node.st_rdev)) == devices[target])
         elif target in generated:
             path = Path(root)
             ok = (fs in {'ext4', 'xfs', 'btrfs', 'tmpfs'} and path.name == generated[target]

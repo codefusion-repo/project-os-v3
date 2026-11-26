@@ -94,15 +94,22 @@ class IsolationTests(unittest.TestCase):
                 self.assertFalse(result["container_absent"])
 
     def test_mount_allowlist_rejects_relabelled_and_unexpected_mounts(self):
+        import os
         import re
-        methods = {"Path": Path, "re": re}
+        import stat
+        methods = {"Path": Path, "os": os, "re": re, "stat": stat}
         exec(MOUNT_CHECK, methods)
         mounts = [("0:1", "/", "/", ["ro"], "overlay"), ("0:2", "/", "/proc", ["rw"], "proc"),
                   ("0:3", "/", "/sys/fs/cgroup", ["ro"], "cgroup2"),
                   ("8:1", "/synthetic/export", "/fixture", ["ro"], "ext4")]
         settings = {"host_filesystems": ["9p"], "fixture": ["8:1", "/synthetic/export", "ext4"], "generated": []}
         verify = methods["allowed_mounts"]
+        null = ("0:4", "/null", "/dev/null", ["rw"], "devtmpfs")
         self.assertTrue(verify(mounts, settings))
+        with patch.object(Path, "lstat", return_value=Mock(st_mode=stat.S_IFCHR, st_rdev=os.makedev(1, 3))):
+            self.assertTrue(verify(mounts + [null], settings))
+        with patch.object(Path, "lstat", return_value=Mock(st_mode=stat.S_IFCHR, st_rdev=os.makedev(1, 5))):
+            self.assertFalse(verify(mounts + [null], settings))
         self.assertFalse(verify(mounts + [("8:1", "/synthetic/credentials", "/elsewhere", ["ro"], "ext4")], settings))
         self.assertFalse(verify(mounts + [("0:4", "/", "/dev/shm", ["ro"], "9p")], settings))
         self.assertFalse(verify(mounts[:-1] + [("8:1", "/synthetic/alias", "/fixture", ["ro"], "ext4")], settings))

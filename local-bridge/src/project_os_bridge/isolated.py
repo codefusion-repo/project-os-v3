@@ -13,7 +13,7 @@ from .isolation_profile import ISOLATION_CHECKS, MOUNT_CHECK, challenge
 IMAGE = re.compile(r"[A-Za-z0-9][A-Za-z0-9./:_-]{0,511}@sha256:[0-9a-f]{64}")
 # Fixed trusted program. No repository code, external network probes or actual secrets.
 SCRIPT = r"""
-import errno, json, os, re, socket, sys
+import errno, json, os, re, socket, stat, sys
 from pathlib import Path
 """ + MOUNT_CHECK + r"""
 
