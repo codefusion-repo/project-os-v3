@@ -16,7 +16,7 @@ The first LB-07 disposable package slice uses the existing fixture CLI, GitFixtu
 
 CI-only mobile smoke exercises registered Flutter analyze/test and Expo typecheck/test commands against durable synthetic workspace preparation, with exact observed toolchain, lockfile, image and exit evidence. It is not an approved local OCI profile or APK build. The operational execution gate remains closed.
 
-CI-only Flutter APK reference adds a single-use workspace_execute workflow with immutable image ID and separate execute grant, reusing Jobs and the worker. The trusted CI-only executor is absent in the service; no production dispatch, no arbitrary command contract. This records actual execution and APK evidence when CI succeeds; interruption is not replayed. Fresh VM scope is not a replacement for local OCI effect reconciliation.
+CI-only Flutter and Expo APK references share a single-use workspace_execute workflow with immutable image ID and separate execute grant, reusing Jobs and the worker. The trusted CI-only executor is absent in the service; no production dispatch, no arbitrary command contract. This records actual execution and APK evidence when CI succeeds; interruption is not replayed. Fresh VM scope is not a replacement for local OCI effect reconciliation. Flutter APK passed CI 45842145071; Expo build is a candidate pending CI. Native generation is performed only on synthetic source during toolchain acquisition, not on the operator checkout.
 
 ## Methodology invariant
 

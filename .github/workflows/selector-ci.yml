@@ -118,9 +118,13 @@ jobs:
           retention-days: 90
 
   mobile-apk-smoke:
-    # Separate CI-only APK reference; no emulator, credentials or local runtime.
+    # Both reference APKs use the same CI-only job contract; no emulator or local runtime.
     runs-on: ubuntu-24.04
     timeout-minutes: 55
+    strategy:
+      fail-fast: false
+      matrix:
+        stack: [flutter, expo]
     steps:
       - uses: actions/checkout@v4
         with:
@@ -132,9 +136,9 @@ jobs:
         run: |
           python3 -m venv "$RUNNER_TEMP/mobile-bridge"
           "$RUNNER_TEMP/mobile-bridge/bin/python" -m pip install --require-hashes --only-binary=:all: -r local-bridge/requirements-linux-py312.lock
-      - name: Build synthetic Flutter debug APK through durable job offline
+      - name: Build synthetic debug APK through durable job offline
         env:
-          MOBILE_STACK: flutter
+          MOBILE_STACK: ${{ matrix.stack }}
           MOBILE_APK: '1'
           PYTHONPATH: local-bridge/src
         run: '"$RUNNER_TEMP/mobile-bridge/bin/python" local-bridge/scripts/ci-mobile-smoke.py'
@@ -142,7 +146,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: mobile-apk-flutter-${{ github.run_attempt }}
+          name: mobile-apk-${{ matrix.stack }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/mobile-smoke-evidence/
           if-no-files-found: error
           retention-days: 90

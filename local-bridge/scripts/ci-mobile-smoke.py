@@ -61,7 +61,7 @@ EXPO_FILES = {
                          "react-native": RN_VERSION},
         "devDependencies": {"typescript": "5.9.2", "@types/react": "19.1.10"},
     }),
-    "app.json": '{"expo":{"name":"Synthetic mobile","slug":"synthetic-mobile","version":"1.0.0"}}',
+    "app.json": '{"expo":{"name":"Synthetic mobile","slug":"synthetic-mobile","version":"1.0.0","android":{"package":"com.example.synthetic_expo","versionCode":1}}}',
     "tsconfig.json": json.dumps({"compilerOptions": {"strict": True, "skipLibCheck": True,
         "jsx": "react-jsx", "moduleResolution": "bundler", "module": "ESNext",
         "target": "ES2022", "noEmit": True}, "include": ["index.tsx"]}),
@@ -101,7 +101,7 @@ RUN test "$(node --version)" = v22.16.0 && npm --version && npm install --packag
 # CI-only candidate Android SDK. Official archive checksum:
 # https://developer.android.com/studio#command-line-tools-only
 ANDROID_SETUP = """USER root
-RUN apt-get update && apt-get install -y --no-install-recommends openjdk-17-jdk-headless && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y --no-install-recommends openjdk-17-jdk-headless curl unzip && rm -rf /var/lib/apt/lists/*
 ENV JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64 ANDROID_HOME=/opt/android-sdk ANDROID_SDK_ROOT=/opt/android-sdk
 # Numeric runner UID need not have an NSS account in the image. Android Gradle
 # must resolve its synthetic debug signing location consistently with HOME.
@@ -110,11 +110,25 @@ ENV PATH=/opt/android-sdk/cmdline-tools/latest/bin:/opt/android-sdk/platform-too
 RUN mkdir -p /opt/android-sdk/cmdline-tools && curl --fail --show-error --silent --location --retry 2 https://dl.google.com/android/repository/commandlinetools-linux-15859902_latest.zip -o /tmp/android.zip && echo '4e4c464f145a7512b57d088ac6c278c03c9eea610886b35a5e0804e74eedf583  /tmp/android.zip' | sha256sum -c - && unzip -q /tmp/android.zip -d /tmp/android-tools && mv /tmp/android-tools/cmdline-tools /opt/android-sdk/cmdline-tools/latest && rm /tmp/android.zip && chown -R "$UID:$GID" /opt/android-sdk
 USER $UID:$GID
 RUN yes | sdkmanager --licenses >/dev/null && sdkmanager 'platform-tools' 'platforms;android-35' 'platforms;android-36' 'build-tools;35.0.0' 'build-tools;36.0.0' 'ndk;27.0.12077973'
-RUN flutter precache --android && flutter create --platforms=android --project-name=synthetic_mobile --org=com.example --no-pub /home/smoke/generated && cp -a /home/smoke/generated/android /fixture/android
-RUN printf 'org.gradle.jvmargs=-Xmx2g -XX:MaxMetaspaceSize=512m -Dfile.encoding=UTF-8\\nandroid.useAndroidX=true\\norg.gradle.workers.max=2\\norg.gradle.daemon=false\\n' > android/gradle.properties
 RUN test "$(id -u)" = "$UID" && test "$HOME" = /home/smoke && mkdir -p "$ANDROID_USER_HOME" && (java -XshowSettings:properties -version 2>&1 | grep -E '^[[:space:]]*user[.]home = /home/smoke$')
+"""
+
+FLUTTER_ANDROID_SETUP = """RUN flutter precache --android && flutter create --platforms=android --project-name=synthetic_mobile --org=com.example --no-pub /home/smoke/generated && cp -a /home/smoke/generated/android /fixture/android
+RUN printf 'org.gradle.jvmargs=-Xmx2g -XX:MaxMetaspaceSize=512m -Dfile.encoding=UTF-8\\nandroid.useAndroidX=true\\norg.gradle.workers.max=2\\norg.gradle.daemon=false\\n' > android/gradle.properties
 RUN flutter pub get && flutter build apk --debug --no-pub && test -s "$ANDROID_USER_HOME/debug.keystore" && test ! -L "$ANDROID_USER_HOME/debug.keystore" && echo CI_SYNTHETIC_DEBUG_SIGNING_HOME_PASS
-RUN tar --exclude=android/local.properties --exclude=android/.gradle --exclude=android/.kotlin --exclude=android/app/build --exclude=android/build --exclude=android/app/src/main/java/io/flutter/plugins/GeneratedPluginRegistrant.java -cf /home/smoke/android-source.tar android && rm -rf /fixture/build /fixture/android /fixture/.dart_tool && mkdir -p /home/smoke/.gradle/init.d && printf 'gradle.startParameter.offline = true\\n' > /home/smoke/.gradle/init.d/ci-offline.gradle
+"""
+
+# The initial Expo reference uses npm, generated Android sources and Gradle.
+# Never run expo run:android: that command also targets devices/Metro.
+EXPO_ANDROID_SETUP = """RUN ./node_modules/.bin/expo prebuild --platform android --no-install && npm install --package-lock-only --ignore-scripts --no-audit --no-fund && npm ci --ignore-scripts --no-audit --no-fund
+# A synthetic debug key stays inside this CI image, never the source archive.
+RUN keytool -genkeypair -keystore "$ANDROID_USER_HOME/debug.keystore" -storetype JKS -storepass android -keypass android -alias androiddebugkey -dname 'CN=Android Debug,O=Android,C=US' -keyalg RSA -keysize 2048 -validity 3650
+RUN test "$(grep -Fc "storeFile file('debug.keystore')" android/app/build.gradle)" = 1 && sed -i "s|storeFile file('debug.keystore')|storeFile file(System.getenv('ANDROID_USER_HOME') + '/debug.keystore')|" android/app/build.gradle && grep -F "storeFile file(System.getenv('ANDROID_USER_HOME') + '/debug.keystore')" android/app/build.gradle
+RUN printf '\\norg.gradle.jvmargs=-Xmx2g -XX:MaxMetaspaceSize=512m -Dfile.encoding=UTF-8\\norg.gradle.workers.max=2\\norg.gradle.daemon=false\\n' >> android/gradle.properties
+RUN cd android && ./gradlew :app:assembleDebug && test -s app/build/outputs/apk/debug/app-debug.apk && test -s "$ANDROID_USER_HOME/debug.keystore" && test ! -L "$ANDROID_USER_HOME/debug.keystore" && echo CI_SYNTHETIC_DEBUG_SIGNING_HOME_PASS
+"""
+
+ANDROID_EXPORT = """RUN tar --exclude=android/app/debug.keystore --exclude=android/app/.cxx --exclude=android/.cxx --exclude=android/local.properties --exclude=android/.gradle --exclude=android/.kotlin --exclude=android/app/build --exclude=android/build --exclude=android/app/src/main/java/io/flutter/plugins/GeneratedPluginRegistrant.java -cf /home/smoke/android-source.tar android && rm -rf /fixture/build /fixture/android /fixture/.dart_tool && mkdir -p /home/smoke/.gradle/init.d && printf 'gradle.startParameter.offline = true\\n' > /home/smoke/.gradle/init.d/ci-offline.gradle
 """
 
 def command(argv, *, timeout=180, capture=False):
@@ -219,28 +233,36 @@ def native_files(image):
     return files
 
 
-def apk_executor(image, output):
-    """CI-only fixed Flutter APK operation. No local service registration."""
+def apk_executor(image, output, profile):
+    """CI-only registered APK operation. No local service registration."""
+    if profile not in {"flutter-apk-debug", "expo-apk-debug"}:
+        raise ValueError("UNEXPECTED_CI_PROFILE")
+    flutter = profile == "flutter-apk-debug"
+    lock = "pubspec.lock" if flutter else "package-lock.json"
     def execute(workspace, row, snapshot):
         request = row["workspace"]
-        if request["profile"] != "flutter-apk-debug" or request["image_id"] != image:
+        if request["profile"] != profile or request["image_id"] != image:
             raise PermissionError("UNEXPECTED_CI_PROFILE")
         name = "mobile-smoke-" + row["id"]
         artifacts = output / ("apk-" + row["id"])
         artifacts.mkdir(mode=0o700)
         # The image has no warmup build outputs or native tree. Offline Gradle
         # consumes only the pre-acquired toolchain/cache and prepared source.
-        setup = ('set -eu; cmp /source/pubspec.lock /fixture/pubspec.lock; '
+        setup = ('set -eu; cmp /source/' + lock + ' /fixture/' + lock + '; '
                  'test ! -e /fixture/build; test ! -e /fixture/android; '
                  'test "$ANDROID_USER_HOME" = /home/smoke/.android; '
                  'test -s "$ANDROID_USER_HOME/debug.keystore"; '
                  'test ! -L "$ANDROID_USER_HOME/debug.keystore"; '
-                 'cp -a /source/. /fixture/; flutter pub get --offline; '
-                 'cmp /source/pubspec.lock pubspec.lock; "$@"; '
-                 'apk=build/app/outputs/flutter-apk/app-debug.apk; '
+                 'cp -a /source/. /fixture/; ' +
+                 ('flutter pub get --offline; ' if flutter else
+                  'npm ci --offline --ignore-scripts --no-audit --no-fund; ') +
+                 'cmp /source/' + lock + ' ' + lock + '; ' +
+                 ('"$@"; apk=build/app/outputs/flutter-apk/app-debug.apk; ' if flutter else
+                  'cd android; "$@"; apk=app/build/outputs/apk/debug/app-debug.apk; ') +
                  'test -f "$apk"; test ! -L "$apk"; '
                  '/opt/android-sdk/build-tools/36.0.0/apksigner verify --print-certs "$apk"; '
-                 '/opt/android-sdk/build-tools/36.0.0/aapt dump badging "$apk" | head -n 1; '
+                 '/opt/android-sdk/build-tools/36.0.0/aapt dump badging "$apk" > /tmp/apk-badging; '
+                 'head -n 1 /tmp/apk-badging; '
                  'cp "$apk" /output/app-debug.apk')
         argv = PROFILES[request["profile"]].argv
         args = [*container_args(image), "--name", name, "--mount",
@@ -285,8 +307,6 @@ def main():
         raise RuntimeError("Disposable Linux CI only")
     stack = os.environ["MOBILE_STACK"]
     apk = os.environ.get("MOBILE_APK") == "1"
-    if apk and stack != "flutter":
-        raise RuntimeError("APK reference currently Flutter only")
     if stack not in {"flutter", "expo"} or os.getuid() == 0:
         raise RuntimeError("Invalid smoke profile or runner")
     checkout = Path.cwd()
@@ -315,8 +335,8 @@ def main():
                 (EXPO_FILES, "package-lock.json", ("expo-typecheck", "expo-test"), EXPO_SETUP))
             write_files(seed, files)
             if apk:
-                setup += ANDROID_SETUP
-                profiles = ("flutter-apk-debug",)
+                setup += ANDROID_SETUP + (FLUTTER_ANDROID_SETUP if stack == "flutter" else EXPO_ANDROID_SETUP) + ANDROID_EXPORT
+                profiles = (stack + "-apk-debug",)
             (context / "Dockerfile").write_text(COMMON + setup)
             # Acquisition is confined to a synthetic project in a fresh CI VM.
             # Resolve the public base once, then build and run by immutable identity.
@@ -352,17 +372,27 @@ def main():
             record["lock_sha256"] = sha256(lock_bytes)
             if apk:
                 files = {**files, **native_files(image)}
+                if stack == "expo":
+                    # Prebuild may update package.json. Commit the exact generated
+                    # manifest that corresponds to the captured npm lockfile.
+                    manifest = command([*container_args(image), image, "cat", "/fixture/package.json"], capture=True)
+                    if not 0 < len(manifest) <= 65536:
+                        raise RuntimeError("MANIFEST_LIMIT")
+                    files["package.json"] = manifest
                 record["android_sdk"] = command([*container_args(image), image, "sdkmanager", "--list_installed"],
                                                 capture=True).decode("utf-8", "replace")[:16000]
                 record["java"] = subprocess.run([*container_args(image), image, "java", "-version"],
                                                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                                 stdin=subprocess.DEVNULL, timeout=30, check=True).stdout.decode("utf-8", "replace")[:4096]
                 _, _, executed = prepare(folder, files, lock, lock_bytes, profiles, image_id=image,
-                                         executor=apk_executor(image, output))
+                                         executor=apk_executor(image, output, profiles[0]))
                 record["execution"] = executed
                 save()
-                result = executed["flutter-apk-debug"]
-                if result["state"] != "SUCCEEDED" or result["result"]["execution"]["exit_code"] != 0:
+                result = executed[profiles[0]]
+                if (result["state"] != "SUCCEEDED"
+                        or result["result"]["execution"]["exit_code"] != 0
+                        or result["result"]["execution"]["cleanup_verified"] is not True
+                        or result["result"]["execution"]["artifact"]["kind"] != "apk"):
                     raise RuntimeError("APK_EXECUTION_FAILED")
                 record["status"] = "success"
                 save()
