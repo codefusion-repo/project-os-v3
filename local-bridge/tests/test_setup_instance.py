@@ -10,22 +10,46 @@ RESOURCE = "https://api.openai.com/v1/mcp/tunnel_fixture"
 SUBJECT = "user_fixture"
 
 
+def outside_git_tempdir(bases=None):
+    """Choose a real temporary directory outside host Git ancestors."""
+    if bases is None:
+        bases = ("/tmp", "/var/tmp", Path.home())
+    for entry in bases:
+        base = Path(entry).resolve()
+        if base.is_dir() and os.access(base, os.W_OK | os.X_OK) and not any(
+            os.path.lexists(parent / ".git") for parent in (base, *base.parents)
+        ):
+            return tempfile.TemporaryDirectory(dir=base)
+    raise RuntimeError("Setup tests require a writable temporary base outside Git")
+
+
 class SetupTests(unittest.TestCase):
     @unittest.skipIf(os.getuid() == 0, "Positive setup requires an unprivileged user")
     def test_new_private_disabled_instance(self):
-        with tempfile.TemporaryDirectory() as folder:
+        with outside_git_tempdir() as folder:
             root = Path(folder).resolve() / "instance"
-            # Model an outside-Git environment independently of TMPDIR and
-            # host checkout ancestors. The real filesystem permissions and
-            # no-overwrite checks remain active.
-            with patch("project_os_bridge.setup_instance.os.path.lexists", return_value=False):
-                state = initialize(root, ISSUER, RESOURCE, SUBJECT)
-                self.assertEqual(root.stat().st_mode & 0o777, 0o700)
-                self.assertEqual(state.stat().st_mode & 0o777, 0o700)
-                self.assertEqual((root / "oauth.json").stat().st_mode & 0o777, 0o600)
-                self.assertFalse((state / "allow-authenticated-probe").exists())
-                with self.assertRaises(FileExistsError):
-                    initialize(root, ISSUER, RESOURCE, SUBJECT)
+            state = initialize(root, ISSUER, RESOURCE, SUBJECT)
+            self.assertEqual(root.stat().st_mode & 0o777, 0o700)
+            self.assertEqual(state.stat().st_mode & 0o777, 0o700)
+            self.assertEqual((root / "oauth.json").stat().st_mode & 0o777, 0o600)
+            self.assertFalse((state / "allow-authenticated-probe").exists())
+            with self.assertRaises(FileExistsError):
+                initialize(root, ISSUER, RESOURCE, SUBJECT)
+
+    @unittest.skipIf(os.getuid() == 0, "Positive setup requires an unprivileged user")
+    def test_temporary_base_with_git_ancestor_is_skipped(self):
+        with outside_git_tempdir() as folder:
+            parent = Path(folder)
+            contaminated = parent / "contaminated"
+            nested = contaminated / "tmp"
+            nested.mkdir(parents=True)
+            marker = contaminated / ".git"
+            marker.mkdir()
+            with outside_git_tempdir((nested, parent)) as fallback:
+                self.assertEqual(Path(fallback).parent, parent)
+                self.assertTrue(initialize(Path(fallback) / "instance", ISSUER, RESOURCE, SUBJECT).is_dir())
+            self.assertTrue(marker.is_dir())
+            self.assertEqual(list(nested.iterdir()), [])
 
     def test_git_ancestor_denied(self):
         for marker_is_file in (False, True):
@@ -59,7 +83,7 @@ class SetupTests(unittest.TestCase):
         import json
         import sys
         from project_os_bridge.setup_instance import main
-        with tempfile.TemporaryDirectory(dir="/tmp") as folder:
+        with outside_git_tempdir() as folder:
             root = Path(folder).resolve() / "instance"
             original_umask = os.umask(0o077)
             try:
@@ -113,7 +137,7 @@ class SetupTests(unittest.TestCase):
         import sys
         from project_os_bridge.setup_instance import main
         from project_os_bridge.service_setup import write_new
-        with tempfile.TemporaryDirectory(dir="/tmp") as folder:
+        with outside_git_tempdir() as folder:
             parent = Path(folder).resolve()
             root = parent / "partial"
             recovered = parent / "recovered"
