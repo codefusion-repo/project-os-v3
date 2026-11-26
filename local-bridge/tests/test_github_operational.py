@@ -146,6 +146,56 @@ class OperationalGitHubTests(unittest.TestCase):
         self.assertEqual(result["issues"], {})
         request.assert_called_once()
 
+    def test_dynamic_projects_and_mid_batch_revocation(self):
+        self.configure()
+        service = self.root / "service"
+        service.mkdir(mode=0o700)
+        runtime = service / "runtime.json"
+        runtime.touch(mode=0o600)
+        entry = {"config": str(self.binding), "repository": "example/demo", "repository_id": 123}
+        data = {"tunnel": "fixture", "tunnel_id": "fixture", "image": None, "github_projects": {}}
+        runtime.write_text(json.dumps(data))
+        provider = load_operational_provider(self.verifier, supervised=True, multi=True)
+        self.flag.touch(mode=0o600)
+        self.assertFalse(provider.available("user_fixture"))
+        with self.assertRaises(PermissionError):
+            provider.open_project("user_fixture", "demo")
+        data["github_projects"]["demo"] = entry
+        runtime.write_text(json.dumps(data))
+        self.assertTrue(provider.available("user_fixture"))
+        context, _ = provider.open_project("user_fixture", "demo")
+        with patch.object(context.reader, "_request", side_effect=self.response) as request:
+            self.assertTrue(context.read("user_fixture", "demo", [1])["complete"])
+            self.assertEqual(request.call_count, 3)
+        other = self.root / "other"
+        other.mkdir()
+        subprocess.run(["git", "init", "-q", str(other)], check=True)
+        (other / ".gitignore").write_text(".project-os/\n")
+        (other / ".project-os").mkdir(mode=0o700)
+        config = other / ".project-os" / "config.json"
+        config.touch(mode=0o600)
+        config.write_text(json.dumps({"version": 2, "repositories": ["example/other"],
+                                      "github_context": {"project": "other", "repository": "example/other",
+                                                         "repository_id": 456}}))
+        data["github_projects"]["other"] = {"config": str(config), "repository": "example/other",
+                                             "repository_id": 456}
+        runtime.write_text(json.dumps(data))
+        other_context, _ = provider.open_project("user_fixture", "other")
+        self.assertEqual(other_context.require("user_fixture", "other"), "example/other")
+        with self.assertRaises(PermissionError):
+            other_context.require("user_fixture", "demo")
+        def revoke(endpoint):
+            data["github_projects"].pop("demo")
+            runtime.write_text(json.dumps(data))
+            return self.response(endpoint)
+        with patch.object(context.reader, "_request", side_effect=revoke) as request:
+            with self.assertRaises(PermissionError):
+                context.read("user_fixture", "demo", [1])
+            request.assert_called_once()
+        self.assertEqual(other_context.require("user_fixture", "other"), "example/other")
+        with self.assertRaises(PermissionError):
+            provider.open_project("user_fixture", "demo")
+
     def test_audit_closed_schema_and_capacity(self):
         audit = GitHubContextAudit(self.state)
         audit.record("admitted")

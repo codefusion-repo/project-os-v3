@@ -30,7 +30,8 @@ from .worker import run_pending, WorkerBusy
 from .security import RequestGate, Audit
 from .github_fixture import SyntheticGitHubReader
 from .github_context import GitHubContext
-from .github_operational import load_operational_provider
+from .github_operational import MultiProjectContext, load_operational_provider
+from .methodology import installed_context
 from .vertical import OPERATIONS, bind_image, bound_context
 from .isolated import IMAGE
 from .podman_context import PodmanContext
@@ -49,7 +50,7 @@ def fixture_enabled(verifier, image, context_id=None):
 
 
 def build_server(verifier, jobs, fixture_reader=None, *, fixture_image=None, diagnostics=None, context_id=None, github_provider=None):
-    if github_provider is not None and (type(github_provider) is not GitHubContext or fixture_image is not None or fixture_reader is not None):
+    if github_provider is not None and (type(github_provider) not in (GitHubContext, MultiProjectContext) or fixture_image is not None or fixture_reader is not None):
         raise ValueError("Invalid GitHub context configuration")
     mcp = MCPServer("Project OS authenticated disposable jobs",
                     token_verifier=verifier,
@@ -72,9 +73,25 @@ def build_server(verifier, jobs, fixture_reader=None, *, fixture_image=None, dia
     @mcp.tool(annotations=read)
     def health() -> dict:
         """Report authenticated disposable service status."""
-        principal()
-        return {"status":"ready","caller_identity_verified":True,"repository_access":False,"mode":"authenticated-disposable",
-                "git_fixture_available":fixture_enabled(verifier, fixture_image, context_id)}
+        actor = principal()
+        result = {"status":"ready","caller_identity_verified":True,"repository_access":False,"mode":"authenticated-disposable",
+                  "git_fixture_available":fixture_enabled(verifier, fixture_image, context_id)}
+        if github_provider is not None:
+            if type(github_provider) is MultiProjectContext:
+                available = github_provider.available(actor)
+            else:
+                available = False
+                for project in github_provider.reader.repositories:
+                    try:
+                        github_provider.require(actor, project)
+                        available = True
+                        break
+                    except PermissionError:
+                        continue
+            result.update(repository_access=available, github_context_registered=True,
+                          methodology_context_registered=type(github_provider) is MultiProjectContext,
+                          repository_access_basis="local_grant_not_upstream_check")
+        return result
 
     if diagnostics is not None and fixture_image is None:
         @mcp.tool(annotations=read)
@@ -141,7 +158,9 @@ def build_server(verifier, jobs, fixture_reader=None, *, fixture_image=None, dia
             try:
                 actor = principal()
                 token = get_access_token()
-                repo = github_provider.require(actor, project)
+                provider = (github_provider.open_project(actor, project)[0]
+                            if type(github_provider) is MultiProjectContext else github_provider)
+                repo = provider.require(actor, project)
 
                 def check_session():
                     if not verifier.enabled() or token.expires_at is None or token.expires_at <= time.time():
@@ -149,9 +168,9 @@ def build_server(verifier, jobs, fixture_reader=None, *, fixture_image=None, dia
 
                 check_session()
                 evidence = await asyncio.to_thread(
-                    github_provider.read, actor, project, numbers, check_session=check_session)
+                    provider.read, actor, project, numbers, check_session=check_session)
                 check_session()
-                if principal() != actor or github_provider.require(actor, project) != repo:
+                if principal() != actor or provider.require(actor, project) != repo:
                     raise PermissionError("DENIED")
             except PermissionError:
                 observe("denied")
@@ -165,12 +184,54 @@ def build_server(verifier, jobs, fixture_reader=None, *, fixture_image=None, dia
             observe("complete" if evidence["complete"] else "partial")
             try:
                 check_session()
-                if principal() != actor or github_provider.require(actor, project) != repo:
+                if principal() != actor or provider.require(actor, project) != repo:
                     raise PermissionError("DENIED")
             except PermissionError:
                 observe("denied")
                 raise
             return evidence
+
+
+    if type(github_provider) is MultiProjectContext:
+        @mcp.tool(annotations=read)
+        async def methodology_context(project: StrictStr, workflow: StrictStr,
+                                      skills: list[StrictStr], templates: list[StrictStr]) -> dict:
+            """Read selected versioned methodology documents; no arbitrary file paths."""
+            def observe(outcome):
+                try:
+                    github_provider.audit.record(outcome, event="methodology_context")
+                except (OSError, ValueError):
+                    raise RuntimeError("METHODOLOGY_AUDIT_UNAVAILABLE") from None
+
+            observe("admitted")
+            try:
+                actor = principal()
+                token = get_access_token()
+                provider, path = github_provider.open_project(actor, project)
+                repository = provider.require(actor, project)
+
+                def check():
+                    if (principal() != actor or token.expires_at is None
+                            or token.expires_at <= time.time()
+                            or provider.require(actor, project) != repository):
+                        raise PermissionError("DENIED")
+
+                check()
+                result = await asyncio.to_thread(installed_context, path, repository,
+                                                 workflow, skills, templates)
+                check()
+                observe("complete")
+                check()
+                return result
+            except PermissionError:
+                observe("denied")
+                raise PermissionError("DENIED") from None
+            except (OSError, ValueError, TypeError):
+                observe("failed")
+                raise ValueError("METHODOLOGY_UNAVAILABLE_OR_INVALID_SELECTION") from None
+            except Exception:
+                observe("failed")
+                raise RuntimeError("METHODOLOGY_CONTEXT_FAILED") from None
 
     return mcp
 
@@ -332,7 +393,8 @@ def main():
     parser.add_argument("--tls-cert", type=Path, help="Private local PEM certificate")
     parser.add_argument("--tls-key", type=Path, help="Private local PEM key")
     parser.add_argument("--supervised-ca", type=Path, help="Require verified loopback TLS metadata before worker dispatch")
-    parser.add_argument("--project-config", type=Path, help="Explicit local project configuration for GitHub context")
+    parser.add_argument("--project-config", type=Path, help="Legacy local project configuration for GitHub context")
+    parser.add_argument("--github-projects", action="store_true", help="Use locally authorized projects in the existing private service configuration")
     args = parser.parse_args()
     os.umask(0o077)
     try:
@@ -387,7 +449,7 @@ def main():
             bind_image(jobs, args.fixture_image, context_id)
         try:
             github_provider = load_operational_provider(verifier, supervised=diagnostics is not None and args.fixture_image is None,
-                                                        project_config=args.project_config)
+                                                        project_config=args.project_config, multi=args.github_projects)
         except (OSError, ValueError, TypeError):
             parser.error("Invalid or active private GitHub context configuration")
         fixture = (None if github_provider is not None else

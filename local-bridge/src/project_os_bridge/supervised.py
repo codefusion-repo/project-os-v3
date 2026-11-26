@@ -34,10 +34,11 @@ def commands(root):
     verifier = load_config(root / "oauth.json", root / "state")
     service = root / "service"
     private_directory(service)
-    config = json.loads(read_private(service / "runtime.json", 4096))
+    config = json.loads(read_private(service / "runtime.json", 64 * 1024))
     required = {"tunnel", "tunnel_id", "image"}
     if (not isinstance(config, dict) or not required <= set(config)
-            or set(config) - required - {"podman_context", "project_config"}):
+            or set(config) - required - {"podman_context", "project_config", "github_projects"}
+            or ("project_config" in config and "github_projects" in config)):
         raise ValueError("Invalid service configuration")
     tunnel = checked_path(Path(config["tunnel"]))
     info = tunnel.stat()
@@ -77,6 +78,10 @@ def commands(root):
             raise ValueError("Project configuration requires non-fixture profile")
         project_config = checked_path(Path(config["project_config"]))
         bridge += ["--project-config", str(project_config)]
+    if "github_projects" in config:
+        if image is not None or not isinstance(config["github_projects"], dict):
+            raise ValueError("Project grants require non-fixture profile")
+        bridge += ["--github-projects"]
     tunnel_cmd = [str(tunnel),"run","--config",str(service/"tunnel.yaml"),
                   "--mcp.server-url","https://127.0.0.1:8765/mcp",
                   "--ca-bundle",str(ca),"--mcp.oauth-trusted-origin",verifier.issuer]
