@@ -84,6 +84,39 @@ jobs:
           if-no-files-found: error
           retention-days: 90
 
+  mobile-profile-smoke:
+    # CI-only trusted synthetic projects; not an approved local execution image.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        stack: [flutter, expo]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install locked Bridge imports for disposable job orchestration
+        run: |
+          python3 -m venv "$RUNNER_TEMP/mobile-bridge"
+          "$RUNNER_TEMP/mobile-bridge/bin/python" -m pip install --require-hashes --only-binary=:all: -r local-bridge/requirements-linux-py312.lock
+      - name: Materialize synthetic revision and execute registered profile commands offline
+        env:
+          MOBILE_STACK: ${{ matrix.stack }}
+          PYTHONPATH: local-bridge/src
+        run: '"$RUNNER_TEMP/mobile-bridge/bin/python" local-bridge/scripts/ci-mobile-smoke.py'
+      - name: Preserve mobile smoke evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: mobile-smoke-${{ matrix.stack }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/mobile-smoke-evidence/
+          if-no-files-found: error
+          retention-days: 90
+
   dependency-evidence:
     runs-on: ubuntu-24.04
     timeout-minutes: 15

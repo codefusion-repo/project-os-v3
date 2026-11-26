@@ -19,7 +19,7 @@ PROFILES = MappingProxyType({
         FLUTTER + ("android/app/src/main/AndroidManifest.xml",),
         ("flutter", "build", "apk", "--debug", "--no-pub"), "apk"),
     "expo-typecheck": Profile(EXPO, ("npm", "run", "typecheck")),
-    "expo-test": Profile(EXPO, ("npm", "run", "test", "--", "--runInBand")),
+    "expo-test": Profile(EXPO, ("npm", "run", "test")),
     # Native generation and Gradle/toolchain setup belong to the future backend.
     # APK build command runs from the generated android/ directory, never ADB.
     # Managed Expo projects need not have an android/ directory in Git.
