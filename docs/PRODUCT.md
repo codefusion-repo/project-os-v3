@@ -229,6 +229,10 @@ Ejemplo de producto: implementar una funcionalidad Flutter y probarla en el emul
 
 Resultado esperado: software implementado, compilado, probado y entregado sin que el PM copie prompts o logs entre aplicaciones. Medir tiempo transcurrido, tool calls, intervenciones PM, tokens/créditos cuando sean observables, retrabajo y calidad/resultado con evidencia comparable. Un fixture o CI verde por sí solo no demuestra este recorrido.
 
+#### Mantenimiento desde Browser Chat
+
+[Decisión PM 26-11-2026 / #48](https://github.com/codefusion-repo/project-os-v3/issues/48): reducir handoffs de mantenimiento de la instalación central. El candidato reutiliza instalador y lifecycle existentes: health informa receipt observado, maintenance_update solicita SHA integrado/CI y wheel aprobado (contrasta evidencia del digest del intento exacto del probe antes de detener el servicio, además de la validación independiente del instalador), maintenance_status consulta resultado durable y maintenance_rollback restaura el predecesor compatible retenido. Un servicio puntual systemd de usuario sobre Python host, fuera del proceso MCP, coordina la parada y arranque sin otro servidor permanente. Grant específico revocable mediante opt-in local, sin comandos/rutas/URLs libres, cambios de credenciales o pins, ni ampliación de grants. Sin segundo canal no hay progreso remoto durante la parada; recuperación local ante fallo e interrupción. Implementación y CI independientes de #15; los controles de mantenimiento de código revisado no requieren certificar OCI de código no confiable. No activar hasta review, instalación y aceptación específicos. Ver [runbook](../local-bridge/README.md#browser-maintenance-opt-in).
+
 #### Prioridad funcional y certificación
 
 | Orden | Entregable | Valor práctico |

@@ -392,7 +392,8 @@ class AuthTests(unittest.TestCase):
                 payload = json.loads(result["content"][0]["text"])
                 self.assertEqual(payload, {"status": "ready",
                     "caller_identity_verified": True, "repository_access": False,
-                    "mode": "authenticated-disposable", "git_fixture_available": False})
+                    "mode": "authenticated-disposable", "git_fixture_available": False,
+                    "installation": {"status": "unavailable"}})
         self.assertEqual(trace, [
             ("int", 100, None, "recorded"),
             ("HTTPStatus", 200, AuthOutcome.TOKEN_ACCEPTED, "recorded"),
@@ -966,6 +967,85 @@ class AuthTests(unittest.TestCase):
                     self.assertNotIn("audit-fixture-content", denied.text)
                     self.assertNotIn("private fixture", denied.text)
                     self.assertEqual(request.call_count, 4)
+
+    def test_health_reports_install_receipt_without_private_details(self):
+        jobs = Jobs(self.root, Policy([(SUBJECT, "read", "disposable")]))
+        app = build_http_app(self.verifier, jobs)
+        headers = {"Accept": "application/json, text/event-stream",
+                   "Authorization": "Bearer " + self.token()}
+        init = {"jsonrpc": "2.0", "id": 1, "method": "initialize",
+                "params": {"protocolVersion": "2025-11-25", "capabilities": {},
+                           "clientInfo": {"name": "test", "version": "1"}}}
+        call = {"jsonrpc": "2.0", "id": 2, "method": "tools/call",
+                "params": {"name": "health", "arguments": {}}}
+        receipt = {"sha": "a" * 40, "wheel_sha256": "b" * 64}
+        with TestClient(app, base_url="http://127.0.0.1:8765") as client:
+            response = client.post("/mcp", headers=headers, json=init)
+            self.assertEqual(response.status_code, 200)
+            headers["MCP-Protocol-Version"] = response.json()["result"]["protocolVersion"]
+            with patch("project_os_bridge.authenticated.installed_receipt", return_value=receipt):
+                result = client.post("/mcp", headers=headers, json=call)
+                self.assertEqual(result.status_code, 200)
+                self.assertFalse(result.json()["result"].get("isError", False))
+                self.assertIn("receipt_observed", result.text)
+                self.assertIn(receipt["sha"], result.text)
+                self.assertIn(receipt["wheel_sha256"], result.text)
+            with patch("project_os_bridge.authenticated.installed_receipt",
+                       side_effect=PermissionError("/private/fixture")):
+                result = client.post("/mcp", headers=headers, json=call)
+                self.assertEqual(result.status_code, 200)
+                self.assertIn("unavailable", result.text)
+                self.assertNotIn("/private/fixture", result.text)
+                self.assertNotIn(receipt["wheel_sha256"], result.text)
+
+    def test_maintenance_http_grant_and_local_revocation(self):
+        from project_os_bridge.maintenance import Maintenance, FLAG
+        root = self.root / "instance"
+        root.mkdir(mode=0o700)
+        (root / "service").mkdir(mode=0o700)
+        (root / "state").mkdir(mode=0o700)
+        maintenance = Maintenance(root, root / "kit")
+        for name in (FLAG, "allow-authenticated-probe"):
+            (maintenance.state / name).touch(mode=0o600)
+        params = {"expected_sha": "a" * 40, "target_sha": "b" * 40,
+                  "wheel_sha256": "c" * 64, "ci_run_id": 123, "request_key": "test"}
+        headers = {"Accept": "application/json, text/event-stream",
+                   "Authorization": "Bearer " + self.token()}
+        init = {"jsonrpc": "2.0", "id": 1, "method": "initialize",
+                "params": {"protocolVersion": "2025-11-25", "capabilities": {},
+                           "clientInfo": {"name": "test", "version": "1"}}}
+        def call(client, name, arguments):
+            return client.post("/mcp", headers=headers,
+                               json={"jsonrpc": "2.0", "id": 2, "method": "tools/call",
+                                     "params": {"name": name, "arguments": arguments}})
+        for allowed in (False, True):
+            grants = [(SUBJECT, "read", "disposable")]
+            if allowed:
+                grants.append((SUBJECT, "maintenance", "installation"))
+            jobs = Jobs(self.root, Policy(grants))
+            app = build_http_app(self.verifier, jobs, maintenance=maintenance)
+            with TestClient(app, base_url="http://127.0.0.1:8765") as client:
+                response = client.post("/mcp", headers=headers, json=init)
+                self.assertEqual(response.status_code, 200)
+                headers["MCP-Protocol-Version"] = response.json()["result"]["protocolVersion"]
+                with patch.object(maintenance, "submit", return_value={"state": "ACCEPTED"}) as submit, \
+                        patch.object(maintenance, "status", return_value={"state": "ACCEPTED"}) as status:
+                    for name, arguments in (("maintenance_update", params),
+                                            ("maintenance_status", {"request_key": "test"})):
+                        response = call(client, name, arguments)
+                        self.assertEqual(response.status_code, 200)
+                        self.assertEqual(response.json()["result"].get("isError", False), not allowed)
+                    self.assertEqual(submit.call_count, int(allowed))
+                    self.assertEqual(status.call_count, int(allowed))
+                    if allowed:
+                        (maintenance.state / FLAG).unlink()
+                        denied = call(client, "maintenance_update", params)
+                        self.assertTrue(denied.json()["result"].get("isError", False))
+                        self.assertEqual(submit.call_count, 1)
+                        denied = call(client, "maintenance_rollback",
+                                      {k: v for k, v in params.items() if k != "ci_run_id"})
+                        self.assertTrue(denied.json()["result"].get("isError", False))
+                        self.assertEqual(submit.call_count, 1)
 
     def test_http_transport(self):
         policy=Policy((SUBJECT,op,"disposable") for op in ("submit","read","cancel","github_read"))

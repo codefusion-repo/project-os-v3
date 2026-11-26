@@ -59,6 +59,30 @@ jobs:
         # Ubuntu 24.04 supplies system Python 3.12; no toolcache override or
         # permission changes. The public coordinator enforces the same policy.
         run: env -u LD_LIBRARY_PATH -u PYTHONHOME -u PYTHONPATH PATH=/usr/bin:/bin /bin/bash local-bridge/scripts/ci-install.sh
+      - name: Record verified wheel receipt for maintenance preflight
+        id: wheel-receipt
+        run: |
+          python3 -I -B - <<'PY'
+          import json, os, re
+          from pathlib import Path
+          receipt = json.loads(Path("local-bridge/.venv/.project-os-bridge-install.json").read_text())
+          assert set(receipt) == {"sha", "wheel_sha256"}
+          assert receipt["sha"] == os.environ["GITHUB_SHA"]
+          assert re.fullmatch(r"[0-9a-f]{64}", receipt["wheel_sha256"])
+          attempt = os.environ["GITHUB_RUN_ATTEMPT"]
+          assert re.fullmatch(r"[1-9][0-9]*", attempt)
+          name = "maintenance-wheel-" + attempt + "-" + receipt["wheel_sha256"]
+          Path(os.environ["RUNNER_TEMP"], "maintenance-wheel-receipt.json").write_text(json.dumps(receipt) + "\n")
+          with open(os.environ["GITHUB_OUTPUT"], "a") as output:
+              output.write("name=" + name + "\n")
+          PY
+      - name: Preserve verified wheel receipt
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: ${{ steps.wheel-receipt.outputs.name }}
+          path: ${{ runner.temp }}/maintenance-wheel-receipt.json
+          if-no-files-found: error
+          retention-days: 90
 
   dependency-evidence:
     runs-on: ubuntu-24.04
