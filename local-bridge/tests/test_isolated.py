@@ -55,7 +55,8 @@ class IsolationTests(unittest.TestCase):
         self.context.require_import.assert_called_once_with(IDENTITY, IMAGE)
         args = self.context.run.call_args_list[0].args
         for flag in ("--pull=never", "--network=none", "--read-only", "--read-only-tmpfs=false", "--cap-drop=ALL",
-                     "--http-proxy=false", "--image-volume=ignore", "--pid=private", "--ipc=private", "--cgroupns=private"):
+                     "--http-proxy=false", "--image-volume=ignore", "--pid=private", "--ipc=private", "--cgroupns=private",
+                     "--passwd=false", "--userns=keep-id"):
             self.assertIn(flag, args)
         denied = json.loads(args[-1])["forbidden"]
         self.assertTrue(any(path.endswith("/exchange/synthetic-marker") for path in denied))

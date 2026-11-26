@@ -110,7 +110,7 @@ def validate_in_container(repo: GitFixture, principal, expected_revision, image,
                     "--network=none", "--read-only", "--read-only-tmpfs=false",
                     "--cap-drop=ALL", "--security-opt=no-new-privileges", "--http-proxy=false",
                     "--image-volume=ignore", "--pid=private", "--ipc=private", "--cgroupns=private", "--uts=private",
-                    "--pids-limit=64", "--memory=128m", "--cpus=1", "--userns=keep-id",
+                    "--pids-limit=64", "--memory=128m", "--cpus=1", "--userns=keep-id", "--passwd=false",
                     "--volume", f"{mount}:/fixture:ro", "--entrypoint", "python", image, "-I", "-B", "-c", SCRIPT,
                     str(sentinel), f"/run/user/{os.getuid()}/podman/podman.sock", json.dumps(probes)]
             attempted=True
