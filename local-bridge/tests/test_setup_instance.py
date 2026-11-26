@@ -13,7 +13,7 @@ SUBJECT = "user_fixture"
 def outside_git_tempdir(bases=None):
     """Choose a real temporary directory outside host Git ancestors."""
     if bases is None:
-        bases = ("/tmp", "/var/tmp", Path.home())
+        bases = ("/tmp", "/var/tmp", "/dev/shm", Path.home())
     for entry in bases:
         base = Path(entry).resolve()
         if base.is_dir() and os.access(base, os.W_OK | os.X_OK) and not any(
