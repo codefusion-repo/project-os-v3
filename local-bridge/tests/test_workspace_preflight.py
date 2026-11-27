@@ -210,6 +210,35 @@ class WorkspacePreflightTests(unittest.TestCase):
                 self.git("rm", filename)
                 self.git("commit", "-qm", "remove fixture")
 
+    def test_root_environment_template_omitted_without_reading_blob(self):
+        from project_os_bridge.workspace_preflight import git, read_workspace_context
+        (self.project / ".env.example").write_text("SYNTHETIC_VALUE=not-for-export\n")
+        self.git("add", ".env.example")
+        self.git("commit", "-qm", "environment template")
+        sha = self.git("rev-parse", "HEAD")
+        blob = self.git("rev-parse", sha + ":.env.example")
+        before = self.git("status", "--porcelain")
+        with patch("project_os_bridge.workspace_preflight.git", wraps=git) as observed:
+            result = self.materialize(sha=sha)
+        self.assertEqual(result["excluded_paths"], [".env.example"])
+        self.assertEqual(result["head"], sha)
+        self.assertFalse(any(blob in call.args[1:] for call in observed.call_args_list))
+        dest = self.root / "workspaces" / ("workspace-" + "a" * 32)
+        self.assertFalse((dest / ".env.example").exists())
+        self.assertTrue((dest / "package-lock.json").is_file())
+        self.assertEqual(self.git("status", "--porcelain"), before)
+        policy = Policy([*self.policy.grants, ("operator", "workspace_context", "demo")])
+        with self.assertRaises(PermissionError):
+            read_workspace_context(self.runtime, policy, "operator", "demo", sha,
+                                   "expo-test", [".env.example"])
+        # A real env file remains a blocker even when the template is omitted.
+        (self.project / ".env.local").write_text("SYNTHETIC=blocked\n")
+        self.git("add", ".env.local")
+        self.git("commit", "-qm", "private file")
+        with self.assertRaises(PermissionError):
+            self.materialize(sha=self.git("rev-parse", "HEAD"), job="b" * 32)
+        self.assertFalse((self.root / "workspaces" / ("workspace-" + "b" * 32)).exists())
+
     def test_materialization_grant_separate_and_file_limit(self):
         with self.assertRaises(PermissionError):
             self.materialize(policy=Policy([("operator", "workspace_prepare", "demo"),
