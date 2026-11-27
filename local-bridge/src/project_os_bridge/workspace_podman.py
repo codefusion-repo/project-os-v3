@@ -59,7 +59,7 @@ def read_apk(path, original, *, name="app-debug.apk"):
 
 
 class WorkspacePodman:
-    def __init__(self, context, images, *, qa_plans=None):
+    def __init__(self, context, images, *, qa_plans=None, qa_signers=None):
         if not isinstance(images, dict) or not images:
             raise ValueError("Explicit local candidate bindings required")
         if not all(isinstance(key, str) for key in images):
@@ -97,6 +97,10 @@ class WorkspacePodman:
             raise ValueError("Explicit project QA plans required")
         self.qa_plans = MappingProxyType({
             key: qa_plan(key.rsplit(":", 1)[-1], value) for key, value in qa_plans.items()})
+        qa_signers = {} if qa_signers is None else qa_signers
+        if not isinstance(qa_signers, dict) or not set(qa_signers) <= required:
+            raise ValueError("Invalid QA signer routes")
+        self.qa_signers = MappingProxyType(dict(qa_signers))
         self.contexts = MappingProxyType(dict(contexts))
         self.images = MappingProxyType(dict(images))
         self.context_ids = MappingProxyType(identities)
@@ -145,7 +149,9 @@ class WorkspacePodman:
         image_id, identity = self.binding(profile, request["project"])
         context = self.contexts[key]
         plan = self.qa_plans.get(key)
-        if (request.get("qa_plan_sha256") != (plan.digest() if plan else None)
+        signer = self.qa_signers.get(key)
+        if (request.get("qa_signer_sha256") != (signer.digest if signer else None)
+                or request.get("qa_plan_sha256") != (plan.digest() if plan else None)
                 or request.get("context_id") != identity or row.get("effect_context") != identity
                 or request["image_id"] != image_id or snapshot["head"] != request["expected_sha"]
                 or snapshot.get("workspace_materialized") is not True):

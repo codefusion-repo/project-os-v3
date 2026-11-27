@@ -134,12 +134,13 @@ def load_supervised_workspace_backend(policy):
     data = json.loads(raw, object_pairs_hook=_unique_object)
     if not isinstance(data, dict) or not data or not set(data) <= set(policy.initial):
         raise ValueError("Invalid workspace execution bindings")
-    contexts, images, expected, plans = {}, {}, {}, {}
+    contexts, images, expected, plans, signers = {}, {}, {}, {}, {}
+    from .android_qa import QASignerBinding
     for project, profiles in data.items():
         if not isinstance(profiles, dict) or not profiles or not set(profiles) <= set(PROFILES):
             raise ValueError("Invalid workspace execution profiles")
         for profile, entry in profiles.items():
-            fields = {"context", "context_id", "image"} | ({"qa"} if profile in QA_PROFILES else set())
+            fields = {"context", "context_id", "image"} | ({"qa", "qa_signing"} if profile in QA_PROFILES else set())
             if (not isinstance(entry, dict) or set(entry) != fields
                     or not all(isinstance(entry[key], str) for key in ("context", "context_id", "image"))
                     or not re.fullmatch(r"[0-9a-f]{64}", entry["context_id"])
@@ -153,7 +154,8 @@ def load_supervised_workspace_backend(policy):
             contexts[key], images[key], expected[key] = context, entry["image"], entry["context_id"]
             if profile in QA_PROFILES:
                 plans[key] = entry["qa"]
-    backend = WorkspacePodman(contexts, images, qa_plans=plans)
+                signers[key] = QASignerBinding(entry["qa_signing"])
+    backend = WorkspacePodman(contexts, images, qa_plans=plans, qa_signers=signers)
     for key, identity in expected.items():
         project, profile = key.split(":", 1)
         if backend.binding(profile, project)[1] != identity:
@@ -195,6 +197,8 @@ def authorize_request(policy, principal, request, *, execute=False):
             fields.add("context_id")
         if isinstance(request, dict) and request.get("profile") in QA_PROFILES:
             fields.add("qa_plan_sha256")
+            if "qa_signer_sha256" in request or type(policy) is SupervisedWorkspacePolicy:
+                fields.add("qa_signer_sha256")
     if isinstance(request, dict) and "changes" in request:
         fields.add("changes")
     if (not isinstance(request, dict)
@@ -218,6 +222,8 @@ def authorize_request(policy, principal, request, *, execute=False):
         if request["profile"] in QA_PROFILES and (not re.fullmatch(r"[0-9a-f]{64}", request["qa_plan_sha256"])
                 or "context_id" not in request):
             raise ValueError("INVALID_QA_PLAN")
+        if "qa_signer_sha256" in request and not re.fullmatch(r"[0-9a-f]{64}", request["qa_signer_sha256"]):
+            raise ValueError("INVALID_QA_SIGNER")
         policy.require(principal, "workspace_execute", project)
     for op in ("workspace_prepare", "workspace_materialize", request["profile"]):
         policy.require(principal, op, project)
@@ -254,6 +260,9 @@ def submit_workspace(jobs, principal, project, expected_sha, profile, request_ke
             if backend is None:
                 raise ValueError("QA_BACKEND_REQUIRED")
             request["qa_plan_sha256"] = backend.plan_digest(profile, project)
+            signer = backend.qa_signers.get(backend.route(profile, project))
+            if signer is not None:
+                request["qa_signer_sha256"] = signer.digest
     authorize_request(jobs.policy, principal, request, execute=execute)
     # Admission checks the mapping and immutable commit before queueing.
     prepare_workspace(*args)

@@ -166,6 +166,8 @@ class AndroidQATools:
 def _key(project_root, package, tools):
     directory = project_root / "identity"
     if not os.path.lexists(directory):
+        if any((project_root / "artifacts").iterdir()):
+            raise ValueError("QA_IDENTITY_UNAVAILABLE")
         with tempfile.TemporaryDirectory(prefix=".key-", dir=project_root) as tmp:
             stage = Path(tmp)
             # Create an entire identity atomically; incomplete identities are
@@ -208,72 +210,145 @@ def finalize_qa_build(jobs, principal, job_id, *, expected_project, expected_sha
             or type(minimum_version) is not int or not 1 <= minimum_version <= 2100000000):
         raise ValueError("QA_PACKAGE_BINDING_INVALID")
     with exclusive_worker(jobs):
-        if jobs.pending_effects():
-            raise PermissionError("QA_EFFECTS_PENDING")
-        def input_bytes():
-            return verified_qa_build_input(jobs, principal, job_id,
-                expected_project=expected_project, expected_sha=expected_sha)
-        raw, source = input_bytes()
-        build = jobs.evidence(principal, job_id)["result"]
-        repository_id = build.get("repository_id")
-        if type(repository_id) is not int or repository_id <= 0:
-            raise ValueError("QA_REPOSITORY_IDENTITY_INVALID")
-        project_root = _directory(_directory(jobs.probe.root / "qa-signing") / str(repository_id))
-        artifacts = _directory(project_root / "artifacts")
-        dest = artifacts / job_id
-        base = {"job_id": job_id, "repository_id": repository_id, "head": expected_sha,
-                "workspace_sha256": build["workspace_sha256"], "source": source,
-                "qa_plan_sha256": build["execution"]["qa_plan_sha256"]}
-        if build.get("changes_sha256") is not None:
-            base["changes_sha256"] = build["changes_sha256"]
-        with tempfile.TemporaryDirectory(prefix=".finalize-", dir=project_root) as tmp:
-            work = Path(tmp)
-            if os.path.lexists(dest):
-                private_directory(dest)
-                receipt = _read_json(dest / "receipt.json")
-                for key, value in base.items():
-                    if receipt.get(key) != value:
-                        raise ValueError("QA_RECEIPT_IDENTITY_MISMATCH")
-                # Replay does not generate a key if the existing identity was lost.
-                if not os.path.lexists(project_root / "identity"):
-                    raise ValueError("QA_IDENTITY_UNAVAILABLE")
-                directory, password, cert = _key(project_root, expected_package, tools)
-                apk = dest / "app-qa.apk"
-                _check_metadata(receipt.get("metadata", {}), expected_package, minimum_version)
-                if (tools.certificate(directory, password, work) != cert
-                        or tools.verify(apk, work) != cert
-                        or tools.inspect(apk, work) != receipt["metadata"]
-                        or receipt.get("certificate_sha256") != cert
-                        or receipt.get("artifact") != artifact_identity("apk", "app-qa.apk", _apk_bytes(apk))
-                        or input_bytes()[1] != source):
+        return _finalize_locked(jobs, principal, job_id, expected_project=expected_project,
+            expected_sha=expected_sha, expected_package=expected_package, tools=tools,
+            minimum_version=minimum_version)
+
+
+def _finalize_locked(jobs, principal, job_id, *, expected_project, expected_sha,
+                     expected_package, tools, minimum_version=1):
+    """Internal only: the caller owns the existing exclusive worker lock."""
+    if jobs.pending_effects():
+        raise PermissionError("QA_EFFECTS_PENDING")
+    def input_bytes():
+        return verified_qa_build_input(jobs, principal, job_id,
+            expected_project=expected_project, expected_sha=expected_sha)
+    raw, source = input_bytes()
+    build = jobs.evidence(principal, job_id)["result"]
+    repository_id = build.get("repository_id")
+    if type(repository_id) is not int or repository_id <= 0:
+        raise ValueError("QA_REPOSITORY_IDENTITY_INVALID")
+    project_root = _directory(_directory(jobs.probe.root / "qa-signing") / str(repository_id))
+    artifacts = _directory(project_root / "artifacts")
+    dest = artifacts / job_id
+    base = {"job_id": job_id, "repository_id": repository_id, "head": expected_sha,
+            "workspace_sha256": build["workspace_sha256"], "source": source,
+            "qa_plan_sha256": build["execution"]["qa_plan_sha256"]}
+    if build.get("changes_sha256") is not None:
+        base["changes_sha256"] = build["changes_sha256"]
+    with tempfile.TemporaryDirectory(prefix=".finalize-", dir=project_root) as tmp:
+        work = Path(tmp)
+        if os.path.lexists(dest):
+            private_directory(dest)
+            receipt = _read_json(dest / "receipt.json")
+            for key, value in base.items():
+                if receipt.get(key) != value:
                     raise ValueError("QA_RECEIPT_IDENTITY_MISMATCH")
-                return receipt
-            _write(work / "input.apk", raw)
-            # Do not create a key for an invalid APK.
-            metadata = tools.inspect(work / "input.apk", work)
-            for old in artifacts.iterdir():
-                if not re.fullmatch(r"[0-9a-f]{32}", old.name):
-                    raise ValueError("QA_HISTORY_INVALID")
-                private_directory(old)
-                record = _read_json(old / "receipt.json")
-                if record.get("repository_id") != repository_id or record.get("job_id") != old.name:
-                    raise ValueError("QA_HISTORY_INVALID")
-                _check_metadata(record.get("metadata", {}), expected_package, 1)
-                minimum_version = max(minimum_version, record["metadata"]["version_code"])
-            _check_metadata(metadata, expected_package, minimum_version)
+            # Replay does not generate a key if the existing identity was lost.
+            if not os.path.lexists(project_root / "identity"):
+                raise ValueError("QA_IDENTITY_UNAVAILABLE")
             directory, password, cert = _key(project_root, expected_package, tools)
-            if tools.certificate(directory, password, work) != cert:
-                raise ValueError("QA_CERTIFICATE_CHANGED")
-            stage = _directory(work / "output")
-            apk = stage / "app-qa.apk"
-            tools.sign(work / "input.apk", apk, directory, password, work)
-            if tools.verify(apk, work) != cert or tools.inspect(apk, work) != metadata:
-                raise ValueError("QA_APK_SIGNER_INVALID")
-            identity = artifact_identity("apk", "app-qa.apk", _apk_bytes(apk))
-            if input_bytes()[1] != source or jobs.pending_effects():
-                raise PermissionError("QA_BUILD_IDENTITY_CHANGED")
-            receipt = {**base, "metadata": metadata, "certificate_sha256": cert,
-                       "artifact": identity, "signature_verified": True, "published": False}
-            _write(stage / "receipt.json", json.dumps(receipt, sort_keys=True).encode())
-            _adopt(stage, dest)
+            apk = dest / "app-qa.apk"
+            _check_metadata(receipt.get("metadata", {}), expected_package, minimum_version)
+            if (tools.certificate(directory, password, work) != cert
+                    or tools.verify(apk, work) != cert
+                    or tools.inspect(apk, work) != receipt["metadata"]
+                    or receipt.get("certificate_sha256") != cert
+                    or receipt.get("artifact") != artifact_identity("apk", "app-qa.apk", _apk_bytes(apk))
+                    or input_bytes()[1] != source):
+                raise ValueError("QA_RECEIPT_IDENTITY_MISMATCH")
             return receipt
+        _write(work / "input.apk", raw)
+        # Do not create a key for an invalid APK.
+        metadata = tools.inspect(work / "input.apk", work)
+        for old in artifacts.iterdir():
+            if not re.fullmatch(r"[0-9a-f]{32}", old.name):
+                raise ValueError("QA_HISTORY_INVALID")
+            private_directory(old)
+            record = _read_json(old / "receipt.json")
+            if record.get("repository_id") != repository_id or record.get("job_id") != old.name:
+                raise ValueError("QA_HISTORY_INVALID")
+            _check_metadata(record.get("metadata", {}), expected_package, 1)
+            minimum_version = max(minimum_version, record["metadata"]["version_code"])
+        _check_metadata(metadata, expected_package, minimum_version)
+        directory, password, cert = _key(project_root, expected_package, tools)
+        for old in artifacts.iterdir():
+            if _read_json(old / "receipt.json").get("certificate_sha256") != cert:
+                raise ValueError("QA_CERTIFICATE_CHANGED")
+        if tools.certificate(directory, password, work) != cert:
+            raise ValueError("QA_CERTIFICATE_CHANGED")
+        stage = _directory(work / "output")
+        apk = stage / "app-qa.apk"
+        tools.sign(work / "input.apk", apk, directory, password, work)
+        if tools.verify(apk, work) != cert or tools.inspect(apk, work) != metadata:
+            raise ValueError("QA_APK_SIGNER_INVALID")
+        identity = artifact_identity("apk", "app-qa.apk", _apk_bytes(apk))
+        if input_bytes()[1] != source or jobs.pending_effects():
+            raise PermissionError("QA_BUILD_IDENTITY_CHANGED")
+        receipt = {**base, "metadata": metadata, "certificate_sha256": cert,
+                   "artifact": identity, "signature_verified": True, "published": False}
+        _write(stage / "receipt.json", json.dumps(receipt, sort_keys=True).encode())
+        _adopt(stage, dest)
+        return receipt
+
+
+class QASignerBinding:
+    """Operator-reviewed local signing recipe, frozen with the execution binding."""
+    def __init__(self, config):
+        if (not isinstance(config, dict)
+                or set(config) != {"package", "java_home", "build_tools"}
+                or not all(isinstance(value, str) for value in config.values())
+                or not PACKAGE.fullmatch(config["package"])):
+            raise ValueError("QA_SIGNER_BINDING_INVALID")
+        self.package = config["package"]
+        self.tools = AndroidQATools(config["java_home"], config["build_tools"])
+        self.digest = hashlib.sha256(json.dumps(config, sort_keys=True,
+            separators=(",", ":")).encode()).hexdigest()
+
+    def finalize_locked(self, jobs, principal, job_id, request):
+        from .workspace_jobs import require_workspace_job
+        if (request.get("qa_signer_sha256") != self.digest
+                or require_workspace_job(jobs, principal, job_id, allow_execute=True) != request):
+            raise PermissionError("QA_SIGNER_BINDING_CHANGED")
+        return _finalize_locked(jobs, principal, job_id, expected_project=request["project"],
+            expected_sha=request["expected_sha"], expected_package=self.package, tools=self.tools)
+
+
+def finalize_pending_locked(jobs, backend, *, enabled):
+    """Resume only successful builds with a frozen signer, before the next build.
+
+    The atomic receipt makes a crash after signing but before recording safe.
+    Failed attempts are recorded and not retried automatically.
+    """
+    if not backend.qa_signers:
+        return
+    with jobs.transaction() as conn:
+        rows = [dict(row) for row in conn.execute(
+            "SELECT jobs.id,jobs.principal,jobs.result,workspace_inputs.request "
+            "FROM jobs JOIN workspace_inputs ON jobs.id=workspace_inputs.job_id "
+            "WHERE jobs.workflow='workspace_execute' AND jobs.state='SUCCEEDED' "
+            "AND json_extract(workspace_inputs.request,'$.qa_signer_sha256') IS NOT NULL "
+            "AND json_extract(jobs.result,'$.qa_finalization') IS NULL "
+            "ORDER BY jobs.created,jobs.id")]
+    for row in rows:
+        if not enabled() or jobs.pending_effects():
+            return
+        request = json.loads(row["request"])
+        result = json.loads(row["result"])
+        try:
+            signer = backend.qa_signers[backend.route(request["profile"], request["project"])]
+            if (backend.plan_digest(request["profile"], request["project"]) != request["qa_plan_sha256"]
+                    or signer.digest != request["qa_signer_sha256"]):
+                raise PermissionError("QA_SIGNER_BINDING_CHANGED")
+            receipt = signer.finalize_locked(jobs, row["principal"], row["id"], request)
+            outcome = {"state": "SUCCEEDED", "receipt": receipt}
+        except PermissionError:
+            outcome = {"state": "BLOCKED", "reason": "QA_FINALIZATION_DENIED"}
+        except (OSError, ValueError, TypeError, KeyError, RuntimeError):
+            outcome = {"state": "FAILED", "reason": "QA_FINALIZATION_FAILED"}
+        result["qa_finalization"] = outcome
+        with jobs.transaction() as conn:
+            changed = conn.execute("UPDATE jobs SET result=? WHERE id=? AND state='SUCCEEDED' AND result=?",
+                (json.dumps(result, sort_keys=True), row["id"], row["result"]))
+            if changed.rowcount != 1:
+                raise RuntimeError("QA_FINALIZATION_RECORD_CONFLICT")

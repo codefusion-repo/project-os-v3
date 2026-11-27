@@ -48,6 +48,11 @@ def run_pending(jobs: Jobs, *, fixture_image=None, podman_context=None, context_
         if jobs.pending_effects():
             return
         while enabled():
+            if workspace_backend is not None and workspace_backend.qa_signers:
+                from .android_qa import finalize_pending_locked
+                finalize_pending_locked(jobs, workspace_backend, enabled=enabled)
+                if not enabled() or jobs.pending_effects():
+                    return
             workspace_contexts = workspace_backend.identities() if workspace_backend is not None else None
             row = jobs.claim(fixture_context=context_id if fixture_ready() else None,
                              workspace_contexts=workspace_contexts)

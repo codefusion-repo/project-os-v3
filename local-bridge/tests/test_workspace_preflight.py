@@ -738,6 +738,51 @@ class WorkspacePreflightTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             finalize(second)
         self.assertEqual(jobs.pending_effects(), [])
+        import shutil
+        shutil.rmtree(jobs.probe.root / "qa-signing" / "123" / "identity")
+        third = build("third-finalize")
+        with self.assertRaises(ValueError):
+            finalize(third)
+        tools.generate.assert_called_once()
+
+    def test_worker_automatically_finalizes_bound_qa_build(self):
+        from unittest.mock import Mock
+        from subprocess import CompletedProcess
+        from project_os_bridge.android_qa import QASignerBinding
+        from project_os_bridge.workspace_podman import WorkspacePodman, apk_path
+        from project_os_bridge.podman_context import PodmanContext
+        jobs = self.workspace_queue()
+        policy = Policy([*jobs.policy.grants, ("operator", "workspace_execute", "demo")])
+        jobs = Jobs(jobs.probe.root, policy, workflows=("workspace_execute",))
+        ctx = Mock(spec=PodmanContext)
+        ctx.identity.return_value = "c" * 64
+        signer = Mock(spec=QASignerBinding)
+        signer.digest = "d" * 64
+        route = "demo:expo-apk-qa"
+        image = "localhost/project-os-mobile-ci@sha256:" + "a" * 64
+        backend = WorkspacePodman({route: ctx}, {route: image}, qa_plans={route: {}},
+                                  qa_signers={route: signer})
+        job = submit_workspace(jobs, "operator", "demo", self.sha, "expo-apk-qa", "auto-qa", backend=backend)
+        def run(expected, *args, **kwargs):
+            if args[0] == "container":
+                return CompletedProcess(args, 1)
+            if args[0] == "ps":
+                return CompletedProcess(args, 0, stdout=b"")
+            apk_path(jobs.probe.root, job).write_bytes(b"synthetic")
+            return CompletedProcess(args, 0)
+        ctx.run.side_effect = run
+        def finalize(jobs_arg, principal, job_id, request):
+            self.assertEqual(jobs_arg.pending_effects(), [])
+            self.assertEqual(jobs_arg.evidence(principal, job_id)["state"], "SUCCEEDED")
+            self.assertEqual(request["qa_signer_sha256"], signer.digest)
+            return {"signature_verified": True, "published": False}
+        signer.finalize_locked.side_effect = finalize
+        run_pending(jobs, workspace_backend=backend)
+        self.assertEqual(jobs.evidence("operator", job)["result"]["qa_finalization"],
+                         {"state": "SUCCEEDED", "receipt": {"signature_verified": True, "published": False}})
+        reopened = Jobs(jobs.probe.root, policy, workflows=("workspace_execute",))
+        run_pending(reopened, workspace_backend=backend)
+        signer.finalize_locked.assert_called_once()
 
     def test_context_bound_execution_cannot_use_ci_executor(self):
         from project_os_bridge.workspace_podman import WorkspacePodman
