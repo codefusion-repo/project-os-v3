@@ -1129,6 +1129,11 @@ class AuthTests(unittest.TestCase):
             self.assertEqual(edited_evidence["result"]["changes"][0]["path"], "note.txt")
             self.assertEqual((state / ("workspace-" + edited) / "note.txt").read_text(), "synthetic saved edit")
             self.assertNotIn("synthetic saved edit", json.dumps(edited_evidence))
+            diff = payload(tool(client, "workspace_changes", job_id=edited))
+            self.assertIn("+synthetic saved edit", diff["diff"])
+            self.assertEqual(diff["workspace_sha256"], edited_evidence["result"]["workspace_sha256"])
+            self.assertNotIn(str(self.root), json.dumps(diff))
+            self.assertTrue(tool(client, "workspace_changes", job_id=ids[0]).get("isError", False))
             for job in ids:
                 evidence = payload(tool(client, "get_job_evidence", job_id=job))
                 self.assertEqual(evidence["state"], "SUCCEEDED")
@@ -1143,6 +1148,7 @@ class AuthTests(unittest.TestCase):
             data["github_projects"] = {}
             runtime.write_text(json.dumps(data))
             self.assertTrue(tool(client, "get_job_evidence", job_id=ids[0]).get("isError", False))
+            self.assertTrue(tool(client, "workspace_changes", job_id=edited).get("isError", False))
             self.assertTrue(tool(client, "get_job_status", job_id=ids[0]).get("isError", False))
             self.assertTrue(tool(client, "submit_workspace_job", project="demo", expected_sha=sha,
                                  profile="expo-test", request_key="revoked").get("isError", False))

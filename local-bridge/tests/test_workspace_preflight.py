@@ -267,6 +267,52 @@ class WorkspacePreflightTests(unittest.TestCase):
             self.assertEqual(reopened.evidence("operator", blocked)["state"], "BLOCKED")
             self.assertFalse((jobs.probe.root / ("workspace-" + blocked)).exists())
 
+    def test_saved_delete_diff_and_failed_staging(self):
+        import hashlib
+        from project_os_bridge.workspace_jobs import workspace_changes
+        (self.project / "remove.txt").write_text("old text\n")
+        self.git("add", "remove.txt")
+        self.git("commit", "-qm", "synthetic deletion")
+        sha = self.git("rev-parse", "HEAD")
+        jobs = self.workspace_queue()
+        policy = Policy([*jobs.policy.grants, ("operator", "workspace_change", "demo")])
+        jobs = Jobs(jobs.probe.root, policy, workflows=("workspace_prepare",))
+        edits = [{"path": "remove.txt", "before": hashlib.sha256(b"old text\n").hexdigest(),
+                  "text": None}]
+        job = submit_workspace(jobs, "operator", "demo", sha, "expo-test", "delete", changes=edits)
+        run_pending(jobs)
+        self.assertEqual(jobs.get("operator", job)["state"], "SUCCEEDED")
+        self.assertFalse((jobs.probe.root / ("workspace-" + job) / "remove.txt").exists())
+        self.assertEqual((self.project / "remove.txt").read_text(), "old text\n")
+        self.assertIn("-old text", workspace_changes(jobs, "operator", job)["diff"])
+        (self.project / "remove.txt").write_text("dirty text\n")
+        self.assertNotIn("dirty text", workspace_changes(jobs, "operator", job)["diff"])
+        denied = Jobs(jobs.probe.root, Policy([g for g in policy.grants if g[1] != "workspace_change"]),
+                      workflows=("workspace_prepare",))
+        with self.assertRaises(PermissionError):
+            workspace_changes(denied, "operator", job)
+        failed = submit_workspace(jobs, "operator", "demo", sha, "expo-test", "sync", changes=edits)
+        with patch("project_os_bridge.workspace_preflight._sync_directory", side_effect=OSError("fixture")):
+            run_pending(jobs)
+        self.assertEqual(jobs.get("operator", failed)["state"], "FAILED")
+        self.assertFalse((jobs.probe.root / ("workspace-" + failed)).exists())
+
+    def test_saved_changes_reject_binary_base(self):
+        import hashlib
+        raw = b"binary\0fixture"
+        (self.project / "binary.txt").write_bytes(raw)
+        self.git("add", "binary.txt")
+        self.git("commit", "-qm", "binary fixture")
+        jobs = self.workspace_queue()
+        jobs = Jobs(jobs.probe.root, Policy([*jobs.policy.grants, ("operator", "workspace_change", "demo")]),
+                    workflows=("workspace_prepare",))
+        job = submit_workspace(jobs, "operator", "demo", self.git("rev-parse", "HEAD"), "expo-test",
+                               "binary", changes=[{"path": "binary.txt",
+                               "before": hashlib.sha256(raw).hexdigest(), "text": "new"}])
+        run_pending(jobs)
+        self.assertEqual(jobs.get("operator", job)["state"], "BLOCKED")
+        self.assertFalse((jobs.probe.root / ("workspace-" + job)).exists())
+
     def test_saved_changes_revoked_before_dispatch(self):
         jobs = self.workspace_queue()
         policy = Policy([*jobs.policy.grants, ("operator", "workspace_change", "demo")])

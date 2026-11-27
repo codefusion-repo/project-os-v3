@@ -1,6 +1,7 @@
 """Internal workspace preparation from an authorized, locally available Git revision."""
 from pathlib import Path
 import hashlib
+import difflib
 import json
 import os
 import re
@@ -214,6 +215,8 @@ def materialize_workspace(runtime, policy, principal, project, expected_sha, pro
                 mode, blob, size, _ = original
                 old = _blob_data(root, blob, size)
                 old.decode("utf-8")
+                if b"\0" in old:
+                    raise ValueError("WORKSPACE_CHANGE_NOT_TEXT")
                 if hashlib.sha256(old).hexdigest() != before:
                     raise ValueError("WORKSPACE_CHANGE_CONFLICT")
             if text is None:
@@ -251,16 +254,18 @@ def materialize_workspace(runtime, policy, principal, project, expected_sha, pro
             out.flush()
             os.fsync(out.fileno())
         manifest.append([path, mode, hashlib.sha256(data).hexdigest(), size])
+    # Only complete snapshots are adopted at the final job-owned name.
+    # Existing worker exclusivity protects this private parent.
+    def walk_failed(error):
+        raise error
+    for directory, _, _ in os.walk(stage, topdown=False, onerror=walk_failed):
+        _sync_directory(directory)
     policy.require(principal, "workspace_materialize", project)
     if (_binding(*args) != (descriptor, entry, root)
             or binding_digest(entry, root) != binding):
         raise PermissionError("DENIED")
     if changes is not None:
         policy.require(principal, "workspace_change", project)
-    # Only complete snapshots are adopted at the final job-owned name.
-    # Existing worker exclusivity protects this private parent.
-    for directory, _, _ in os.walk(stage, topdown=False):
-        _sync_directory(directory)
     if os.path.lexists(target):
         raise FileExistsError("Workspace already exists")
     os.rename(stage, target)
@@ -271,3 +276,62 @@ def materialize_workspace(runtime, policy, principal, project, expected_sha, pro
                   workspace_sha256=hashlib.sha256(json.dumps(manifest, separators=(",", ":"),
                                                            ensure_ascii=True).encode()).hexdigest())
     return result
+
+
+MAX_DIFF_BYTES = 65536
+
+
+def describe_changes(runtime, policy, principal, request, result):
+    """Historical diff of an applied, recorded change set; never read dirty files."""
+    project = request["project"]
+    policy.require(principal, "workspace_change", project)
+    args = (runtime, policy, principal, project, request["expected_sha"], request["profile"])
+    descriptor, entry, root = _binding(*args)
+    if binding_digest(entry, root) != request["binding"]:
+        raise PermissionError("DENIED")
+    changes = normalize_changes(request["changes"])
+    digest = changes_digest(changes)
+    if (result.get("workspace_materialized") is not True or result.get("head") != request["expected_sha"]
+            or result.get("changes_sha256") != digest):
+        raise ValueError("WORKSPACE_CHANGES_UNAVAILABLE")
+    sha = commit(root, request["expected_sha"])
+    observed, fragments, size = [], [], 0
+    for change in changes:
+        path, before, text = change["path"], change["before"], change["text"]
+        raw = list(_entries(git(root, "ls-tree", "-z", sha, "--", path)))
+        old = b""
+        if before is None:
+            if raw:
+                raise ValueError("WORKSPACE_CHANGE_CONFLICT")
+        else:
+            if len(raw) != 1 or raw[0][0] != path:
+                raise ValueError("WORKSPACE_CHANGE_CONFLICT")
+            blob = raw[0][2]
+            length = int(git(root, "cat-file", "-s", blob))
+            if not 0 <= length <= MAX_DIFF_BYTES:
+                raise ValueError("WORKSPACE_DIFF_LIMIT")
+            old = _blob_data(root, blob, length)
+            if hashlib.sha256(old).hexdigest() != before or b"\0" in old:
+                raise ValueError("WORKSPACE_CHANGE_CONFLICT")
+        new = b"" if text is None else text.encode("utf-8")
+        after = None if text is None else hashlib.sha256(new).hexdigest()
+        observed.append({"path": path, "before": before, "after": after})
+        size += len(old) + len(new)
+        if size > MAX_DIFF_BYTES:
+            raise ValueError("WORKSPACE_DIFF_LIMIT")
+        fragments.extend(difflib.unified_diff(
+            old.decode("utf-8").splitlines(keepends=True),
+            new.decode("utf-8").splitlines(keepends=True),
+            fromfile="/dev/null" if before is None else "a/" + path,
+            tofile="/dev/null" if text is None else "b/" + path, n=3))
+    # Preserve missing-newline distinctions in review output.
+    diff = "".join(line if line.endswith("\n") else line + "\n\\ No newline at end of file\n"
+                   for line in fragments)
+    if len(diff.encode("utf-8")) > MAX_DIFF_BYTES or observed != result.get("changes"):
+        raise ValueError("WORKSPACE_DIFF_LIMIT_OR_IDENTITY")
+    if (_binding(*args) != (descriptor, entry, root)
+            or binding_digest(entry, root) != request["binding"]):
+        raise PermissionError("DENIED")
+    policy.require(principal, "workspace_change", project)
+    return {"head": sha, "changes_sha256": digest, "workspace_sha256": result["workspace_sha256"],
+            "changes": observed, "diff": diff}

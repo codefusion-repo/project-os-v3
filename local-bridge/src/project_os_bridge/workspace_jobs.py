@@ -10,7 +10,7 @@ import json
 from .github_context import PROJECT
 from .methodology import SHA
 from .workspace_preflight import (_binding, binding_digest, materialize_workspace,
-                                  prepare_workspace, normalize_changes)
+                                  prepare_workspace, normalize_changes, describe_changes)
 from .workspace_profiles import profile_for
 from .workos_auth import private_directory, private_file
 
@@ -121,6 +121,20 @@ def require_workspace_job(jobs, principal, job_id, *, allow_execute=False):
                               request["expected_sha"], request["profile"])
     if binding_digest(entry, root) != request["binding"]:
         raise PermissionError("DENIED")
+    return request
+
+
+def workspace_changes(jobs, principal, job_id, *, allow_execute=False):
+    request = require_workspace_job(jobs, principal, job_id, allow_execute=allow_execute)
+    evidence = jobs.evidence(principal, job_id)
+    if ("changes" not in request or evidence["state"] not in {"SUCCEEDED", "FAILED"}
+            or not isinstance(evidence["result"], dict)):
+        raise ValueError("WORKSPACE_CHANGES_UNAVAILABLE")
+    result = describe_changes(local_runtime(jobs.probe.root), jobs.policy, principal,
+                              request, evidence["result"])
+    if require_workspace_job(jobs, principal, job_id, allow_execute=allow_execute) != request:
+        raise PermissionError("DENIED")
+    return result
 
 
 def run_workspace(jobs, row, *, executor=None):

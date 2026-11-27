@@ -207,7 +207,7 @@ def build_server(verifier, jobs, fixture_reader=None, *, fixture_image=None, dia
             return {"job_id":jobs.submit(actor,"disposable","git_fixture_check",request_key)}
 
     if workspace_candidate:
-        from .workspace_jobs import submit_workspace, require_workspace_job
+        from .workspace_jobs import submit_workspace, require_workspace_job, workspace_changes as read_workspace_changes
 
         async def submit_workspace_request(project, expected_sha, profile, request_key, *, execute, changes=None):
             actor = principal()
@@ -253,6 +253,23 @@ def build_server(verifier, jobs, fixture_reader=None, *, fixture_image=None, dia
                 Image and context are selected locally; no host paths, commands or image input."""
                 return await submit_workspace_request(project, expected_sha, profile, request_key,
                                                       execute=True, changes=changes)
+
+        @mcp.tool(annotations=read)
+        async def workspace_changes(job_id: StrictStr) -> dict:
+            """Read a bounded historical diff of a caller's applied edits, not live files."""
+            actor = principal()
+            def collect():
+                try:
+                    result = read_workspace_changes(jobs, actor, job_id,
+                                                    allow_execute=workspace_backend is not None)
+                    if principal() != actor:
+                        raise PermissionError("DENIED")
+                    return result
+                except PermissionError:
+                    raise PermissionError("DENIED") from None
+                except (OSError, ValueError, TypeError, KeyError):
+                    raise ValueError("WORKSPACE_CHANGES_UNAVAILABLE") from None
+            return await asyncio.to_thread(collect)
 
     def workspace_access(actor, job_id):
         if workspace_candidate:
