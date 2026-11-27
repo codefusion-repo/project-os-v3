@@ -1253,6 +1253,72 @@ class AuthTests(unittest.TestCase):
             self.assertEqual(payload(tool("get_job_evidence", job_id=revoked))["state"], "BLOCKED")
             self.assertEqual((source / "note.txt").read_text(), "dirty\n")
 
+    def test_supervised_execution_binding_is_local_and_revocable(self):
+        from project_os_bridge.workspace_jobs import (SUPERVISED_GRANTS, SUPERVISED_EXECUTION,
+            load_supervised_workspace_policy, load_supervised_workspace_backend)
+        from project_os_bridge.podman_context import PodmanContext
+        root = self.root / "execution"
+        root.mkdir(mode=0o700)
+        state, service = root / "state", root / "service"
+        state.mkdir(mode=0o700)
+        service.mkdir(mode=0o700)
+        (state / "allow-authenticated-probe").touch(mode=0o600)
+        runtime = service / "runtime.json"
+        runtime.touch(mode=0o600)
+        runtime.write_text(json.dumps({"tunnel": "fixture", "tunnel_id": "fixture", "image": None,
+            "github_projects": {"demo": {"config": "/tmp/fixture/.project-os/config.json",
+                                        "repository": "example/demo", "repository_id": 1}}}))
+        grants = state / SUPERVISED_GRANTS
+        grants.touch(mode=0o600)
+        ops = ["workspace_prepare", "workspace_materialize", "workspace_execute", "expo-test"]
+        grants.write_text(json.dumps({"demo": ops}))
+        verifier = Verifier(ISSUER, RESOURCE, SUBJECT, state, jwks=self.jwks)
+        base = [(SUBJECT, op, "disposable") for op in ("submit", "read", "cancel")]
+        policy = load_supervised_workspace_policy(verifier, base, supervised=True, multi=True)
+        self.assertIsNone(load_supervised_workspace_backend(policy))
+        with self.assertRaises(PermissionError):
+            policy.require(SUBJECT, "workspace_execute", "demo")
+        config = state / SUPERVISED_EXECUTION
+        config.touch(mode=0o600)
+        identity = "c" * 64
+        data = {"expo-test": {"context": "/tmp/fixture-context", "context_id": identity,
+                             "image": "localhost/project-os-mobile-ci@sha256:" + "a" * 64}}
+        config.write_text(json.dumps(data))
+        with patch.object(PodmanContext, "identity", return_value=identity), \
+             patch.object(PodmanContext, "require_import") as imported:
+            backend = load_supervised_workspace_backend(policy)
+            imported.assert_called()
+            policy.require(SUBJECT, "workspace_execute", "demo")
+            jobs = Jobs(state, policy, workflows=("probe_check", "workspace_prepare", "workspace_execute"))
+            app = build_http_app(verifier, jobs, workspace_candidate=True, workspace_backend=backend)
+            headers = {"Accept": "application/json, text/event-stream", "Authorization": "Bearer " + self.token()}
+            with TestClient(app, base_url="http://127.0.0.1:8765") as client:
+                def call(method, params):
+                    response = client.post("/mcp", headers=headers,
+                        json={"jsonrpc": "2.0", "id": 1, "method": method, "params": params})
+                    self.assertEqual(response.status_code, 200)
+                    return response.json()["result"]
+                init = call("initialize", {"protocolVersion": "2025-11-25", "capabilities": {},
+                    "clientInfo": {"name": "test", "version": "1"}})
+                headers["MCP-Protocol-Version"] = init["protocolVersion"]
+                self.assertIn("submit_workspace_execute",
+                    {item["name"] for item in call("tools/list", {})["tools"]})
+                def health():
+                    result = call("tools/call", {"name": "health", "arguments": {}})
+                    return json.loads(result["content"][0]["text"])
+                self.assertTrue(health()["workspace_execution_available"])
+                config.unlink()
+                self.assertFalse(health()["workspace_execution_available"])
+                with self.assertRaises(PermissionError):
+                    policy.require(SUBJECT, "workspace_execute", "demo")
+                policy.require(SUBJECT, "workspace_prepare", "demo")
+                config.touch(mode=0o600)
+                config.write_text(json.dumps(data))
+                self.assertTrue(health()["workspace_execution_available"])
+                grants.write_text(json.dumps({"demo": [op for op in ops if op != "workspace_execute"]}))
+                with self.assertRaises(PermissionError):
+                    policy.require(SUBJECT, "workspace_execute", "demo")
+
     def test_workspace_candidate_cannot_register_on_active_state_or_execution_queue(self):
         jobs = Jobs(self.root, Policy([]), workflows=("workspace_prepare",))
         with self.assertRaises(ValueError):

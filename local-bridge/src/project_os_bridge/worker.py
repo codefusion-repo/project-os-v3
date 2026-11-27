@@ -61,7 +61,7 @@ def run_pending(jobs: Jobs, *, fixture_image=None, podman_context=None, context_
             try:
                 if row["resource"] != "disposable":
                     from .workspace_jobs import workspace_resource
-                    if (row["workflow"] != "workspace_prepare"
+                    if (row["workflow"] not in {"workspace_prepare", "workspace_execute"}
                             or row["resource"] != workspace_resource(jobs.policy)):
                         raise ValueError("Unknown resource")
                 if row["workflow"] == "probe_check":

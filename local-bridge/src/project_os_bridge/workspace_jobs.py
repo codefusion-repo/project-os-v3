@@ -21,12 +21,14 @@ RUNTIME = "workspace-runtime.json"
 
 
 SUPERVISED_GRANTS = "workspace-grants.json"
+SUPERVISED_EXECUTION = "workspace-execution.json"
 PREPARATION_OPS = frozenset({"workspace_prepare", "workspace_materialize",
                              "workspace_change", "workspace_context", *PROFILES})
+WORKSPACE_OPS = PREPARATION_OPS | {"workspace_execute"}
 
 
 class SupervisedWorkspacePolicy(Policy):
-    """Explicit private preparation grants; live revocation, no execution grant."""
+    """Explicit private grants; execution additionally requires the frozen local binding."""
     def __init__(self, verifier, base_grants):
         super().__init__(base_grants)
         self.verifier = verifier
@@ -34,6 +36,16 @@ class SupervisedWorkspacePolicy(Policy):
         self.runtime = self.root.parent / "service" / "runtime.json"
         self.initial_entries = registry_entries(self.runtime)
         self.initial = self.current(startup=True)
+        self.execution_binding = None
+        self.backend = None
+
+    def execution_available(self):
+        if self.execution_binding is None or self.backend is None or not self.verifier.enabled():
+            return False
+        try:
+            return _private_bytes(self.root / SUPERVISED_EXECUTION, 65536) == self.execution_binding
+        except (OSError, ValueError, TypeError):
+            return False
 
     def current(self, *, startup=False):
         try:
@@ -47,7 +59,7 @@ class SupervisedWorkspacePolicy(Policy):
             for ops in data.values():
                 if (not isinstance(ops, list) or not ops
                         or not all(isinstance(op, str) for op in ops)
-                        or len(set(ops)) != len(ops) or not set(ops) <= PREPARATION_OPS):
+                        or len(set(ops)) != len(ops) or not set(ops) <= WORKSPACE_OPS):
                     raise ValueError("Invalid workspace grants")
             # A removed or retargeted alias denies only that project.
             return {key: frozenset(ops) for key, ops in data.items()
@@ -66,7 +78,7 @@ class SupervisedWorkspacePolicy(Policy):
             return False
 
     def require(self, principal, operation, resource):
-        if resource == "workspace" or operation in PREPARATION_OPS or operation == "workspace_execute":
+        if resource == "workspace" or operation in WORKSPACE_OPS:
             if principal != self.verifier.subject or not self.verifier.enabled():
                 raise PermissionError("DENIED")
             current = self.current()
@@ -74,8 +86,9 @@ class SupervisedWorkspacePolicy(Policy):
                 if any(ops & current.get(project, frozenset())
                        for project, ops in self.initial.items()):
                     return
-            elif (operation in PREPARATION_OPS and operation in self.initial.get(resource, ())
-                  and operation in current.get(resource, ())):
+            elif (operation in WORKSPACE_OPS and operation in self.initial.get(resource, ())
+                  and operation in current.get(resource, ())
+                  and (operation != "workspace_execute" or self.execution_available())):
                 return
             raise PermissionError("DENIED")
         super().require(principal, operation, resource)
@@ -89,6 +102,47 @@ def load_supervised_workspace_policy(verifier, base_grants, *, supervised, multi
                    (MARKER, "local-fixture-mode", "local-package-mode", "fixture-image", "fixture-context"))):
         raise PermissionError("Supervised preparation profile required")
     return SupervisedWorkspacePolicy(verifier, base_grants)
+
+
+def load_supervised_workspace_backend(policy):
+    """Register only operator-enrolled exact profile/context/image bindings.
+
+    This loader validates identity and local admission, not image review or host
+    certification. The local operator must complete those gates before creating
+    the private configuration. No acquisition, import or grant is performed here.
+    """
+    from pathlib import Path
+    from .podman_context import PodmanContext
+    from .workspace_podman import WorkspacePodman
+    if type(policy) is not SupervisedWorkspacePolicy:
+        return None
+    path = policy.root / SUPERVISED_EXECUTION
+    if not os.path.lexists(path):
+        return None
+    raw = _private_bytes(path, 65536)
+    data = json.loads(raw, object_pairs_hook=_unique_object)
+    if not isinstance(data, dict) or not data or not set(data) <= set(PROFILES):
+        raise ValueError("Invalid workspace execution bindings")
+    contexts, images = {}, {}
+    for profile, entry in data.items():
+        if (not isinstance(entry, dict) or set(entry) != {"context", "context_id", "image"}
+                or not all(isinstance(value, str) for value in entry.values())
+                or not re.fullmatch(r"[0-9a-f]{64}", entry["context_id"])
+                or not any({"workspace_execute", profile} <= ops for ops in policy.initial.values())):
+            raise ValueError("Invalid workspace execution binding")
+        context = PodmanContext(Path(entry["context"]))
+        if context.identity(entry["context_id"]) != entry["context_id"]:
+            raise PermissionError("WORKSPACE_CONTEXT_CHANGED")
+        contexts[profile], images[profile] = context, entry["image"]
+    backend = WorkspacePodman(contexts, images)
+    for profile, entry in data.items():
+        _, identity = backend.binding(profile)
+        if identity != entry["context_id"]:
+            raise PermissionError("WORKSPACE_CONTEXT_CHANGED")
+    if _private_bytes(path, 65536) != raw:
+        raise PermissionError("WORKSPACE_BINDING_CHANGED")
+    policy.execution_binding, policy.backend = raw, backend
+    return backend
 
 
 def workspace_resource(policy):
@@ -147,15 +201,19 @@ def authorize_request(policy, principal, request, *, execute=False):
 
 def submit_workspace(jobs, principal, project, expected_sha, profile, request_key, *, image_id=None,
                      authorize=lambda: None, backend=None, changes=None):
-    if backend is not None:
-        if image_id is not None:
-            raise ValueError("Use backend-selected image only")
-        image_id, context_id = backend.binding(profile)
-    else:
-        context_id = None
     runtime = local_runtime(jobs.probe.root, jobs.policy)
     jobs.policy.require(principal, "submit", workspace_resource(jobs.policy))
     jobs.policy.require(principal, "workspace_materialize", project)
+    if backend is not None:
+        if image_id is not None:
+            raise ValueError("Use backend-selected image only")
+        jobs.policy.require(principal, "workspace_execute", project)
+        jobs.policy.require(principal, profile, project)
+        if type(jobs.policy) is SupervisedWorkspacePolicy and jobs.policy.backend is not backend:
+            raise PermissionError("DENIED")
+        image_id, context_id = backend.binding(profile)
+    else:
+        context_id = None
     args = (runtime, jobs.policy, principal, project, expected_sha, profile)
     _, entry, root = _binding(*args)
     request = {"project": project, "profile": profile, "expected_sha": expected_sha,
@@ -247,7 +305,7 @@ def run_workspace(jobs, row, *, executor=None):
                                   request["expected_sha"], request["profile"])
         if binding_digest(entry, root) != request["binding"]:
             raise PermissionError("WORKSPACE_BINDING_CHANGED")
-        # Trusted internal caller only; production service supplies no executor.
+        # Only the registered backend (or the pre-existing disposable CI test executor).
         execution = executor(jobs.probe.root / ("workspace-" + row["id"]), row, snapshot)
         if "context_id" in request and (execution.get("cleanup_verified") is not True
                 or execution.get("image_id") != request["image_id"]):

@@ -276,7 +276,7 @@ class Maintenance:
             return (all(private_bytes(self.state / name, 0) == b""
                         for name in (FLAG, FLAGS[0]))
                     and not any(os.path.lexists(self.state / name)
-                                for name in ("fixture-image", "local-fixture-mode", "workspace-grants.json")))
+                                for name in ("fixture-image", "local-fixture-mode", "workspace-grants.json", "workspace-execution.json")))
         except (OSError, ValueError):
             return False
 

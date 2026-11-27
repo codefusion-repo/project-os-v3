@@ -55,11 +55,18 @@ def build_server(verifier, jobs, fixture_reader=None, *, fixture_image=None, dia
     from .workspace_jobs import SupervisedWorkspacePolicy
     supervised_workspace = type(jobs.policy) is SupervisedWorkspacePolicy
     if supervised_workspace:
+        workflows = {"probe_check", "workspace_prepare"}
+        if workspace_backend is not None:
+            from .workspace_podman import WorkspacePodman
+            if type(workspace_backend) is not WorkspacePodman or jobs.policy.backend is not workspace_backend:
+                raise ValueError("Supervised registered backend required")
+            workflows.add("workspace_execute")
         if (not workspace_candidate or jobs.policy.verifier is not verifier
                 or jobs.probe.root != verifier.state_dir
-                or jobs.workflows != frozenset({"probe_check", "workspace_prepare"})
-                or fixture_reader is not None or fixture_image is not None or workspace_backend is not None):
-            raise ValueError("Supervised preparation profile required")
+                or jobs.workflows != frozenset(workflows)
+                or fixture_reader is not None or fixture_image is not None
+                or jobs.policy.backend is not workspace_backend):
+            raise ValueError("Supervised workspace profile required")
     if workspace_backend is not None and not workspace_candidate:
         raise ValueError("Dedicated workspace candidate required")
     if workspace_candidate and not supervised_workspace:
@@ -117,12 +124,14 @@ def build_server(verifier, jobs, fixture_reader=None, *, fixture_image=None, dia
                 if workspace_backend is not None:
                     try:
                         from .workspace_jobs import local_runtime
-                        local_runtime(jobs.probe.root)
-                        workspace_backend.identities()
-                        result["workspace_execution_available"] = True
+                        local_runtime(jobs.probe.root, jobs.policy)
+                        if not supervised_workspace or jobs.policy.execution_available():
+                            workspace_backend.identities()
+                            result["workspace_execution_available"] = True
                     except (OSError, ValueError):
                         pass
-                    result["workspace_execution_scope"] = "dedicated-candidate"
+                    result["workspace_execution_scope"] = ("supervised-local-binding" if supervised_workspace
+                                                           else "dedicated-candidate")
             if maintenance is not None:
                 result["maintenance_registered"] = True
                 result["maintenance_authorized"] = maintenance.enabled()
@@ -547,13 +556,22 @@ def serve_with_worker(server, jobs, verifier, fixture_image, *, readiness=None, 
     """Stop HTTP on infrastructure failure; preserve in-flight cleanup on shutdown."""
     if workspace_backend is not None:
         from .workspace_podman import WorkspacePodman
-        from .workspace_jobs import local_runtime
+        from .workspace_jobs import local_runtime, SupervisedWorkspacePolicy
+        supervised = type(jobs.policy) is SupervisedWorkspacePolicy
+        expected = {"workspace_prepare", "workspace_execute"}
+        if supervised:
+            expected.add("probe_check")
         if (type(workspace_backend) is not WorkspacePodman or readiness is None
                 or fixture_image is not None or podman_context is not None or context_id is not None
-                or jobs.workflows != frozenset({"workspace_prepare", "workspace_execute"})
-                or jobs.probe.root == verifier.state_dir):
-            raise ValueError("Dedicated supervised workspace candidate required")
-        local_runtime(jobs.probe.root)
+                or jobs.workflows != frozenset(expected)
+                or (supervised and (jobs.probe.root != verifier.state_dir
+                    or jobs.policy.verifier is not verifier or jobs.policy.backend is not workspace_backend))
+                or (not supervised and jobs.probe.root == verifier.state_dir)):
+            raise ValueError("Supervised workspace backend required")
+        # Startup may precede global opt-in. No dispatch until verified TLS and
+        # live admission; loading the existing binding does not grant access.
+        if not supervised:
+            local_runtime(jobs.probe.root)
         workspace_backend.identities()
     stop = threading.Event()
     failed = threading.Event()
@@ -677,15 +695,18 @@ def main():
             if venv.name == ".venv" and venv.parent.name == "local-bridge":
                 maintenance = Maintenance(root, venv.parents[1])
                 grants.append((verifier.subject, "maintenance", "installation"))
-        from .workspace_jobs import load_supervised_workspace_policy
+        from .workspace_jobs import load_supervised_workspace_policy, load_supervised_workspace_backend
         try:
             workspace_policy = load_supervised_workspace_policy(
                 verifier, grants, supervised=diagnostics is not None and args.fixture_image is None,
                 multi=args.github_projects)
-        except (OSError, ValueError, TypeError):
-            parser.error("Invalid private supervised workspace grants")
+            workspace_backend = load_supervised_workspace_backend(workspace_policy)
+        except (OSError, ValueError, TypeError, subprocess.SubprocessError):
+            parser.error("Invalid private supervised workspace binding")
         if workspace_policy is not None:
             workflows = (*workflows, "workspace_prepare")
+        if workspace_backend is not None:
+            workflows = (*workflows, "workspace_execute")
         jobs = Jobs(args.state_dir, workspace_policy or Policy(grants), workflows=workflows)
         if jobs.pending_effects():
             parser.error("RECONCILIATION_REQUIRED; stop and use local reconciliation")
@@ -700,12 +721,13 @@ def main():
                    SyntheticGitHubReader(Policy([(verifier.subject,"github_read","disposable")]),args.state_dir))
         app = build_http_app(verifier,jobs,fixture,fixture_image=args.fixture_image,diagnostics=diagnostics,
                              context_id=context_id,github_provider=github_provider,maintenance=maintenance,
-                             workspace_candidate=workspace_policy is not None)
+                             workspace_candidate=workspace_policy is not None, workspace_backend=workspace_backend)
         import uvicorn
         server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=args.port,
                                               access_log=False, **tls))
         serve_with_worker(server, jobs, verifier, args.fixture_image, readiness=readiness,
-                          podman_context=podman_context, context_id=context_id)
+                          podman_context=podman_context, context_id=context_id,
+                          workspace_backend=workspace_backend)
 
 
 if __name__ == "__main__":
