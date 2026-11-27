@@ -1193,7 +1193,8 @@ class AuthTests(unittest.TestCase):
         self.assertIsNone(load_supervised_workspace_policy(verifier, base, supervised=True, multi=True))
         flag = state / SUPERVISED_GRANTS
         flag.touch(mode=0o600)
-        original = ["workspace_prepare", "workspace_materialize", "workspace_context", "expo-test"]
+        original = ["workspace_prepare", "workspace_materialize", "workspace_context",
+                    "workspace_dirty_context", "expo-test"]
         flag.write_text(json.dumps({"demo": original}))
         with self.assertRaises(PermissionError):
             load_supervised_workspace_policy(verifier, base, supervised=False, multi=True)
@@ -1222,6 +1223,14 @@ class AuthTests(unittest.TestCase):
             args = dict(project="demo", expected_sha=sha, profile="expo-test")
             context = payload(tool("workspace_context", **args, paths=["note.txt"]))
             self.assertEqual(context["files"][0]["text"], "committed\n")
+            self.assertNotIn("diff", context)
+            selected = payload(tool("workspace_context", **args, paths=["note.txt"], include_dirty=True))
+            self.assertIn("+dirty\n", selected["diff"])
+            self.assertTrue(selected["files"][0]["dirty"])
+            flag.write_text(json.dumps({"demo": [op for op in original if op != "workspace_dirty_context"]}))
+            self.assertTrue(tool("workspace_context", **args, paths=["note.txt"], include_dirty=True).get("isError", False))
+            self.assertEqual(payload(tool("workspace_context", **args, paths=["note.txt"]))["source"], "committed")
+            flag.write_text(json.dumps({"demo": original}))
             self.assertTrue(tool("workspace_context", **args, paths=[".env"]).get("isError", False))
             probe = payload(tool("submit_probe_job", request_key="same"))["job_id"]
             job = payload(tool("submit_workspace_job", **args, request_key="same"))["job_id"]

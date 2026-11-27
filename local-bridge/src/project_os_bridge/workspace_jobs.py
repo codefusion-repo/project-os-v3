@@ -23,7 +23,7 @@ RUNTIME = "workspace-runtime.json"
 SUPERVISED_GRANTS = "workspace-grants.json"
 SUPERVISED_EXECUTION = "workspace-execution.json"
 PREPARATION_OPS = frozenset({"workspace_prepare", "workspace_materialize",
-                             "workspace_change", "workspace_context", *PROFILES})
+                             "workspace_change", "workspace_context", "workspace_dirty_context", *PROFILES})
 WORKSPACE_OPS = PREPARATION_OPS | {"workspace_execute"}
 
 
@@ -294,10 +294,10 @@ def workspace_changes(jobs, principal, job_id, *, allow_execute=False):
     return result
 
 
-def workspace_context(jobs, principal, project, expected_sha, profile, paths):
+def workspace_context(jobs, principal, project, expected_sha, profile, paths, *, include_dirty=False):
     runtime = local_runtime(jobs.probe.root, jobs.policy)
     return read_workspace_context(runtime, jobs.policy, principal, project,
-                                  expected_sha, profile, paths)
+                                  expected_sha, profile, paths, include_dirty=include_dirty)
 
 
 def run_workspace(jobs, row, *, executor=None):

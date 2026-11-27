@@ -11,7 +11,7 @@ import sys
 import threading
 import time
 from pathlib import Path
-from pydantic import StrictInt, StrictStr
+from pydantic import StrictBool, StrictInt, StrictStr
 
 from mcp.server import MCPServer
 from mcp.server.auth.middleware.auth_context import get_access_token
@@ -293,13 +293,15 @@ def build_server(verifier, jobs, fixture_reader=None, *, fixture_image=None, dia
 
         @mcp.tool(annotations=read)
         async def workspace_context(project: StrictStr, expected_sha: StrictStr,
-                                    profile: StrictStr, paths: list[StrictStr]) -> dict:
-            """Read explicit committed text at an exact authorized revision."""
+                                    profile: StrictStr, paths: list[StrictStr],
+                                    include_dirty: StrictBool = False) -> dict:
+            """Read selected committed text, or with a separate grant, its tracked local diff."""
             actor = principal()
             token = get_access_token()
             def collect():
                 try:
-                    result = read_workspace_context(jobs, actor, project, expected_sha, profile, paths)
+                    result = read_workspace_context(jobs, actor, project, expected_sha, profile, paths,
+                                                    include_dirty=include_dirty)
                     if principal() != actor or token.expires_at is None or token.expires_at <= time.time():
                         raise PermissionError("DENIED")
                     return result

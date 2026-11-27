@@ -5,6 +5,7 @@ import difflib
 import json
 import os
 import re
+import stat
 
 from .github_context import PROJECT
 from .github_operational import registry_entries, read_project_binding
@@ -337,20 +338,64 @@ def describe_changes(runtime, policy, principal, request, result):
             "changes": observed, "diff": diff}
 
 
-def read_workspace_context(runtime, policy, principal, project, expected_sha, profile, paths):
-    """Explicit bounded committed text; never read dirty or untracked contents."""
+def _tracked_worktree_bytes(root, path, limit):
+    """Read only the selected regular tracked file, relative to the trusted checkout."""
+    parts = _safe_path(path)
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+    folder = os.open(root, flags)
+    try:
+        for part in parts[:-1]:
+            try:
+                child = os.open(part, flags, dir_fd=folder)
+            except FileNotFoundError:
+                return None
+            os.close(folder)
+            folder = child
+        try:
+            fd = os.open(parts[-1], os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=folder)
+        except FileNotFoundError:
+            return None
+        with os.fdopen(fd, "rb") as stream:
+            before = os.fstat(stream.fileno())
+            if not stat.S_ISREG(before.st_mode) or before.st_nlink != 1:
+                raise ValueError("WORKSPACE_CONTEXT_NOT_REGULAR")
+            if before.st_size > limit:
+                raise ValueError("WORKSPACE_CONTEXT_LIMIT")
+            data = stream.read(limit + 1)
+            after = os.fstat(stream.fileno())
+            current = os.stat(parts[-1], dir_fd=folder, follow_symlinks=False)
+            def identity(info):
+                return (info.st_dev, info.st_ino, info.st_mode, info.st_nlink,
+                        info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+            if (len(data) != before.st_size or len(data) > limit
+                    or identity(before) != identity(after) or identity(after) != identity(current)):
+                raise ValueError("WORKSPACE_CONTEXT_CHANGED")
+            return data
+    finally:
+        os.close(folder)
+
+
+def read_workspace_context(runtime, policy, principal, project, expected_sha, profile, paths,
+                           *, include_dirty=False):
+    """Exact committed text, optionally a bounded diff of explicitly selected tracked paths."""
     if (not isinstance(paths, list) or not 1 <= len(paths) <= 16
             or not all(isinstance(path, str) for path in paths)
             or len({path.casefold() for path in paths}) != len(paths)):
         raise ValueError("INVALID_WORKSPACE_CONTEXT")
     for path in paths:
         _safe_path(path)
+    if type(include_dirty) is not bool:
+        raise ValueError("INVALID_WORKSPACE_CONTEXT")
     policy.require(principal, "workspace_context", project)
+    if include_dirty:
+        policy.require(principal, "workspace_dirty_context", project)
     args = (runtime, policy, principal, project, expected_sha, profile)
     descriptor, entry, root = _binding(*args)
     binding = binding_digest(entry, root)
     sha = commit(root, expected_sha)
-    total, files = 0, []
+    if include_dirty and git(root, "rev-parse", "--verify", "HEAD").decode().strip() != sha:
+        raise ValueError("WORKSPACE_CONTEXT_HEAD_CHANGED")
+    total, files, diffs = 0, [], []
     for path in paths:
         found = list(_entries(git(root, "ls-tree", "-z", sha, "--", path)))
         if len(found) != 1 or found[0][0] != path:
@@ -363,10 +408,40 @@ def read_workspace_context(runtime, policy, principal, project, expected_sha, pr
         data = _blob_data(root, blob, size)
         if b"\0" in data:
             raise ValueError("WORKSPACE_CONTEXT_NOT_TEXT")
-        files.append({"path": path, "sha256": hashlib.sha256(data).hexdigest(),
-                      "text": data.decode("utf-8")})
+        old = data.decode("utf-8")
+        item = {"path": path, "sha256": hashlib.sha256(data).hexdigest(), "text": old}
+        files.append(item)
+        if include_dirty:
+            working = _tracked_worktree_bytes(root, path, MAX_DIFF_BYTES - total)
+            total += len(working) if working is not None else 0
+            if working is not None and b"\0" in working:
+                raise ValueError("WORKSPACE_CONTEXT_NOT_TEXT")
+            changed = working != data
+            item["working_sha256"] = hashlib.sha256(working).hexdigest() if working is not None else None
+            item["dirty"] = changed
+            if changed:
+                diff = difflib.unified_diff(old.splitlines(keepends=True),
+                    (working or b"").decode("utf-8").splitlines(keepends=True),
+                    fromfile="a/" + path, tofile="/dev/null" if working is None else "b/" + path, n=3)
+                diffs.extend(line if line.endswith("\n") else line + "\n\\ No newline at end of file\n"
+                             for line in diff)
+    result = {"head": sha, "files": files, "source": "committed"}
+    if include_dirty:
+        diff = "".join(diffs)
+        if len(diff.encode("utf-8")) > MAX_DIFF_BYTES:
+            raise ValueError("WORKSPACE_DIFF_LIMIT")
+        # Verify the observed content identities again; no atomic worktree claim.
+        for item in files:
+            working = _tracked_worktree_bytes(root, item["path"], MAX_DIFF_BYTES)
+            observed = hashlib.sha256(working).hexdigest() if working is not None else None
+            if observed != item["working_sha256"]:
+                raise ValueError("WORKSPACE_CONTEXT_CHANGED")
+        if git(root, "rev-parse", "--verify", "HEAD").decode().strip() != sha:
+            raise ValueError("WORKSPACE_CONTEXT_HEAD_CHANGED")
+        policy.require(principal, "workspace_dirty_context", project)
+        result.update(source="committed-and-selected-worktree", diff=diff)
     policy.require(principal, "workspace_context", project)
     if (_binding(*args) != (descriptor, entry, root)
             or binding_digest(entry, root) != binding):
         raise PermissionError("DENIED")
-    return {"head": sha, "files": files, "source": "committed"}
+    return result

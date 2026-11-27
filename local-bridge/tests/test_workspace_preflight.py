@@ -72,6 +72,39 @@ class WorkspacePreflightTests(unittest.TestCase):
         self.assertEqual(self.git("status", "--porcelain"), before)
         self.assertEqual(self.git("rev-parse", "HEAD"), self.sha)
 
+    def test_selected_dirty_context_is_bounded_and_preserves_checkout(self):
+        from project_os_bridge.workspace_preflight import read_workspace_context
+        policy = Policy([*self.policy.grants, ("operator", "workspace_context", "demo"),
+                         ("operator", "workspace_dirty_context", "demo")])
+        def read(*paths, **kwargs):
+            return read_workspace_context(self.runtime, policy, "operator", "demo", self.sha,
+                                          "flutter-test", list(paths), **kwargs)
+        file = self.project / "pubspec.yaml"
+        file.write_text("name: local change\n")
+        status = self.git("status", "--porcelain")
+        self.assertNotIn("diff", read("pubspec.yaml"))
+        result = read("pubspec.yaml", include_dirty=True)
+        self.assertIn("+name: local change", result["diff"])
+        self.assertEqual(self.git("status", "--porcelain"), status)
+        self.assertEqual(file.read_text(), "name: local change\n")
+        file.unlink()
+        self.assertIsNone(read("pubspec.yaml", include_dirty=True)["files"][0]["working_sha256"])
+        outside = self.root / "outside.txt"
+        outside.write_text("synthetic outside")
+        file.symlink_to(outside)
+        with self.assertRaises(OSError):
+            read("pubspec.yaml", include_dirty=True)
+        file.unlink()
+        file.write_bytes(b"x" * 65536)
+        with self.assertRaises(ValueError):
+            read("pubspec.yaml", include_dirty=True)
+        (self.project / "untracked.txt").write_text("synthetic")
+        with self.assertRaises(ValueError):
+            read("untracked.txt", include_dirty=True)
+        self.git("commit", "--allow-empty", "-qm", "new head")
+        with self.assertRaises(ValueError):
+            read("pubspec.yaml", include_dirty=True)
+
     def test_read_grant_does_not_authorize_preparation(self):
         with patch("project_os_bridge.workspace_preflight.registry_entries") as registry:
             with self.assertRaises(PermissionError):
