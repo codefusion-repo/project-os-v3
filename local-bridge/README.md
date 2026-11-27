@@ -311,3 +311,6 @@ The adopted project declares its toolchain, dependency lock, native/managed layo
 
 
 
+
+
+**Drive delivery candidate.** `drive_delivery.DrivePublisher` uses the existing locked httpx dependency, a private locally enrolled OAuth refresh credential restricted to `drive.file`, an owner-only My Drive folder and generated file ID. The resumable upload accepts only the finalized APK; remote metadata, permissions and downloaded bytes are verified before returning a private link. `qa_drive_job.deliver_qa` records the reserved ID and UNCERTAIN state in the same Jobs result before upload; replay verifies the exact ID, never automatically creates a duplicate. No credentials or upload session URI are persisted in job evidence. This is a trusted internal candidate requiring a live PR guard and explicit project delivery grant; supervised admission, OAuth enrollment and PR-link publication remain pending. Mock transport tests are not live Google Drive evidence. Resend remains deferred.

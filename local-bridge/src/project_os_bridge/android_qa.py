@@ -364,47 +364,55 @@ def verified_qa_delivery_input(jobs, principal, job_id, *, expected_project, exp
     Publication is a separate effect. The caller must validate the live producing
     PR and authorized transport; this helper does not upload or mutate GitHub.
     """
-    from .workspace_jobs import require_workspace_job
     with exclusive_worker(jobs):
-        if jobs.pending_effects():
-            raise PermissionError("QA_EFFECTS_PENDING")
-        request = require_workspace_job(jobs, principal, job_id, allow_execute=True)
-        if (request["project"] != expected_project or request["expected_sha"] != expected_sha
-                or "changes" in request or "qa_signer_sha256" not in request):
-            raise PermissionError("QA_DELIVERY_BINDING_INVALID")
-        evidence = jobs.evidence(principal, job_id)
-        result = evidence.get("result") or {}
-        finalization = result.get("qa_finalization") or {}
-        receipt = finalization.get("receipt") or {}
-        if (type(expected_repository_id) is not int or expected_repository_id <= 0
-                or result.get("repository_id") != expected_repository_id
-                or evidence["state"] != "SUCCEEDED" or result.get("head") != expected_sha
-                or result.get("execution", {}).get("cleanup_verified") is not True
-                or finalization.get("state") != "SUCCEEDED"
-                or receipt.get("signature_verified") is not True
-                or receipt.get("published") is not False
-                or receipt.get("job_id") != job_id
-                or receipt.get("repository_id") != expected_repository_id
-                or receipt.get("head") != expected_sha
-                or receipt.get("workspace_sha256") != result.get("workspace_sha256")
-                or receipt.get("qa_plan_sha256") != request["qa_plan_sha256"]
-                or receipt.get("source") != result.get("execution", {}).get("artifact")
-                or "changes_sha256" in receipt):
-            raise ValueError("QA_DELIVERY_EVIDENCE_UNAVAILABLE")
-        parent = jobs.probe.root / "qa-signing"
-        project_root = parent / str(expected_repository_id)
-        dest = project_root / "artifacts" / job_id
-        for directory in (parent, project_root, dest.parent, dest):
-            private_directory(directory)
-        if _read_json(dest / "receipt.json") != receipt:
-            raise ValueError("QA_RECEIPT_IDENTITY_MISMATCH")
-        raw = _apk_bytes(dest / "app-qa.apk")
-        if artifact_identity("apk", "app-qa.apk", raw) != receipt.get("artifact"):
-            raise ValueError("QA_ARTIFACT_IDENTITY_MISMATCH")
-        if (require_workspace_job(jobs, principal, job_id, allow_execute=True) != request
-                or jobs.evidence(principal, job_id) != evidence or jobs.pending_effects()):
-            raise PermissionError("QA_DELIVERY_BINDING_CHANGED")
-        return raw, receipt
+        return _verified_qa_delivery_locked(jobs, principal, job_id,
+            expected_project=expected_project, expected_sha=expected_sha,
+            expected_repository_id=expected_repository_id)
+
+
+def _verified_qa_delivery_locked(jobs, principal, job_id, *, expected_project,
+                                 expected_sha, expected_repository_id):
+    """Caller holds the existing exclusive worker lock."""
+    from .workspace_jobs import require_workspace_job
+    if jobs.pending_effects():
+        raise PermissionError("QA_EFFECTS_PENDING")
+    request = require_workspace_job(jobs, principal, job_id, allow_execute=True)
+    if (request["project"] != expected_project or request["expected_sha"] != expected_sha
+            or "changes" in request or "qa_signer_sha256" not in request):
+        raise PermissionError("QA_DELIVERY_BINDING_INVALID")
+    evidence = jobs.evidence(principal, job_id)
+    result = evidence.get("result") or {}
+    finalization = result.get("qa_finalization") or {}
+    receipt = finalization.get("receipt") or {}
+    if (type(expected_repository_id) is not int or expected_repository_id <= 0
+            or result.get("repository_id") != expected_repository_id
+            or evidence["state"] != "SUCCEEDED" or result.get("head") != expected_sha
+            or result.get("execution", {}).get("cleanup_verified") is not True
+            or finalization.get("state") != "SUCCEEDED"
+            or receipt.get("signature_verified") is not True
+            or receipt.get("published") is not False
+            or receipt.get("job_id") != job_id
+            or receipt.get("repository_id") != expected_repository_id
+            or receipt.get("head") != expected_sha
+            or receipt.get("workspace_sha256") != result.get("workspace_sha256")
+            or receipt.get("qa_plan_sha256") != request["qa_plan_sha256"]
+            or receipt.get("source") != result.get("execution", {}).get("artifact")
+            or "changes_sha256" in receipt):
+        raise ValueError("QA_DELIVERY_EVIDENCE_UNAVAILABLE")
+    parent = jobs.probe.root / "qa-signing"
+    project_root = parent / str(expected_repository_id)
+    dest = project_root / "artifacts" / job_id
+    for directory in (parent, project_root, dest.parent, dest):
+        private_directory(directory)
+    if _read_json(dest / "receipt.json") != receipt:
+        raise ValueError("QA_RECEIPT_IDENTITY_MISMATCH")
+    raw = _apk_bytes(dest / "app-qa.apk")
+    if artifact_identity("apk", "app-qa.apk", raw) != receipt.get("artifact"):
+        raise ValueError("QA_ARTIFACT_IDENTITY_MISMATCH")
+    if (require_workspace_job(jobs, principal, job_id, allow_execute=True) != request
+            or jobs.evidence(principal, job_id) != evidence or jobs.pending_effects()):
+        raise PermissionError("QA_DELIVERY_BINDING_CHANGED")
+    return raw, receipt
 
 
 def verify_qa_artifact_zip(archive, receipt, *, expected_zip_sha256=None):
