@@ -145,11 +145,20 @@ jobs:
         run: |
           python3 -m venv "$RUNNER_TEMP/mobile-bridge"
           "$RUNNER_TEMP/mobile-bridge/bin/python" -m pip install --require-hashes --only-binary=:all: -r local-bridge/requirements-linux-py312.lock
-      - name: Build synthetic debug APK through durable job offline
+      - name: Require rootless Podman and OCI conversion tools
+        run: |
+          command -v podman
+          if ! command -v skopeo >/dev/null; then
+            sudo apt-get update
+            sudo apt-get install -y --no-install-recommends skopeo
+          fi
+          podman --version
+          skopeo --version
+      - name: Build synthetic debug APK through authenticated durable Podman job offline
         env:
           MOBILE_STACK: ${{ matrix.stack }}
           MOBILE_APK: '1'
-          PYTHONPATH: local-bridge/src
+          PYTHONPATH: local-bridge/src:local-bridge/tests
         run: '"$RUNNER_TEMP/mobile-bridge/bin/python" local-bridge/scripts/ci-mobile-smoke.py'
       - name: Preserve APK and evidence
         if: always()

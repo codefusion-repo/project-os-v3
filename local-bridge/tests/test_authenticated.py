@@ -1381,7 +1381,10 @@ def execute_workspace_http_fixture(jobs, backend, project, revision, profiles):
                 fixture.assertEqual(first, payload("submit_workspace_execute", **args))
                 ids[profile] = first["job_id"]
                 fixture.assertEqual(payload("get_job_status", job_id=first["job_id"])["state"], "QUEUED")
-            for profile in ("shell", "flutter-apk-debug", "expo-apk-debug"):
+            for profile in ("shell", "flutter-analyze", "flutter-test", "expo-typecheck",
+                            "expo-test", "flutter-apk-debug", "expo-apk-debug"):
+                if profile in profiles:
+                    continue
                 result = raw("submit_workspace_execute", project=project, expected_sha=revision,
                              profile=profile, request_key="invalid-" + profile)
                 fixture.assertTrue(result.get("isError", False))

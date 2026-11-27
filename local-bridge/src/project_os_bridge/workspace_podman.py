@@ -1,4 +1,4 @@
-"""Local-only candidate validation backend; no service or MCP registration.
+"""Local-only candidate validation and synthetic APK backend; no service or MCP registration.
 
 An image binding is supplied by trusted local test/operator code, never a tool
 argument. No production image is approved or installed by this module.
@@ -9,15 +9,43 @@ from types import MappingProxyType
 
 from .isolated import IMAGE, ALPINE_BASELINE, ALPINE_FIXTURE_ONLY, container_name, container_absent
 from .podman_context import SAFE_PATH, PodmanContext
-from .workspace_profiles import profile_for
-from .workos_auth import private_directory
+from .workspace_profiles import profile_for, artifact_identity
+from .workos_auth import private_directory, private_file
 
 VALIDATION = MappingProxyType({
     "flutter-analyze": ("pubspec.lock", "flutter pub get --offline"),
     "flutter-test": ("pubspec.lock", "flutter pub get --offline"),
     "expo-typecheck": ("package-lock.json", "npm ci --offline --ignore-scripts --no-audit --no-fund"),
     "expo-test": ("package-lock.json", "npm ci --offline --ignore-scripts --no-audit --no-fund"),
+    "flutter-apk-debug": ("pubspec.lock", "flutter pub get --offline"),
+    "expo-apk-debug": ("package-lock.json", "npm ci --offline --ignore-scripts --no-audit --no-fund"),
 })
+
+MAX_APK = 256 * 1024 * 1024
+
+
+def apk_path(state, job_id):
+    return state / ("apk-" + job_id + ".apk")
+
+
+def read_apk(path, original):
+    info = private_file(path)
+    if (info.st_dev, info.st_ino) != original or not 0 < info.st_size <= MAX_APK:
+        raise ValueError("APK_IDENTITY_INVALID")
+    with os.fdopen(os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK), "rb") as stream:
+        opened = os.fstat(stream.fileno())
+        if (opened.st_dev, opened.st_ino) != original or opened.st_size != info.st_size:
+            raise ValueError("APK_IDENTITY_INVALID")
+        raw = stream.read(MAX_APK + 1)
+        if len(raw) != info.st_size:
+            raise ValueError("APK_IDENTITY_INVALID")
+        os.fsync(stream.fileno())
+    fd = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+    return artifact_identity("apk", "app-debug.apk", raw)
 
 
 class WorkspacePodman:
@@ -60,19 +88,45 @@ class WorkspacePodman:
         if not container_absent(self.context, identity, token):
             return {"image_id": image_id, "cleanup_verified": False}
         lock, install = VALIDATION[profile]
-        # Image contract: reviewed offline toolchain/cache, /fixture writable
-        # only in the disposable container layer. No writable host mount.
-        setup = ("set -eu; cmp /source/" + lock + " " + lock +
-                 "; cp -a /source/. /fixture/; " + install +
-                 "; cmp /source/" + lock + " " + lock + '; exec "$@"')
-        argv = profile_for(profile).argv
+        # APK candidates use the same container and effect ledger. Only the
+        # fixed, precreated job output file is writable on the host.
+        descriptor = profile_for(profile)
+        apk = descriptor.artifact_kind == "apk"
+        setup = "set -eu; cmp /source/" + lock + " " + lock + "; "
+        output_args = []
+        if apk:
+            output = apk_path(workspace.parent, row["id"])
+            with os.fdopen(os.open(output, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                                   0o600), "wb") as stream:
+                info = os.fstat(stream.fileno())
+                original = (info.st_dev, info.st_ino)
+            output_args = ["--volume", f"{output}:/output.apk:rw",
+                           "--ulimit=fsize=536870912:536870912",
+                           "--env=EXPO_OFFLINE=1", "--env=EXPO_NO_TELEMETRY=1"]
+            setup += ('test ! -e /fixture/build; test ! -e /fixture/android; '
+                      'test "$ANDROID_USER_HOME" = /home/smoke/.android; '
+                      'test -s "$ANDROID_USER_HOME/debug.keystore"; '
+                      'test ! -L "$ANDROID_USER_HOME/debug.keystore"; ')
+        setup += ("cp -a /source/. /fixture/; " + install +
+                  "; cmp /source/" + lock + " " + lock + "; ")
+        if apk:
+            setup += ('"$@"; apk=build/app/outputs/flutter-apk/app-debug.apk; '
+                      if profile == "flutter-apk-debug" else
+                      'cd android; "$@"; apk=app/build/outputs/apk/debug/app-debug.apk; ')
+            setup += ('test -f "$apk"; test ! -L "$apk"; '
+                      '/opt/android-sdk/build-tools/36.0.0/apksigner verify "$apk"; '
+                      '/opt/android-sdk/build-tools/36.0.0/aapt dump badging "$apk" > /dev/null; '
+                      'cat "$apk" > /output.apk')
+        else:
+            setup += 'exec "$@"'
+        argv = descriptor.argv
         args = ["run", "--rm", "--name", name, "--label", "io.project-os.fixture=" + token,
                 "--pull=never", "--network=none", "--cap-drop=ALL",
                 "--security-opt=no-new-privileges", "--http-proxy=false", "--image-volume=ignore",
                 "--pid=private", "--ipc=private", "--cgroupns=private", "--uts=private",
                 "--pids-limit=512", "--memory=5g", "--cpus=2", "--userns=keep-id",
                 "--passwd=false", "--user", f"{os.getuid()}:{os.getgid()}",
-                "--volume", f"{workspace}:/source:ro", "--workdir", "/fixture",
+                "--volume", f"{workspace}:/source:ro", *output_args, "--workdir", "/fixture",
                 "--entrypoint", "/bin/sh", self.images[profile], "-c", setup, "profile", *argv]
         try:
             result = self.context.run(identity, *args, timeout=900, capture=False)
@@ -81,5 +135,11 @@ class WorkspacePodman:
                 return {"image_id": image_id, "cleanup_verified": False}
         except (OSError, subprocess.SubprocessError, ValueError, KeyError, TypeError):
             return {"image_id": image_id, "cleanup_verified": False}
-        return {"image_id": image_id, "exit_code": result.returncode,
-                "cleanup_verified": True, "workspace_sha256": snapshot["workspace_sha256"]}
+        evidence = {"image_id": image_id, "exit_code": result.returncode,
+                    "cleanup_verified": True, "workspace_sha256": snapshot["workspace_sha256"]}
+        if apk and result.returncode == 0:
+            try:
+                evidence["artifact"] = read_apk(output, original)
+            except (OSError, ValueError):
+                evidence.update(exit_code=125, artifact_error="APK_IDENTITY_INVALID")
+        return evidence

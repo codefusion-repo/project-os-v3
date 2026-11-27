@@ -367,6 +367,46 @@ class WorkspacePreflightTests(unittest.TestCase):
         self.assertEqual(reopened.get("operator", other)["state"], "SUCCEEDED")
         self.assertEqual(reopened.pending_effects(), [])
 
+    def test_podman_apk_output_and_empty_artifact(self):
+        from project_os_bridge.workspace_podman import WorkspacePodman, apk_path
+        from project_os_bridge.podman_context import PodmanContext
+        from unittest.mock import Mock
+        from subprocess import CompletedProcess
+        jobs = self.workspace_queue()
+        policy = Policy([*jobs.policy.grants, ("operator", "workspace_execute", "demo")])
+        jobs = Jobs(jobs.probe.root, policy, workflows=("workspace_execute",))
+        context = Mock(spec=PodmanContext)
+        context.identity.return_value = "c" * 64
+        image = "localhost/project-os-mobile-ci@sha256:" + "a" * 64
+        backend = WorkspacePodman(context, {"flutter-apk-debug": image})
+        first = submit_workspace(jobs, "operator", "demo", self.sha, "flutter-apk-debug", "apk", backend=backend)
+        second = submit_workspace(jobs, "operator", "demo", self.sha, "flutter-apk-debug", "empty", backend=backend)
+        def run(expected, *args, **kwargs):
+            if args[0] == "container":
+                return CompletedProcess(args, 1)
+            if args[0] == "ps":
+                return CompletedProcess(args, 0, stdout=b"")
+            self.assertEqual(args[0], "run")
+            effect = jobs.pending_effects()[0]
+            path = apk_path(jobs.probe.root, effect["job_id"])
+            self.assertIn(str(path) + ":/output.apk:rw", args)
+            self.assertIn("--network=none", args)
+            self.assertIn("--ulimit=fsize=536870912:536870912", args)
+            self.assertEqual(path.stat().st_size, 0)
+            if effect["job_id"] == first:
+                path.write_bytes(b"synthetic apk bytes")
+            return CompletedProcess(args, 0)
+        context.run.side_effect = run
+        run_pending(jobs, workspace_backend=backend)
+        result = jobs.evidence("operator", first)
+        self.assertEqual(result["state"], "SUCCEEDED")
+        self.assertEqual(result["result"]["execution"]["artifact"],
+                         artifact_identity("apk", "app-debug.apk", b"synthetic apk bytes"))
+        failed = jobs.evidence("operator", second)
+        self.assertEqual(failed["state"], "FAILED")
+        self.assertEqual(failed["result"]["execution"]["artifact_error"], "APK_IDENTITY_INVALID")
+        self.assertEqual(jobs.pending_effects(), [])
+
     def test_context_bound_execution_cannot_use_ci_executor(self):
         from project_os_bridge.workspace_podman import WorkspacePodman
         from project_os_bridge.podman_context import PodmanContext

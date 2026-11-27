@@ -8,17 +8,14 @@ from pathlib import Path
 import re
 import subprocess
 import tempfile
-import uuid
 import io
-import stat
 import tarfile
 
 from project_os_bridge.core import Jobs, Policy
-from project_os_bridge.workspace_jobs import MARKER, RUNTIME, submit_workspace
+from project_os_bridge.workspace_jobs import MARKER, RUNTIME
 from project_os_bridge.workspace_profiles import PROFILES, artifact_identity
-from project_os_bridge.worker import run_pending
 from project_os_bridge.podman_context import PodmanContext
-from project_os_bridge.workspace_podman import WorkspacePodman
+from project_os_bridge.workspace_podman import WorkspacePodman, apk_path
 
 FLUTTER_VERSION = "3.35.7"
 FLUTTER_SHA256 = "146df531f9ac6a11a918013c1a70faafc053d4811c8cb69a413fd70748d51c3d"
@@ -204,7 +201,7 @@ def private_json(path, value):
     path.write_text(json.dumps(value))
 
 
-def prepare(folder, files, lock, lock_bytes, profiles, *, image_id=None, executor=None, backend=None):
+def prepare(folder, files, lock, lock_bytes, profiles, *, backend):
     source = folder / "source"
     source.mkdir(mode=0o700)
     write_files(source, {**files, ".gitignore": ".project-os/\n"})
@@ -214,7 +211,7 @@ def prepare(folder, files, lock, lock_bytes, profiles, *, image_id=None, executo
     git(source, "config", "user.email", "synthetic@example.invalid")
     git(source, "remote", "add", "origin", "https://github.com/example/synthetic.git")
     git(source, "add", ".")
-    if image_id is not None:
+    if any(PROFILES[profile].artifact_kind == "apk" for profile in profiles):
         git(source, "add", "-f", "android")  # Only generated synthetic native source.
     git(source, "commit", "-qm", "synthetic mobile source")
     revision = git(source, "rev-parse", "HEAD")
@@ -230,28 +227,13 @@ def prepare(folder, files, lock, lock_bytes, profiles, *, image_id=None, executo
     private_json(state / RUNTIME, {"tunnel": "fixture", "tunnel_id": "fixture", "image": None,
         "github_projects": {"synthetic": {"config": str(config), "repository": "example/synthetic",
                                          "repository_id": 1}}})
-    principal = "ci-mobile"
-    if backend is not None:
-        from test_authenticated import SUBJECT
-        principal = SUBJECT
+    from test_authenticated import SUBJECT, execute_workspace_http_fixture
+    principal = SUBJECT
     policy = Policy([(principal, "submit", "disposable"), (principal, "read", "disposable"),
                      *((principal, op, "synthetic") for op in
                        ("workspace_prepare", "workspace_materialize", "workspace_execute", *profiles))])
-    workflow = "workspace_execute" if image_id is not None or backend is not None else "workspace_prepare"
-    workflows = ("workspace_prepare", "workspace_execute") if backend is not None else (workflow,)
-    jobs = Jobs(state, policy, workflows=workflows)
-    if backend is not None:
-        from test_authenticated import execute_workspace_http_fixture
-        ids, evidence = execute_workspace_http_fixture(jobs, backend, "synthetic", revision, profiles)
-        return state, ids, evidence
-    ids = {profile: submit_workspace(jobs, principal, "synthetic", revision, profile, profile,
-                                     image_id=image_id, backend=backend) for profile in profiles}
-    run_pending(jobs, workspace_executor=executor, workspace_backend=backend)
-    jobs = Jobs(state, policy, workflows=(workflow,))
-    evidence = {profile: jobs.evidence(principal, job) for profile, job in ids.items()}
-    if image_id is None and backend is None and any(item["state"] != "SUCCEEDED" or item["result"]["head"] != revision
-           or item["result"]["execution_available"] is not False for item in evidence.values()):
-        raise RuntimeError("WORKSPACE_PREPARATION_FAILED")
+    jobs = Jobs(state, policy, workflows=("workspace_prepare", "workspace_execute"))
+    ids, evidence = execute_workspace_http_fixture(jobs, backend, "synthetic", revision, profiles)
     return state, ids, evidence
 
 
@@ -281,75 +263,6 @@ def native_files(image):
     if "android/app/src/main/AndroidManifest.xml" not in files:
         raise RuntimeError("NATIVE_MANIFEST_MISSING")
     return files
-
-
-def apk_executor(image, output, profile):
-    """CI-only registered APK operation. No local service registration."""
-    if profile not in {"flutter-apk-debug", "expo-apk-debug"}:
-        raise ValueError("UNEXPECTED_CI_PROFILE")
-    flutter = profile == "flutter-apk-debug"
-    lock = "pubspec.lock" if flutter else "package-lock.json"
-    def execute(workspace, row, snapshot):
-        request = row["workspace"]
-        if request["profile"] != profile or request["image_id"] != image:
-            raise PermissionError("UNEXPECTED_CI_PROFILE")
-        name = "mobile-smoke-" + row["id"]
-        artifacts = output / ("apk-" + row["id"])
-        artifacts.mkdir(mode=0o700)
-        # The image has no warmup build outputs or native tree. Offline Gradle
-        # consumes only the pre-acquired toolchain/cache and prepared source.
-        setup = ('set -eu; cmp /source/' + lock + ' /fixture/' + lock + '; '
-                 'test ! -e /fixture/build; test ! -e /fixture/android; '
-                 'test "$ANDROID_USER_HOME" = /home/smoke/.android; '
-                 'test -s "$ANDROID_USER_HOME/debug.keystore"; '
-                 'test ! -L "$ANDROID_USER_HOME/debug.keystore"; '
-                 'cp -a /source/. /fixture/; ' +
-                 ('flutter pub get --offline; ' if flutter else
-                  'npm ci --offline --ignore-scripts --no-audit --no-fund; ') +
-                 'cmp /source/' + lock + ' ' + lock + '; ' +
-                 ('"$@"; apk=build/app/outputs/flutter-apk/app-debug.apk; ' if flutter else
-                  'cd android; "$@"; apk=app/build/outputs/apk/debug/app-debug.apk; ') +
-                 'test -f "$apk"; test ! -L "$apk"; '
-                 '/opt/android-sdk/build-tools/36.0.0/apksigner verify --print-certs "$apk"; '
-                 '/opt/android-sdk/build-tools/36.0.0/aapt dump badging "$apk" > /tmp/apk-badging; '
-                 'head -n 1 /tmp/apk-badging; '
-                 'cp "$apk" /output/app-debug.apk')
-        argv = PROFILES[request["profile"]].argv
-        args = [*container_args(image), "--name", name, "--mount",
-                f"type=bind,src={workspace},dst=/source,readonly", "--mount",
-                f"type=bind,src={artifacts},dst=/output", image, "/bin/sh", "-c",
-                setup, "profile", *argv]
-        try:
-            proc = subprocess.run(args, stdin=subprocess.DEVNULL, timeout=900, check=False)
-            code = proc.returncode
-        except subprocess.TimeoutExpired:
-            subprocess.run(["docker", "rm", "-f", name], timeout=30, check=False,
-                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            code = 124
-        # Confirm exact name absent. The VM and queue are single-use; never
-        # retry interrupted work or reuse this execution state.
-        names = command(["docker", "ps", "-a", "--filter", "name=^/" + name + "$",
-                         "--format", "{{.Names}}"], capture=True)
-        if names.strip():
-            code = 125
-        result = {"image_id": image, "argv": list(argv), "exit_code": code,
-                  "cleanup_verified": not bool(names.strip()),
-                  "workspace_sha256": snapshot["workspace_sha256"]}
-        if code == 0:
-            apk = artifacts / "app-debug.apk"
-            info = apk.lstat()
-            if (not stat.S_ISREG(info.st_mode) or info.st_nlink != 1
-                    or not 0 < info.st_size <= 256 * 1024 * 1024):
-                raise RuntimeError("APK_IDENTITY_INVALID")
-            raw = apk.read_bytes()
-            if len(raw) != info.st_size:
-                raise RuntimeError("APK_IDENTITY_INVALID")
-            result["artifact"] = artifact_identity("apk", "app-debug.apk", raw)
-            with apk.open("rb") as stream:
-                os.fsync(stream.fileno())
-        print("MOBILE_PROFILE_EXIT", request["profile"], code, flush=True)
-        return result
-    return execute
 
 
 def main():
@@ -439,19 +352,6 @@ def main():
                 record["java"] = subprocess.run([*container_args(image), image, "java", "-version"],
                                                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                                 stdin=subprocess.DEVNULL, timeout=30, check=True).stdout.decode("utf-8", "replace")[:4096]
-                _, _, executed = prepare(folder, files, lock, lock_bytes, profiles, image_id=image,
-                                         executor=apk_executor(image, output, profiles[0]))
-                record["execution"] = executed
-                save()
-                result = executed[profiles[0]]
-                if (result["state"] != "SUCCEEDED"
-                        or result["result"]["execution"]["exit_code"] != 0
-                        or result["result"]["execution"]["cleanup_verified"] is not True
-                        or result["result"]["execution"]["artifact"]["kind"] != "apk"):
-                    raise RuntimeError("APK_EXECUTION_FAILED")
-                record["status"] = "success"
-                save()
-                return
             # Import the exact acquired candidate into a private rootless store,
             # not the Docker/default Podman store used for image acquisition.
             tag = "localhost/project-os-mobile-ci:validation"
@@ -516,6 +416,14 @@ def main():
                         or result.get("workspace_materialized") is not True
                         or jobs.evidence(principal, ids[profile]) != item):
                     raise RuntimeError("MOBILE_PODMAN_PROFILE_FAILED")
+                if PROFILES[profile].artifact_kind == "apk":
+                    identity = execution.get("artifact")
+                    raw = apk_path(state, ids[profile]).read_bytes()
+                    if identity != artifact_identity("apk", "app-debug.apk", raw):
+                        raise RuntimeError("APK_ARTIFACT_IDENTITY_MISMATCH")
+                    artifacts = output / ("apk-" + ids[profile])
+                    artifacts.mkdir(mode=0o700)
+                    (artifacts / "app-debug.apk").write_bytes(raw)
                 record["steps"].append({"profile": profile, "job_id": ids[profile],
                     "workspace_sha256": result["workspace_sha256"],
                     "argv": list(PROFILES[profile].argv), "exit_code": execution["exit_code"]})
