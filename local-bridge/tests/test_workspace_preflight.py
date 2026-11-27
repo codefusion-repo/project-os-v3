@@ -227,6 +227,56 @@ class WorkspacePreflightTests(unittest.TestCase):
         self.assertEqual(reopened.evidence("operator", ids[0])["result"]["workspace_sha256"],
                          reopened.evidence("operator", ids[1])["result"]["workspace_sha256"])
 
+    def test_saved_changes_are_atomic_and_idempotent(self):
+        import hashlib
+        from project_os_bridge.workspace_preflight import changes_digest
+        jobs = self.workspace_queue()
+        edits = [{"path": "pubspec.yaml", "before": hashlib.sha256(b"name: demo\n").hexdigest(),
+                  "text": "name: updated\n"},
+                 {"path": "lib/example.txt", "before": None, "text": "synthetic\n"}]
+        with self.assertRaises(PermissionError):
+            submit_workspace(jobs, "operator", "demo", self.sha, "flutter-test", "edit", changes=edits)
+        policy = Policy([*jobs.policy.grants, ("operator", "workspace_change", "demo")])
+        jobs = Jobs(jobs.probe.root, policy, workflows=("workspace_prepare",))
+        original = self.git("status", "--porcelain")
+        job = submit_workspace(jobs, "operator", "demo", self.sha, "flutter-test", "edit", changes=edits)
+        self.assertEqual(job, submit_workspace(jobs, "operator", "demo", self.sha, "flutter-test",
+                                               "edit", changes=list(reversed(edits))))
+        with self.assertRaises(ValueError):
+            submit_workspace(jobs, "operator", "demo", self.sha, "flutter-test", "edit",
+                             changes=[{**edits[0], "text": "name: different\n"}])
+        bad = submit_workspace(jobs, "operator", "demo", self.sha, "flutter-test", "conflict",
+                               changes=[{**edits[0], "before": "0" * 64}])
+        collision = submit_workspace(jobs, "operator", "demo", self.sha, "flutter-test", "collision",
+                    changes=[{"path": "pubspec.yaml/child", "before": None, "text": "data"}])
+        for path in ("../escape", ".env"):
+            with self.assertRaises((PermissionError, ValueError)):
+                submit_workspace(jobs, "operator", "demo", self.sha, "flutter-test", "invalid",
+                                 changes=[{"path": path, "before": None, "text": "data"}])
+        run_pending(jobs)
+        reopened = Jobs(jobs.probe.root, policy, workflows=("workspace_prepare",))
+        evidence = reopened.evidence("operator", job)
+        self.assertEqual(evidence["state"], "SUCCEEDED")
+        self.assertEqual(evidence["result"]["changes_sha256"], changes_digest(edits))
+        target = jobs.probe.root / ("workspace-" + job)
+        self.assertEqual((target / "pubspec.yaml").read_text(), "name: updated\n")
+        self.assertEqual((target / "lib/example.txt").read_text(), "synthetic\n")
+        self.assertNotIn("name: updated", json.dumps(evidence))
+        self.assertEqual(self.git("status", "--porcelain"), original)
+        for blocked in (bad, collision):
+            self.assertEqual(reopened.evidence("operator", blocked)["state"], "BLOCKED")
+            self.assertFalse((jobs.probe.root / ("workspace-" + blocked)).exists())
+
+    def test_saved_changes_revoked_before_dispatch(self):
+        jobs = self.workspace_queue()
+        policy = Policy([*jobs.policy.grants, ("operator", "workspace_change", "demo")])
+        granted = Jobs(jobs.probe.root, policy, workflows=("workspace_prepare",))
+        job = submit_workspace(granted, "operator", "demo", self.sha, "expo-test", "revoked-edit",
+                               changes=[{"path": "note.txt", "before": None, "text": "synthetic"}])
+        run_pending(jobs)
+        self.assertEqual(jobs.get("operator", job)["state"], "BLOCKED")
+        self.assertFalse((jobs.probe.root / ("workspace-" + job)).exists())
+
     def test_workspace_mapping_revoked_before_worker(self):
         jobs = self.workspace_queue()
         job = submit_workspace(jobs, "operator", "demo", self.sha, "expo-test", "revoke")

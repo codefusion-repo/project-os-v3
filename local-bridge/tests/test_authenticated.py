@@ -1084,7 +1084,7 @@ class AuthTests(unittest.TestCase):
             "github_projects": {"demo": {"config": str(config), "repository": "example/demo", "repository_id": 1}}}))
         policy = Policy([(SUBJECT, op, "disposable") for op in ("submit", "read", "cancel")]
                         + [(SUBJECT, op, "demo") for op in
-                           ("workspace_prepare", "workspace_materialize", "flutter-test", "expo-test")])
+                           ("workspace_prepare", "workspace_materialize", "workspace_change", "flutter-test", "expo-test")])
         jobs = Jobs(state, policy, workflows=("workspace_prepare",))
         app = build_http_app(self.verifier, jobs, workspace_candidate=True)
         headers = {"Accept": "application/json, text/event-stream", "Authorization": "Bearer " + self.token()}
@@ -1116,9 +1116,19 @@ class AuthTests(unittest.TestCase):
                 args = {"project": "demo", "expected_sha": sha, "profile": "expo-test", "request_key": "invalid"}
                 args.update(change)
                 self.assertTrue(tool(client, "submit_workspace_job", **args).get("isError", False))
+            edits = [{"path": "note.txt", "before": None, "text": "synthetic saved edit"}]
+            args = {"project": "demo", "expected_sha": sha, "profile": "expo-test",
+                    "request_key": "saved", "changes": edits}
+            edited = payload(tool(client, "submit_workspace_job", **args))["job_id"]
+            self.assertEqual(edited, payload(tool(client, "submit_workspace_job", **args))["job_id"])
             with jobs.transaction() as conn:
-                self.assertEqual(conn.execute("SELECT count(*) FROM jobs").fetchone()[0], 2)
+                self.assertEqual(conn.execute("SELECT count(*) FROM jobs").fetchone()[0], 3)
             run_pending(jobs)
+            edited_evidence = payload(tool(client, "get_job_evidence", job_id=edited))
+            self.assertEqual(edited_evidence["state"], "SUCCEEDED")
+            self.assertEqual(edited_evidence["result"]["changes"][0]["path"], "note.txt")
+            self.assertEqual((state / ("workspace-" + edited) / "note.txt").read_text(), "synthetic saved edit")
+            self.assertNotIn("synthetic saved edit", json.dumps(edited_evidence))
             for job in ids:
                 evidence = payload(tool(client, "get_job_evidence", job_id=job))
                 self.assertEqual(evidence["state"], "SUCCEEDED")
@@ -1137,7 +1147,7 @@ class AuthTests(unittest.TestCase):
             self.assertTrue(tool(client, "submit_workspace_job", project="demo", expected_sha=sha,
                                  profile="expo-test", request_key="revoked").get("isError", False))
             with jobs.transaction() as conn:
-                self.assertEqual(conn.execute("SELECT count(*) FROM jobs").fetchone()[0], 2)
+                self.assertEqual(conn.execute("SELECT count(*) FROM jobs").fetchone()[0], 3)
             (state / MARKER).unlink()
             self.assertTrue(tool(client, "cancel_job", job_id=ids[0]).get("isError", False))
 

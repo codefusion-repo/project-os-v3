@@ -9,7 +9,8 @@ import json
 
 from .github_context import PROJECT
 from .methodology import SHA
-from .workspace_preflight import _binding, binding_digest, materialize_workspace, prepare_workspace
+from .workspace_preflight import (_binding, binding_digest, materialize_workspace,
+                                  prepare_workspace, normalize_changes)
 from .workspace_profiles import profile_for
 from .workos_auth import private_directory, private_file
 
@@ -38,15 +39,21 @@ def authorize_request(policy, principal, request, *, execute=False):
         fields.add("image_id")
         if isinstance(request, dict) and "context_id" in request:
             fields.add("context_id")
+    if isinstance(request, dict) and "changes" in request:
+        fields.add("changes")
     if (not isinstance(request, dict)
             or set(request) != fields
-            or any(not isinstance(value, str) for value in request.values())
+            or any(not isinstance(value, str) for key, value in request.items() if key != "changes")
             or not PROJECT.fullmatch(request["project"])
             or not SHA.fullmatch(request["expected_sha"])
             or not re.fullmatch(r"[0-9a-f]{64}", request["binding"])):
         raise ValueError("INVALID_WORKSPACE_REQUEST")
     profile_for(request["profile"])
     project = request["project"]
+    if "changes" in request:
+        policy.require(principal, "workspace_change", project)
+        if normalize_changes(request["changes"]) != request["changes"]:
+            raise ValueError("INVALID_WORKSPACE_CHANGES")
     if execute:
         if not re.fullmatch(r"sha256:[0-9a-f]{64}", request["image_id"]):
             raise ValueError("INVALID_EXECUTION_IMAGE")
@@ -58,7 +65,7 @@ def authorize_request(policy, principal, request, *, execute=False):
 
 
 def submit_workspace(jobs, principal, project, expected_sha, profile, request_key, *, image_id=None,
-                     authorize=lambda: None, backend=None):
+                     authorize=lambda: None, backend=None, changes=None):
     if backend is not None:
         if image_id is not None:
             raise ValueError("Use backend-selected image only")
@@ -72,6 +79,9 @@ def submit_workspace(jobs, principal, project, expected_sha, profile, request_ke
     _, entry, root = _binding(*args)
     request = {"project": project, "profile": profile, "expected_sha": expected_sha,
                "binding": binding_digest(entry, root)}
+    if changes is not None:
+        policy.require(principal, "workspace_change", project)
+        request["changes"] = normalize_changes(changes)
     execute = image_id is not None
     if execute:
         request["image_id"] = image_id
@@ -125,7 +135,7 @@ def run_workspace(jobs, row, *, executor=None):
             return "BLOCKED", {**result, "reason": "EXECUTION_BACKEND_UNAVAILABLE"}
         snapshot = materialize_workspace(runtime, jobs.policy, row["principal"], request["project"],
                                          request["expected_sha"], request["profile"],
-                                         jobs.probe.root, row["id"], expected_binding=request["binding"])
+                                         jobs.probe.root, row["id"], expected_binding=request["binding"], changes=request.get("changes"))
         local_runtime(jobs.probe.root)
         if not execute:
             return "SUCCEEDED", {**result, **snapshot}

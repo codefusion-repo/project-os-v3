@@ -209,7 +209,7 @@ def build_server(verifier, jobs, fixture_reader=None, *, fixture_image=None, dia
     if workspace_candidate:
         from .workspace_jobs import submit_workspace, require_workspace_job
 
-        async def submit_workspace_request(project, expected_sha, profile, request_key, *, execute):
+        async def submit_workspace_request(project, expected_sha, profile, request_key, *, execute, changes=None):
             actor = principal()
             token = get_access_token()
 
@@ -223,7 +223,7 @@ def build_server(verifier, jobs, fixture_reader=None, *, fixture_image=None, dia
                     check()
                     job = submit_workspace(jobs, actor, project, expected_sha, profile,
                                            request_key, authorize=check,
-                                           backend=workspace_backend if execute else None)
+                                           backend=workspace_backend if execute else None, changes=changes)
                     require_workspace_job(jobs, actor, job, allow_execute=workspace_backend is not None)
                     check()
                     return {"job_id": job}
@@ -238,17 +238,21 @@ def build_server(verifier, jobs, fixture_reader=None, *, fixture_image=None, dia
 
         @mcp.tool(annotations=write)
         async def submit_workspace_job(project: StrictStr, expected_sha: StrictStr,
-                                       profile: StrictStr, request_key: StrictStr) -> dict:
-            """Prepare an exact committed revision in the dedicated candidate workspace."""
-            return await submit_workspace_request(project, expected_sha, profile, request_key, execute=False)
+                                       profile: StrictStr, request_key: StrictStr,
+                                       changes: list[dict[str, StrictStr | None]] | None = None) -> dict:
+            """Prepare an exact committed revision; bounded text edits require a separate grant."""
+            return await submit_workspace_request(project, expected_sha, profile, request_key,
+                                                  execute=False, changes=changes)
 
         if workspace_backend is not None:
             @mcp.tool(annotations=write)
             async def submit_workspace_execute(project: StrictStr, expected_sha: StrictStr,
-                                               profile: StrictStr, request_key: StrictStr) -> dict:
-                """Queue a registered offline validation profile in the dedicated candidate.
-                Image and context are selected locally; no paths, commands or image input."""
-                return await submit_workspace_request(project, expected_sha, profile, request_key, execute=True)
+                                               profile: StrictStr, request_key: StrictStr,
+                                               changes: list[dict[str, StrictStr | None]] | None = None) -> dict:
+                """Queue a registered offline profile with optional grant-bound relative text edits.
+                Image and context are selected locally; no host paths, commands or image input."""
+                return await submit_workspace_request(project, expected_sha, profile, request_key,
+                                                      execute=True, changes=changes)
 
     def workspace_access(actor, job_id):
         if workspace_candidate:

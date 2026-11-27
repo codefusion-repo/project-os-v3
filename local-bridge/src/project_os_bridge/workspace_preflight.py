@@ -96,8 +96,75 @@ def _safe_path(path):
     return parts
 
 
+def normalize_changes(changes):
+    """Bounded text edits; exact old-byte digest or explicit absence."""
+    if not isinstance(changes, list) or not 1 <= len(changes) <= 16:
+        raise ValueError("INVALID_WORKSPACE_CHANGES")
+    seen = set()
+    for item in changes:
+        if not isinstance(item, dict) or set(item) != {"path", "before", "text"}:
+            raise ValueError("INVALID_WORKSPACE_CHANGE")
+        path, before, text = item["path"], item["before"], item["text"]
+        if (not isinstance(path, str) or path.casefold() in seen
+                or (before is not None and (not isinstance(before, str)
+                    or not re.fullmatch(r"[0-9a-f]{64}", before)))
+                or (text is not None and (not isinstance(text, str) or "\x00" in text))
+                or (before is None and text is None)):
+            raise ValueError("INVALID_WORKSPACE_CHANGE")
+        _safe_path(path)
+        seen.add(path.casefold())
+        if text is not None:
+            text.encode("utf-8")
+    ordered = sorted(changes, key=lambda item: item["path"])
+    if len(json.dumps(ordered, sort_keys=True, separators=(",", ":")).encode()) > 32768:
+        raise ValueError("WORKSPACE_CHANGE_LIMIT")
+    return ordered
+
+
+def changes_digest(changes):
+    return hashlib.sha256(json.dumps(normalize_changes(changes), sort_keys=True,
+                                     separators=(",", ":")).encode()).hexdigest()
+
+
+def _blob_data(root, blob, size):
+    data = git(root, "cat-file", "blob", blob)
+    if len(data) != size or hashlib.sha1(b"blob " + str(size).encode() + b"\0" + data).hexdigest() != blob:
+        raise ValueError("WORKSPACE_INTEGRITY")
+    return data
+
+
+def _plan(entries):
+    total, names, directories = 0, set(), {}
+    for path, (mode, blob, size, data) in entries.items():
+        parts = _safe_path(path)
+        folded = path.casefold()
+        if folded in names or folded in directories:
+            raise ValueError("WORKSPACE_PATH_COLLISION")
+        for index in range(1, len(parts)):
+            directory = "/".join(parts[:index])
+            key = directory.casefold()
+            if key in names or (key in directories and directories[key] != directory):
+                raise ValueError("WORKSPACE_PATH_COLLISION")
+            directories[key] = directory
+        names.add(folded)
+        total += size
+        if not 0 <= size <= MAX_FILE or total > MAX_TOTAL:
+            raise ValueError("WORKSPACE_LIMIT")
+    if not entries or len(entries) > MAX_FILES:
+        raise ValueError("WORKSPACE_LIMIT")
+    return total
+
+
+def _sync_directory(path):
+    fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
 def materialize_workspace(runtime, policy, principal, project, expected_sha, profile,
-                          private_parent, job_id, *, expected_binding=None):
+                          private_parent, job_id, *, expected_binding=None, changes=None):
     """Internal local-only materialization; caller holds the existing worker lock.
 
     The parent and job id are trusted local locators, not MCP inputs. No checkout,
@@ -109,6 +176,9 @@ def materialize_workspace(runtime, policy, principal, project, expected_sha, pro
     private_directory(private_parent)
     args = (runtime, policy, principal, project, expected_sha, profile)
     policy.require(principal, "workspace_materialize", project)
+    if changes is not None:
+        policy.require(principal, "workspace_change", project)
+        changes = normalize_changes(changes)
     descriptor, entry, root = _binding(*args)
     binding = binding_digest(entry, root)
     if expected_binding is not None and expected_binding != binding:
@@ -126,36 +196,53 @@ def materialize_workspace(runtime, policy, principal, project, expected_sha, pro
     entries = list(_entries(raw))
     if not entries or len(entries) > MAX_FILES:
         raise ValueError("WORKSPACE_LIMIT")
-    planned, total, names, directories = [], 0, set(), {}
+    planned = {}
     for path, mode, blob in entries:
-        parts = _safe_path(path)
-        folded = path.casefold()
-        if folded in names or folded in directories:
+        if path in planned:
             raise ValueError("WORKSPACE_PATH_COLLISION")
-        for index in range(1, len(parts)):
-            directory = "/".join(parts[:index])
-            key = directory.casefold()
-            if key in names or (key in directories and directories[key] != directory):
-                raise ValueError("WORKSPACE_PATH_COLLISION")
-            directories[key] = directory
-        names.add(folded)
-        size = int(git(root, "cat-file", "-s", blob))
-        total += size
-        if not 0 <= size <= MAX_FILE or total > MAX_TOTAL:
-            raise ValueError("WORKSPACE_LIMIT")
-        planned.append((path, parts, mode, blob, size))
+        planned[path] = (mode, blob, int(git(root, "cat-file", "-s", blob)), None)
+    _plan(planned)
+    edits = []
+    if changes is not None:
+        for change in changes:
+            path, before, text = change["path"], change["before"], change["text"]
+            original = planned.get(path)
+            if (original is None) != (before is None):
+                raise ValueError("WORKSPACE_CHANGE_CONFLICT")
+            mode = "644"
+            if original is not None:
+                mode, blob, size, _ = original
+                old = _blob_data(root, blob, size)
+                old.decode("utf-8")
+                if hashlib.sha256(old).hexdigest() != before:
+                    raise ValueError("WORKSPACE_CHANGE_CONFLICT")
+            if text is None:
+                del planned[path]
+                after = None
+            else:
+                data = text.encode("utf-8")
+                after = hashlib.sha256(data).hexdigest()
+                if after == before:
+                    raise ValueError("WORKSPACE_CHANGE_NOOP")
+                planned[path] = (mode, None, len(data), data)
+            edits.append({"path": path, "before": before, "after": after})
+        if not set(descriptor.required) <= planned.keys():
+            raise ValueError("UNSUPPORTED_PROJECT_LAYOUT")
+    total = _plan(planned)
     policy.require(principal, "workspace_materialize", project)
     if (_binding(*args) != (descriptor, entry, root)
             or binding_digest(entry, root) != binding):
         raise PermissionError("DENIED")
     target = private_parent / ("workspace-" + job_id)
-    target.mkdir(mode=0o700)
+    stage = private_parent / ("pending-workspace-" + job_id)
+    if os.path.lexists(target):
+        raise FileExistsError("Workspace already exists")
+    stage.mkdir(mode=0o700)
     manifest = []
-    for path, parts, mode, blob, size in planned:
-        data = git(root, "cat-file", "blob", blob)
-        if len(data) != size or hashlib.sha1(b"blob " + str(size).encode() + b"\0" + data).hexdigest() != blob:
-            raise ValueError("WORKSPACE_INTEGRITY")
-        dest = target.joinpath(*parts)
+    for path, (mode, blob, size, data) in sorted(planned.items()):
+        if data is None:
+            data = _blob_data(root, blob, size)
+        dest = stage.joinpath(*_safe_path(path))
         dest.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
         fd = os.open(dest, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
                      0o700 if mode == "755" else 0o600)
@@ -168,6 +255,18 @@ def materialize_workspace(runtime, policy, principal, project, expected_sha, pro
     if (_binding(*args) != (descriptor, entry, root)
             or binding_digest(entry, root) != binding):
         raise PermissionError("DENIED")
+    if changes is not None:
+        policy.require(principal, "workspace_change", project)
+    # Only complete snapshots are adopted at the final job-owned name.
+    # Existing worker exclusivity protects this private parent.
+    for directory, _, _ in os.walk(stage, topdown=False):
+        _sync_directory(directory)
+    if os.path.lexists(target):
+        raise FileExistsError("Workspace already exists")
+    os.rename(stage, target)
+    _sync_directory(private_parent)
+    if changes is not None:
+        result.update(changes_sha256=changes_digest(changes), changes=edits)
     result.update(workspace_materialized=True, files=len(manifest), bytes=total,
                   workspace_sha256=hashlib.sha256(json.dumps(manifest, separators=(",", ":"),
                                                            ensure_ascii=True).encode()).hexdigest())
