@@ -1234,6 +1234,14 @@ class AuthTests(unittest.TestCase):
             flag.write_text(json.dumps({"demo": original + ["workspace_change"]}))
             self.assertTrue(tool("submit_workspace_job", **args, request_key="new-grant",
                                  changes=[{"path": "note2.txt", "before": None, "text": "synthetic"}]).get("isError", False))
+            # A live alias retarget cannot reuse an existing operation grant.
+            original_runtime = runtime.read_text()
+            changed_runtime = json.loads(original_runtime)
+            changed_runtime["github_projects"]["demo"]["repository_id"] = 2
+            runtime.write_text(json.dumps(changed_runtime))
+            self.assertTrue(tool("workspace_context", **args, paths=["note.txt"]).get("isError", False))
+            self.assertTrue(tool("get_job_evidence", job_id=job).get("isError", False))
+            runtime.write_text(original_runtime)
             revoked = payload(tool("submit_workspace_job", **args, request_key="revoked"))["job_id"]
             flag.unlink()
             run_pending(jobs)

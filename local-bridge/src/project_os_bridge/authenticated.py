@@ -70,7 +70,7 @@ def build_server(verifier, jobs, fixture_reader=None, *, fixture_image=None, dia
             if type(workspace_backend) is not WorkspacePodman:
                 raise ValueError("Registered Podman backend required")
             workflows.add("workspace_execute")
-            workspace_backend.identity()
+            workspace_backend.identities()
         if (jobs.workflows != frozenset(workflows) or jobs.probe.root == verifier.state_dir
                 or fixture_reader is not None or fixture_image is not None or github_provider is not None
                 or maintenance is not None or diagnostics is not None):
@@ -118,7 +118,7 @@ def build_server(verifier, jobs, fixture_reader=None, *, fixture_image=None, dia
                     try:
                         from .workspace_jobs import local_runtime
                         local_runtime(jobs.probe.root)
-                        workspace_backend.identity()
+                        workspace_backend.identities()
                         result["workspace_execution_available"] = True
                     except (OSError, ValueError):
                         pass
@@ -303,11 +303,11 @@ def build_server(verifier, jobs, fixture_reader=None, *, fixture_image=None, dia
     def workspace_access(actor, job_id):
         if supervised_workspace:
             with jobs.transaction() as conn:
-                row = conn.execute("SELECT resource FROM jobs WHERE id=? AND principal=?",
+                row = conn.execute("SELECT resource, workflow FROM jobs WHERE id=? AND principal=?",
                                    (job_id, actor)).fetchone()
             if row is None:
                 raise PermissionError("DENIED")
-            if row["resource"] == "disposable":
+            if row["resource"] == "disposable" and row["workflow"] == "probe_check":
                 return
         if workspace_candidate:
             try:
@@ -554,7 +554,7 @@ def serve_with_worker(server, jobs, verifier, fixture_image, *, readiness=None, 
                 or jobs.probe.root == verifier.state_dir):
             raise ValueError("Dedicated supervised workspace candidate required")
         local_runtime(jobs.probe.root)
-        workspace_backend.identity()
+        workspace_backend.identities()
     stop = threading.Event()
     failed = threading.Event()
 

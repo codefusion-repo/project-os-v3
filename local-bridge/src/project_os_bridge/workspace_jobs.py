@@ -32,21 +32,26 @@ class SupervisedWorkspacePolicy(Policy):
         self.verifier = verifier
         self.root = verifier.state_dir
         self.runtime = self.root.parent / "service" / "runtime.json"
-        self.initial = self.current()
+        self.initial_entries = registry_entries(self.runtime)
+        self.initial = self.current(startup=True)
 
-    def current(self):
+    def current(self, *, startup=False):
         try:
             data = json.loads(_private_bytes(self.root / SUPERVISED_GRANTS, 65536),
                               object_pairs_hook=_unique_object)
             entries = registry_entries(self.runtime)
-            if not isinstance(data, dict) or not data or not set(data) <= set(entries):
+            if (not isinstance(data, dict) or not data
+                    or (startup and not set(data) <= set(entries))
+                    or any(not PROJECT.fullmatch(key) for key in data)):
                 raise ValueError("Invalid workspace grants")
             for ops in data.values():
                 if (not isinstance(ops, list) or not ops
                         or not all(isinstance(op, str) for op in ops)
                         or len(set(ops)) != len(ops) or not set(ops) <= PREPARATION_OPS):
                     raise ValueError("Invalid workspace grants")
-            return {key: frozenset(ops) for key, ops in data.items()}
+            # A removed or retargeted alias denies only that project.
+            return {key: frozenset(ops) for key, ops in data.items()
+                    if key in entries and entries[key] == self.initial_entries.get(key)}
         except (OSError, ValueError, TypeError):
             raise PermissionError("WORKSPACE_GRANTS_UNAVAILABLE") from None
 
@@ -187,7 +192,7 @@ def require_workspace_job(jobs, principal, job_id, *, allow_execute=False):
             "WHERE jobs.id=?", (job_id,)).fetchone()
         allowed = {"workspace_prepare", "workspace_execute"} if allow_execute else {"workspace_prepare"}
         if (not row or row["principal"] != principal or row["workflow"] not in allowed
-                or row["resource"] != workspace_resource(jobs.policy)) :
+                or row["resource"] != workspace_resource(jobs.policy)):
             raise PermissionError("DENIED")
         request = json.loads(row["request"])
     jobs.policy.require(principal, "read", row["resource"])

@@ -48,9 +48,9 @@ def run_pending(jobs: Jobs, *, fixture_image=None, podman_context=None, context_
         if jobs.pending_effects():
             return
         while enabled():
-            workspace_context = workspace_backend.identity() if workspace_backend is not None else None
+            workspace_contexts = workspace_backend.identities() if workspace_backend is not None else None
             row = jobs.claim(fixture_context=context_id if fixture_ready() else None,
-                             workspace_context=workspace_context)
+                             workspace_contexts=workspace_contexts)
             if row is None:
                 return
             if not enabled():

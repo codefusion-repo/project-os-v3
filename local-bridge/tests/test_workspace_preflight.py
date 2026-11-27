@@ -463,6 +463,59 @@ class WorkspacePreflightTests(unittest.TestCase):
         self.assertEqual(reopened.get("operator", other)["state"], "SUCCEEDED")
         self.assertEqual(reopened.pending_effects(), [])
 
+    def test_multiple_pinned_contexts_share_queue_and_effect_fence(self):
+        from project_os_bridge.workspace_podman import WorkspacePodman
+        from project_os_bridge.podman_context import PodmanContext
+        from project_os_bridge.reconcile import reconcile
+        from unittest.mock import Mock
+        from subprocess import CompletedProcess, TimeoutExpired
+        jobs = self.workspace_queue()
+        policy = Policy([*jobs.policy.grants, ("operator", "workspace_execute", "demo")])
+        jobs = Jobs(jobs.probe.root, policy, workflows=("workspace_execute", "workspace_prepare"))
+        first_context, second_context = Mock(spec=PodmanContext), Mock(spec=PodmanContext)
+        first_id, second_id = "c" * 64, "d" * 64
+        first_context.identity.return_value = first_id
+        second_context.identity.return_value = second_id
+        images = {"expo-test": "localhost/project-os-mobile-ci@sha256:" + "a" * 64,
+                  "flutter-test": "localhost/project-os-mobile-ci@sha256:" + "b" * 64}
+        with self.assertRaises(ValueError):
+            WorkspacePodman(first_context, images)
+        backend = WorkspacePodman({"expo-test": first_context, "flutter-test": second_context}, images)
+        self.assertEqual(backend.identities(), {"expo-test": first_id, "flutter-test": second_id})
+        launches = []
+        def execute(identity, *, timeout=False):
+            def run(expected, *args, **kwargs):
+                self.assertEqual(expected, identity)
+                if args[0] == "container":
+                    return CompletedProcess(args, 1)
+                if args[0] == "ps":
+                    return CompletedProcess(args, 0, stdout=b"")
+                self.assertEqual(args[0], "run")
+                self.assertEqual(jobs.pending_effects()[0]["context_id"], identity)
+                launches.append(identity)
+                if timeout:
+                    raise TimeoutExpired(args, 900)
+                return CompletedProcess(args, 0)
+            return run
+        first_context.run.side_effect = execute(first_id, timeout=True)
+        second_context.run.side_effect = execute(second_id)
+        first = submit_workspace(jobs, "operator", "demo", self.sha, "expo-test", "first", backend=backend)
+        second = submit_workspace(jobs, "operator", "demo", self.sha, "flutter-test", "second", backend=backend)
+        run_pending(jobs, workspace_backend=backend)
+        self.assertEqual(launches, [first_id])
+        self.assertEqual(jobs.get("operator", first)["state"], "BLOCKED")
+        self.assertEqual(jobs.get("operator", second)["state"], "QUEUED")
+        with patch.object(second_context, "host", side_effect=PermissionError("wrong context")):
+            with self.assertRaises(PermissionError):
+                reconcile(jobs, first, second_context)
+        self.assertEqual(jobs.pending_effects()[0]["context_id"], first_id)
+        reconcile(jobs, first, first_context)
+        run_pending(jobs, workspace_backend=backend)
+        self.assertEqual(launches, [first_id, second_id])
+        self.assertEqual(jobs.get("operator", second)["state"], "SUCCEEDED")
+        self.assertEqual(jobs.pending_effects(), [])
+        self.assertEqual(jobs.get("operator", first)["state"], "BLOCKED")
+
     def test_podman_apk_output_and_empty_artifact(self):
         from project_os_bridge.workspace_podman import WorkspacePodman, apk_path
         from project_os_bridge.podman_context import PodmanContext

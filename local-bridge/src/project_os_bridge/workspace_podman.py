@@ -50,31 +50,59 @@ def read_apk(path, original):
 
 class WorkspacePodman:
     def __init__(self, context, images):
-        if not isinstance(context, PodmanContext) or not isinstance(images, dict) or not images:
+        if not isinstance(images, dict) or not images:
             raise ValueError("Explicit local candidate bindings required")
         if any(profile not in VALIDATION or not isinstance(image, str) or not IMAGE.fullmatch(image)
                or image.rsplit("@", 1)[-1] in {ALPINE_BASELINE, ALPINE_FIXTURE_ONLY}
                for profile, image in images.items()):
             raise ValueError("Invalid validation image binding")
-        self.context = context
+        contexts = ({profile: context for profile in images}
+                    if isinstance(context, PodmanContext) else context)
+        if (not isinstance(contexts, dict) or set(contexts) != set(images)
+                or any(not isinstance(item, PodmanContext) for item in contexts.values())):
+            raise ValueError("Explicit context per profile required")
+        identities, pins = {}, {}
+        for profile, item in contexts.items():
+            identity = item.identity()
+            if identity in pins and pins[identity] != images[profile]:
+                raise ValueError("One pinned image per context required")
+            identities[profile] = identity
+            pins[identity] = images[profile]
+        self.contexts = MappingProxyType(dict(contexts))
         self.images = MappingProxyType(dict(images))
-        self.context_id = context.identity()
+        self.context_ids = MappingProxyType(identities)
+
+    def identities(self):
+        checked = set()
+        for profile, context in self.contexts.items():
+            identity = self.context_ids[profile]
+            if identity not in checked:
+                if context.identity(identity) != identity:
+                    raise PermissionError("EXECUTION_CONTEXT_CHANGED")
+                checked.add(identity)
+        return dict(self.context_ids)
 
     def identity(self):
-        return self.context.identity(self.context_id)
+        identities = set(self.identities().values())
+        if len(identities) != 1:
+            raise ValueError("Select a registered profile context")
+        return next(iter(identities))
 
     def binding(self, profile):
         if profile not in self.images:
             raise PermissionError("PROFILE_UNAVAILABLE")
-        image = self.images[profile]
-        self.identity()
-        self.context.require_import(self.context_id, image)
-        return image.rsplit("@", 1)[-1], self.context_id
+        image, context = self.images[profile], self.contexts[profile]
+        identity = self.context_ids[profile]
+        if context.identity(identity) != identity:
+            raise PermissionError("EXECUTION_CONTEXT_CHANGED")
+        context.require_import(identity, image)
+        return image.rsplit("@", 1)[-1], identity
 
     def execute(self, workspace, row, snapshot):
         request = row["workspace"]
         profile = request["profile"]
         image_id, identity = self.binding(profile)
+        context = self.contexts[profile]
         if (request.get("context_id") != identity or row.get("effect_context") != identity
                 or request["image_id"] != image_id or snapshot["head"] != request["expected_sha"]
                 or snapshot.get("workspace_materialized") is not True):
@@ -84,8 +112,8 @@ class WorkspacePodman:
         private_directory(workspace)
         if not SAFE_PATH.fullmatch(str(workspace)):
             raise PermissionError("WORKSPACE_MOUNT_UNAVAILABLE")
-        self.context.host(identity)
-        if not container_absent(self.context, identity, token):
+        context.host(identity)
+        if not container_absent(context, identity, token):
             return {"image_id": image_id, "cleanup_verified": False}
         lock, install = VALIDATION[profile]
         # APK candidates use the same container and effect ledger. Only the
@@ -129,9 +157,9 @@ class WorkspacePodman:
                 "--volume", f"{workspace}:/source:ro", *output_args, "--workdir", "/fixture",
                 "--entrypoint", "/bin/sh", self.images[profile], "-c", setup, "profile", *argv]
         try:
-            result = self.context.run(identity, *args, timeout=900, capture=False)
+            result = context.run(identity, *args, timeout=900, capture=False)
             # No automatic retry or cleanup on uncertain launch/timeout.
-            if not container_absent(self.context, identity, token):
+            if not container_absent(context, identity, token):
                 return {"image_id": image_id, "cleanup_verified": False}
         except (OSError, subprocess.SubprocessError, ValueError, KeyError, TypeError):
             return {"image_id": image_id, "cleanup_verified": False}
