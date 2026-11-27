@@ -614,6 +614,62 @@ class WorkspacePreflightTests(unittest.TestCase):
         self.assertEqual(failed["result"]["execution"]["artifact_error"], "APK_IDENTITY_INVALID")
         self.assertEqual(jobs.pending_effects(), [])
 
+    def test_qa_release_plan_and_unfinalized_build_identity(self):
+        from project_os_bridge.workspace_profiles import qa_plan
+        from project_os_bridge.workspace_jobs import verified_qa_build_input
+        from project_os_bridge.workspace_podman import WorkspacePodman, apk_path
+        from project_os_bridge.podman_context import PodmanContext
+        from unittest.mock import Mock
+        from subprocess import CompletedProcess
+        flutter = qa_plan("flutter-apk-qa", {"dart_defines": {"QA": "true"}, "build_number": 42})
+        self.assertIn("--release", flutter.argv)
+        self.assertIn("--build-number=42", flutter.argv)
+        self.assertIn("--dart-define=QA=true", flutter.argv)
+        expo = {"native": "managed-script", "public_env": {"EXPO_PUBLIC_QA": "true"}}
+        self.assertNotEqual(qa_plan("expo-apk-qa", expo).digest(),
+                            qa_plan("expo-apk-qa", {"native": "native"}).digest())
+        for profile, bad in (("flutter-apk-qa", {"variant": "debug"}),
+                             ("flutter-apk-qa", {"build_number": True}),
+                             ("expo-apk-qa", {"public_env": {"TOKEN": "private"}}),
+                             ("expo-apk-qa", {"native": "shell"})):
+            with self.assertRaises(ValueError):
+                qa_plan(profile, bad)
+        jobs = self.workspace_queue()
+        policy = Policy([*jobs.policy.grants, ("operator", "workspace_execute", "demo")])
+        jobs = Jobs(jobs.probe.root, policy, workflows=("workspace_execute",))
+        context = Mock(spec=PodmanContext)
+        context.identity.return_value = "c" * 64
+        route = "demo:expo-apk-qa"
+        image = "localhost/project-os-mobile-ci@sha256:" + "a" * 64
+        with self.assertRaises(ValueError):
+            WorkspacePodman({route: context}, {route: image})
+        backend = WorkspacePodman({route: context}, {route: image}, qa_plans={route: expo})
+        job = submit_workspace(jobs, "operator", "demo", self.sha, "expo-apk-qa", "qa", backend=backend)
+        def run(expected, *args, **kwargs):
+            if args[0] == "container":
+                return CompletedProcess(args, 1)
+            if args[0] == "ps":
+                return CompletedProcess(args, 0, stdout=b"")
+            self.assertIn("--network=none", args)
+            self.assertIn("--env=EXPO_PUBLIC_QA=true", args)
+            self.assertIn(":app:assembleRelease", args)
+            self.assertTrue(any("npm run prebuild -- --platform android --no-install" in value for value in args))
+            apk_path(jobs.probe.root, job).write_bytes(b"unfinalized synthetic bytes")
+            return CompletedProcess(args, 0)
+        context.run.side_effect = run
+        run_pending(jobs, workspace_backend=backend)
+        result = jobs.evidence("operator", job)["result"]["execution"]
+        self.assertFalse(result["qa_delivery_ready"])
+        raw, identity = verified_qa_build_input(jobs, "operator", job,
+                                                expected_project="demo", expected_sha=self.sha)
+        self.assertEqual(raw, b"unfinalized synthetic bytes")
+        self.assertEqual(identity, result["artifact"])
+        with self.assertRaises(PermissionError):
+            verified_qa_build_input(jobs, "operator", job, expected_project="other", expected_sha=self.sha)
+        apk_path(jobs.probe.root, job).write_bytes(b"changed")
+        with self.assertRaises(ValueError):
+            verified_qa_build_input(jobs, "operator", job, expected_project="demo", expected_sha=self.sha)
+
     def test_context_bound_execution_cannot_use_ci_executor(self):
         from project_os_bridge.workspace_podman import WorkspacePodman
         from project_os_bridge.podman_context import PodmanContext
