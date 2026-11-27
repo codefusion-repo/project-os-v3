@@ -1,0 +1,48 @@
+# Candidate template: install only in the explicitly authorized private producer.
+# Do not activate until runner admission, lifecycle and exact workflow identity
+# are reviewed. A unique label is routing, not access control.
+name: Project OS QA delivery
+run-name: ${{ inputs.runner_label }}
+on:
+  workflow_dispatch:
+    inputs:
+      runner_label:
+        required: true
+        type: string
+      apk_sha256:
+        required: true
+        type: string
+      apk_size:
+        required: true
+        type: string
+permissions: {}
+jobs:
+  publish-qa:
+    if: ${{ github.event.repository.private && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && github.run_attempt == 1 }}
+    runs-on: ${{ inputs.runner_label }}
+    timeout-minutes: 10
+    steps:
+      - name: Check exact signed bytes
+        shell: bash
+        env:
+          EXPECTED_SHA256: ${{ inputs.apk_sha256 }}
+          EXPECTED_SIZE: ${{ inputs.apk_size }}
+          RUNNER_LABEL: ${{ inputs.runner_label }}
+        run: |
+          set -euo pipefail
+          [[ "$RUNNER_LABEL" =~ ^project-os-qa-[0-9a-f]{32}$ ]]
+          [[ "$EXPECTED_SHA256" =~ ^[0-9a-f]{64}$ ]]
+          [[ "$EXPECTED_SIZE" =~ ^[1-9][0-9]{0,8}$ ]]
+          test -f /qa-input/app-qa.apk
+          test ! -L /qa-input/app-qa.apk
+          test "$(stat -c %s /qa-input/app-qa.apk)" = "$EXPECTED_SIZE"
+          printf '%s  %s\n' "$EXPECTED_SHA256" /qa-input/app-qa.apk | sha256sum -c -
+      - name: Publish exact APK ZIP
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: ${{ inputs.runner_label }}
+          path: /qa-input/app-qa.apk
+          if-no-files-found: error
+          compression-level: 0
+          overwrite: false
+          retention-days: 14
