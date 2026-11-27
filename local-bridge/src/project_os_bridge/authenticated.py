@@ -52,9 +52,17 @@ def fixture_enabled(verifier, image, context_id=None):
 
 
 def build_server(verifier, jobs, fixture_reader=None, *, fixture_image=None, diagnostics=None, context_id=None, github_provider=None, maintenance=None, workspace_candidate=False, workspace_backend=None):
+    from .workspace_jobs import SupervisedWorkspacePolicy
+    supervised_workspace = type(jobs.policy) is SupervisedWorkspacePolicy
+    if supervised_workspace:
+        if (not workspace_candidate or jobs.policy.verifier is not verifier
+                or jobs.probe.root != verifier.state_dir
+                or jobs.workflows != frozenset({"probe_check", "workspace_prepare"})
+                or fixture_reader is not None or fixture_image is not None or workspace_backend is not None):
+            raise ValueError("Supervised preparation profile required")
     if workspace_backend is not None and not workspace_candidate:
         raise ValueError("Dedicated workspace candidate required")
-    if workspace_candidate:
+    if workspace_candidate and not supervised_workspace:
         from .workspace_jobs import local_runtime
         from .workspace_podman import WorkspacePodman
         workflows = {"workspace_prepare"}
@@ -103,6 +111,7 @@ def build_server(verifier, jobs, fixture_reader=None, *, fixture_image=None, dia
                     pass  # No private paths or exception details.
             if workspace_candidate:
                 result["workspace_prepare_registered"] = True
+                result["workspace_prepare_available"] = (jobs.policy.available() if supervised_workspace else True)
                 result["workspace_execution_registered"] = workspace_backend is not None
                 result["workspace_execution_available"] = False
                 if workspace_backend is not None:
@@ -207,7 +216,9 @@ def build_server(verifier, jobs, fixture_reader=None, *, fixture_image=None, dia
             return {"job_id":jobs.submit(actor,"disposable","git_fixture_check",request_key)}
 
     if workspace_candidate:
-        from .workspace_jobs import submit_workspace, require_workspace_job, workspace_changes as read_workspace_changes
+        from .workspace_jobs import (submit_workspace, require_workspace_job,
+                                      workspace_changes as read_workspace_changes,
+                                      workspace_context as read_workspace_context)
 
         async def submit_workspace_request(project, expected_sha, profile, request_key, *, execute, changes=None):
             actor = principal()
@@ -271,7 +282,33 @@ def build_server(verifier, jobs, fixture_reader=None, *, fixture_image=None, dia
                     raise ValueError("WORKSPACE_CHANGES_UNAVAILABLE") from None
             return await asyncio.to_thread(collect)
 
+        @mcp.tool(annotations=read)
+        async def workspace_context(project: StrictStr, expected_sha: StrictStr,
+                                    profile: StrictStr, paths: list[StrictStr]) -> dict:
+            """Read explicit committed text at an exact authorized revision."""
+            actor = principal()
+            token = get_access_token()
+            def collect():
+                try:
+                    result = read_workspace_context(jobs, actor, project, expected_sha, profile, paths)
+                    if principal() != actor or token.expires_at is None or token.expires_at <= time.time():
+                        raise PermissionError("DENIED")
+                    return result
+                except PermissionError:
+                    raise PermissionError("DENIED") from None
+                except (OSError, ValueError, TypeError, KeyError):
+                    raise ValueError("WORKSPACE_CONTEXT_UNAVAILABLE") from None
+            return await asyncio.to_thread(collect)
+
     def workspace_access(actor, job_id):
+        if supervised_workspace:
+            with jobs.transaction() as conn:
+                row = conn.execute("SELECT resource FROM jobs WHERE id=? AND principal=?",
+                                   (job_id, actor)).fetchone()
+            if row is None:
+                raise PermissionError("DENIED")
+            if row["resource"] == "disposable":
+                return
         if workspace_candidate:
             try:
                 require_workspace_job(jobs, actor, job_id, allow_execute=workspace_backend is not None)
@@ -640,7 +677,16 @@ def main():
             if venv.name == ".venv" and venv.parent.name == "local-bridge":
                 maintenance = Maintenance(root, venv.parents[1])
                 grants.append((verifier.subject, "maintenance", "installation"))
-        jobs = Jobs(args.state_dir, Policy(grants), workflows=workflows)
+        from .workspace_jobs import load_supervised_workspace_policy
+        try:
+            workspace_policy = load_supervised_workspace_policy(
+                verifier, grants, supervised=diagnostics is not None and args.fixture_image is None,
+                multi=args.github_projects)
+        except (OSError, ValueError, TypeError):
+            parser.error("Invalid private supervised workspace grants")
+        if workspace_policy is not None:
+            workflows = (*workflows, "workspace_prepare")
+        jobs = Jobs(args.state_dir, workspace_policy or Policy(grants), workflows=workflows)
         if jobs.pending_effects():
             parser.error("RECONCILIATION_REQUIRED; stop and use local reconciliation")
         if args.fixture_image and args.supervised_ca is None:
@@ -653,7 +699,8 @@ def main():
         fixture = (None if github_provider is not None else
                    SyntheticGitHubReader(Policy([(verifier.subject,"github_read","disposable")]),args.state_dir))
         app = build_http_app(verifier,jobs,fixture,fixture_image=args.fixture_image,diagnostics=diagnostics,
-                             context_id=context_id,github_provider=github_provider,maintenance=maintenance)
+                             context_id=context_id,github_provider=github_provider,maintenance=maintenance,
+                             workspace_candidate=workspace_policy is not None)
         import uvicorn
         server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=args.port,
                                               access_log=False, **tls))

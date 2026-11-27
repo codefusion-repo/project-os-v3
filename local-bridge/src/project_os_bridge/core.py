@@ -107,7 +107,11 @@ class Jobs:
 
     def submit(self, principal, resource, workflow, request_key, *, expected_sha=None, workspace=None):
         self.policy.require(principal, "submit", resource)
-        if resource != "disposable" or workflow not in self.workflows:
+        expected_resource = "disposable"
+        if workflow in {"workspace_prepare", "workspace_execute"}:
+            from .workspace_jobs import workspace_resource
+            expected_resource = workspace_resource(self.policy)
+        if resource != expected_resource or workflow not in self.workflows:
             raise ValueError("Unknown workflow or resource")
         if workflow == "git_fixture_check":
             self.policy.require(principal, "git_workflow", resource)

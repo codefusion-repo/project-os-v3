@@ -1157,6 +1157,94 @@ class AuthTests(unittest.TestCase):
             (state / MARKER).unlink()
             self.assertTrue(tool(client, "cancel_job", job_id=ids[0]).get("isError", False))
 
+    def test_supervised_preparation_grants_and_legacy_resource_isolation(self):
+        from project_os_bridge.workspace_jobs import (SUPERVISED_GRANTS, load_supervised_workspace_policy)
+        from project_os_bridge.worker import run_pending
+        instance = self.root / "instance"
+        instance.mkdir(mode=0o700)
+        state, service, source = (instance / name for name in ("state", "service", "source"))
+        for folder in (state, service, source):
+            folder.mkdir(mode=0o700)
+        (state / "allow-authenticated-probe").touch(mode=0o600)
+        def git(*args):
+            return subprocess.check_output(["git", "-C", str(source), *args]).decode().strip()
+        git("init", "-q")
+        git("config", "user.name", "Fixture")
+        git("config", "user.email", "fixture@example.invalid")
+        git("remote", "add", "origin", "https://github.com/example/demo.git")
+        for name, value in ((".gitignore", ".project-os/\n"), ("package.json", '{"name":"demo"}\n'),
+                            ("package-lock.json", "{}\n"), ("note.txt", "committed\n")):
+            (source / name).write_text(value)
+        git("add", ".")
+        git("commit", "-qm", "fixture")
+        sha = git("rev-parse", "HEAD")
+        (source / "note.txt").write_text("dirty\n")
+        config = source / ".project-os" / "config.json"
+        config.parent.mkdir(mode=0o700)
+        config.touch(mode=0o600)
+        config.write_text(json.dumps({"version": 2, "repositories": ["example/demo"],
+            "github_context": {"project": "demo", "repository": "example/demo", "repository_id": 1}}))
+        runtime = service / "runtime.json"
+        runtime.touch(mode=0o600)
+        runtime.write_text(json.dumps({"tunnel": "fixture", "tunnel_id": "fixture", "image": None,
+            "github_projects": {"demo": {"config": str(config), "repository": "example/demo", "repository_id": 1}}}))
+        verifier = Verifier(ISSUER, RESOURCE, SUBJECT, state, jwks=self.jwks)
+        base = [(SUBJECT, op, "disposable") for op in ("submit", "read", "cancel")]
+        self.assertIsNone(load_supervised_workspace_policy(verifier, base, supervised=True, multi=True))
+        flag = state / SUPERVISED_GRANTS
+        flag.touch(mode=0o600)
+        original = ["workspace_prepare", "workspace_materialize", "workspace_context", "expo-test"]
+        flag.write_text(json.dumps({"demo": original}))
+        with self.assertRaises(PermissionError):
+            load_supervised_workspace_policy(verifier, base, supervised=False, multi=True)
+        policy = load_supervised_workspace_policy(verifier, base, supervised=True, multi=True)
+        jobs = Jobs(state, policy, workflows=("probe_check", "workspace_prepare"))
+        app = build_http_app(verifier, jobs, workspace_candidate=True)
+        headers = {"Accept": "application/json, text/event-stream", "Authorization": "Bearer " + self.token()}
+        with TestClient(app, base_url="http://127.0.0.1:8765") as client:
+            def call(method, params):
+                response = client.post("/mcp", headers=headers,
+                    json={"jsonrpc": "2.0", "id": 1, "method": method, "params": params})
+                self.assertEqual(response.status_code, 200)
+                return response.json()["result"]
+            init = call("initialize", {"protocolVersion": "2025-11-25", "capabilities": {},
+                                       "clientInfo": {"name": "test", "version": "1"}})
+            headers["MCP-Protocol-Version"] = init["protocolVersion"]
+            def tool(name, **args):
+                return call("tools/call", {"name": name, "arguments": args})
+            def payload(result):
+                self.assertFalse(result.get("isError", False), result)
+                return json.loads(result["content"][0]["text"])
+            names = {item["name"] for item in call("tools/list", {})["tools"]}
+            self.assertIn("submit_workspace_job", names)
+            self.assertIn("workspace_context", names)
+            self.assertNotIn("submit_workspace_execute", names)
+            args = dict(project="demo", expected_sha=sha, profile="expo-test")
+            context = payload(tool("workspace_context", **args, paths=["note.txt"]))
+            self.assertEqual(context["files"][0]["text"], "committed\n")
+            self.assertTrue(tool("workspace_context", **args, paths=[".env"]).get("isError", False))
+            probe = payload(tool("submit_probe_job", request_key="same"))["job_id"]
+            job = payload(tool("submit_workspace_job", **args, request_key="same"))["job_id"]
+            self.assertNotEqual(probe, job)
+            run_pending(jobs)
+            self.assertEqual(payload(tool("get_job_evidence", job_id=job))["state"], "SUCCEEDED")
+            legacy = Jobs(state, Policy(base))
+            with self.assertRaises(PermissionError):
+                legacy.evidence(SUBJECT, job)
+            flag.write_text(json.dumps({"demo": original + ["workspace_change"]}))
+            self.assertTrue(tool("submit_workspace_job", **args, request_key="new-grant",
+                                 changes=[{"path": "note2.txt", "before": None, "text": "synthetic"}]).get("isError", False))
+            revoked = payload(tool("submit_workspace_job", **args, request_key="revoked"))["job_id"]
+            flag.unlink()
+            run_pending(jobs)
+            self.assertTrue(tool("get_job_evidence", job_id=job).get("isError", False))
+            self.assertTrue(tool("workspace_context", **args, paths=["note.txt"]).get("isError", False))
+            self.assertEqual(payload(tool("get_job_status", job_id=probe))["state"], "SUCCEEDED")
+            flag.touch(mode=0o600)
+            flag.write_text(json.dumps({"demo": original}))
+            self.assertEqual(payload(tool("get_job_evidence", job_id=revoked))["state"], "BLOCKED")
+            self.assertEqual((source / "note.txt").read_text(), "dirty\n")
+
     def test_workspace_candidate_cannot_register_on_active_state_or_execution_queue(self):
         jobs = Jobs(self.root, Policy([]), workflows=("workspace_prepare",))
         with self.assertRaises(ValueError):

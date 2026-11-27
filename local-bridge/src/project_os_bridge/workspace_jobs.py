@@ -8,18 +8,94 @@ import re
 import json
 
 from .github_context import PROJECT
+from .github_operational import _private_bytes, _unique_object, registry_entries
+from .core import Policy
 from .methodology import SHA
 from .workspace_preflight import (_binding, binding_digest, materialize_workspace,
-                                  prepare_workspace, normalize_changes, describe_changes)
-from .workspace_profiles import profile_for
+                                  prepare_workspace, normalize_changes, describe_changes, read_workspace_context)
+from .workspace_profiles import PROFILES, profile_for
 from .workos_auth import private_directory, private_file
 
 MARKER = "local-workspace-mode"
 RUNTIME = "workspace-runtime.json"
 
 
-def local_runtime(root):
+SUPERVISED_GRANTS = "workspace-grants.json"
+PREPARATION_OPS = frozenset({"workspace_prepare", "workspace_materialize",
+                             "workspace_change", "workspace_context", *PROFILES})
+
+
+class SupervisedWorkspacePolicy(Policy):
+    """Explicit private preparation grants; live revocation, no execution grant."""
+    def __init__(self, verifier, base_grants):
+        super().__init__(base_grants)
+        self.verifier = verifier
+        self.root = verifier.state_dir
+        self.runtime = self.root.parent / "service" / "runtime.json"
+        self.initial = self.current()
+
+    def current(self):
+        try:
+            data = json.loads(_private_bytes(self.root / SUPERVISED_GRANTS, 65536),
+                              object_pairs_hook=_unique_object)
+            entries = registry_entries(self.runtime)
+            if not isinstance(data, dict) or not data or not set(data) <= set(entries):
+                raise ValueError("Invalid workspace grants")
+            for ops in data.values():
+                if (not isinstance(ops, list) or not ops
+                        or not all(isinstance(op, str) for op in ops)
+                        or len(set(ops)) != len(ops) or not set(ops) <= PREPARATION_OPS):
+                    raise ValueError("Invalid workspace grants")
+            return {key: frozenset(ops) for key, ops in data.items()}
+        except (OSError, ValueError, TypeError):
+            raise PermissionError("WORKSPACE_GRANTS_UNAVAILABLE") from None
+
+    def available(self):
+        if not self.verifier.enabled():
+            return False
+        try:
+            current = self.current()
+            return any(ops & current.get(project, frozenset())
+                       for project, ops in self.initial.items())
+        except PermissionError:
+            return False
+
+    def require(self, principal, operation, resource):
+        if resource == "workspace" or operation in PREPARATION_OPS or operation == "workspace_execute":
+            if principal != self.verifier.subject or not self.verifier.enabled():
+                raise PermissionError("DENIED")
+            current = self.current()
+            if resource == "workspace" and operation in {"submit", "read", "cancel"}:
+                if any(ops & current.get(project, frozenset())
+                       for project, ops in self.initial.items()):
+                    return
+            elif (operation in PREPARATION_OPS and operation in self.initial.get(resource, ())
+                  and operation in current.get(resource, ())):
+                return
+            raise PermissionError("DENIED")
+        super().require(principal, operation, resource)
+
+
+def load_supervised_workspace_policy(verifier, base_grants, *, supervised, multi):
+    if not os.path.lexists(verifier.state_dir / SUPERVISED_GRANTS):
+        return None
+    if (not supervised or not multi or verifier.state_dir.name != "state"
+            or any(os.path.lexists(verifier.state_dir / name) for name in
+                   (MARKER, "local-fixture-mode", "local-package-mode", "fixture-image", "fixture-context"))):
+        raise PermissionError("Supervised preparation profile required")
+    return SupervisedWorkspacePolicy(verifier, base_grants)
+
+
+def workspace_resource(policy):
+    return "workspace" if type(policy) is SupervisedWorkspacePolicy else "disposable"
+
+
+def local_runtime(root, policy=None):
     private_directory(root)
+    if type(policy) is SupervisedWorkspacePolicy:
+        if root != policy.root or not policy.available():
+            raise PermissionError("Workspace opt-in unavailable")
+        return policy.runtime
     try:
         marker = private_file(root / MARKER)
     except FileNotFoundError:
@@ -72,8 +148,8 @@ def submit_workspace(jobs, principal, project, expected_sha, profile, request_ke
         image_id, context_id = backend.binding(profile)
     else:
         context_id = None
-    runtime = local_runtime(jobs.probe.root)
-    jobs.policy.require(principal, "submit", "disposable")
+    runtime = local_runtime(jobs.probe.root, jobs.policy)
+    jobs.policy.require(principal, "submit", workspace_resource(jobs.policy))
     jobs.policy.require(principal, "workspace_materialize", project)
     args = (runtime, jobs.policy, principal, project, expected_sha, profile)
     _, entry, root = _binding(*args)
@@ -90,12 +166,12 @@ def submit_workspace(jobs, principal, project, expected_sha, profile, request_ke
     authorize_request(jobs.policy, principal, request, execute=execute)
     # Admission checks the mapping and immutable commit before queueing.
     prepare_workspace(*args)
-    local_runtime(jobs.probe.root)
+    local_runtime(jobs.probe.root, jobs.policy)
     _, current_entry, current_root = _binding(*args)
     if binding_digest(current_entry, current_root) != request["binding"]:
         raise PermissionError("WORKSPACE_BINDING_CHANGED")
     authorize()
-    return jobs.submit(principal, "disposable", "workspace_execute" if execute else "workspace_prepare",
+    return jobs.submit(principal, workspace_resource(jobs.policy), "workspace_execute" if execute else "workspace_prepare",
                        request_key, workspace=request)
 
 
@@ -103,16 +179,18 @@ def require_workspace_job(jobs, principal, job_id, *, allow_execute=False):
     """Revalidate ownership and the frozen mapping before HTTP disclosure."""
     if not isinstance(job_id, str) or not re.fullmatch(r"[0-9a-f]{32}", job_id):
         raise PermissionError("DENIED")
-    runtime = local_runtime(jobs.probe.root)
+    runtime = local_runtime(jobs.probe.root, jobs.policy)
     with jobs.transaction() as conn:
         row = conn.execute(
-            "SELECT jobs.principal, jobs.workflow, workspace_inputs.request "
+            "SELECT jobs.principal, jobs.resource, jobs.workflow, workspace_inputs.request "
             "FROM jobs JOIN workspace_inputs ON jobs.id=workspace_inputs.job_id "
             "WHERE jobs.id=?", (job_id,)).fetchone()
         allowed = {"workspace_prepare", "workspace_execute"} if allow_execute else {"workspace_prepare"}
-        if not row or row["principal"] != principal or row["workflow"] not in allowed:
+        if (not row or row["principal"] != principal or row["workflow"] not in allowed
+                or row["resource"] != workspace_resource(jobs.policy)) :
             raise PermissionError("DENIED")
         request = json.loads(row["request"])
+    jobs.policy.require(principal, "read", row["resource"])
     execute = row["workflow"] == "workspace_execute"
     if execute and "context_id" not in request:
         raise PermissionError("DENIED")
@@ -130,11 +208,17 @@ def workspace_changes(jobs, principal, job_id, *, allow_execute=False):
     if ("changes" not in request or evidence["state"] not in {"SUCCEEDED", "FAILED"}
             or not isinstance(evidence["result"], dict)):
         raise ValueError("WORKSPACE_CHANGES_UNAVAILABLE")
-    result = describe_changes(local_runtime(jobs.probe.root), jobs.policy, principal,
+    result = describe_changes(local_runtime(jobs.probe.root, jobs.policy), jobs.policy, principal,
                               request, evidence["result"])
     if require_workspace_job(jobs, principal, job_id, allow_execute=allow_execute) != request:
         raise PermissionError("DENIED")
     return result
+
+
+def workspace_context(jobs, principal, project, expected_sha, profile, paths):
+    runtime = local_runtime(jobs.probe.root, jobs.policy)
+    return read_workspace_context(runtime, jobs.policy, principal, project,
+                                  expected_sha, profile, paths)
 
 
 def run_workspace(jobs, row, *, executor=None):
@@ -142,7 +226,7 @@ def run_workspace(jobs, row, *, executor=None):
     result = {"operation": "prepare", "profile": request["profile"],
               "head": request["expected_sha"], "execution_available": False}
     try:
-        runtime = local_runtime(jobs.probe.root)
+        runtime = local_runtime(jobs.probe.root, jobs.policy)
         execute = row["workflow"] == "workspace_execute"
         authorize_request(jobs.policy, row["principal"], request, execute=execute)
         if execute and executor is None:
@@ -150,7 +234,7 @@ def run_workspace(jobs, row, *, executor=None):
         snapshot = materialize_workspace(runtime, jobs.policy, row["principal"], request["project"],
                                          request["expected_sha"], request["profile"],
                                          jobs.probe.root, row["id"], expected_binding=request["binding"], changes=request.get("changes"))
-        local_runtime(jobs.probe.root)
+        local_runtime(jobs.probe.root, jobs.policy)
         if not execute:
             return "SUCCEEDED", {**result, **snapshot}
         authorize_request(jobs.policy, row["principal"], request, execute=True)

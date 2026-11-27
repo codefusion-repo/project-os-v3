@@ -49,3 +49,6 @@ Keep the existing selector and central installation. Two entrypoints (Linux/WSL 
 ## Frozen scope
 
 Complete disposable end-to-end path, security gates, traceability and minimal existing setup. No new infrastructure, central registry, collaborative RBAC, arbitrary shell, auto merge/deploy or additional UI. Android QA, production real-resource grants, lifecycle and independent install certification remain separate production gates; locked dependency evidence is integrated under LB-01, not host certification; source licensing requires maintainer decision. A pilot is not a production release.
+
+
+The LB-07 supervised preparation candidate uses the existing non-fixture multi-project startup, registry, Jobs, SQLite and worker with explicit owner-private per-project operation grants. No separate daemon or repository mapping. Live grants are intersected with startup grants, global authentication is retained, and the distinct workspace resource prevents older probe-only runtimes from reading the new job history. Exact committed context is bounded and does not read dirty/untracked files. Default startup unchanged; no live enrolment or execution registration. See the README candidate contract. Multi-image/context lifecycle and local profile gates remain outstanding for execution.

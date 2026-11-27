@@ -60,7 +60,10 @@ def run_pending(jobs: Jobs, *, fixture_image=None, podman_context=None, context_
             fixture_absent = False
             try:
                 if row["resource"] != "disposable":
-                    raise ValueError("Unknown resource")
+                    from .workspace_jobs import workspace_resource
+                    if (row["workflow"] != "workspace_prepare"
+                            or row["resource"] != workspace_resource(jobs.policy)):
+                        raise ValueError("Unknown resource")
                 if row["workflow"] == "probe_check":
                     result = jobs.probe.read()
                     state = "SUCCEEDED"

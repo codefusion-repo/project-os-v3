@@ -335,3 +335,38 @@ def describe_changes(runtime, policy, principal, request, result):
     policy.require(principal, "workspace_change", project)
     return {"head": sha, "changes_sha256": digest, "workspace_sha256": result["workspace_sha256"],
             "changes": observed, "diff": diff}
+
+
+def read_workspace_context(runtime, policy, principal, project, expected_sha, profile, paths):
+    """Explicit bounded committed text; never read dirty or untracked contents."""
+    if (not isinstance(paths, list) or not 1 <= len(paths) <= 16
+            or not all(isinstance(path, str) for path in paths)
+            or len({path.casefold() for path in paths}) != len(paths)):
+        raise ValueError("INVALID_WORKSPACE_CONTEXT")
+    for path in paths:
+        _safe_path(path)
+    policy.require(principal, "workspace_context", project)
+    args = (runtime, policy, principal, project, expected_sha, profile)
+    descriptor, entry, root = _binding(*args)
+    binding = binding_digest(entry, root)
+    sha = commit(root, expected_sha)
+    total, files = 0, []
+    for path in paths:
+        found = list(_entries(git(root, "ls-tree", "-z", sha, "--", path)))
+        if len(found) != 1 or found[0][0] != path:
+            raise ValueError("WORKSPACE_CONTEXT_UNAVAILABLE")
+        blob = found[0][2]
+        size = int(git(root, "cat-file", "-s", blob))
+        total += size
+        if not 0 <= size or total > MAX_DIFF_BYTES:
+            raise ValueError("WORKSPACE_CONTEXT_LIMIT")
+        data = _blob_data(root, blob, size)
+        if b"\0" in data:
+            raise ValueError("WORKSPACE_CONTEXT_NOT_TEXT")
+        files.append({"path": path, "sha256": hashlib.sha256(data).hexdigest(),
+                      "text": data.decode("utf-8")})
+    policy.require(principal, "workspace_context", project)
+    if (_binding(*args) != (descriptor, entry, root)
+            or binding_digest(entry, root) != binding):
+        raise PermissionError("DENIED")
+    return {"head": sha, "files": files, "source": "committed"}
