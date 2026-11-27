@@ -670,6 +670,75 @@ class WorkspacePreflightTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             verified_qa_build_input(jobs, "operator", job, expected_project="demo", expected_sha=self.sha)
 
+    def test_qa_finalizer_persists_identity_and_rejects_tampering(self):
+        import os
+        from unittest.mock import Mock
+        from subprocess import CompletedProcess
+        from project_os_bridge.android_qa import AndroidQATools, finalize_qa_build
+        from project_os_bridge.workspace_podman import WorkspacePodman, apk_path
+        from project_os_bridge.podman_context import PodmanContext
+        jobs = self.workspace_queue()
+        policy = Policy([*jobs.policy.grants, ("operator", "workspace_execute", "demo")])
+        jobs = Jobs(jobs.probe.root, policy, workflows=("workspace_execute",))
+        context = Mock(spec=PodmanContext)
+        context.identity.return_value = "c" * 64
+        route = "demo:expo-apk-qa"
+        image = "localhost/project-os-mobile-ci@sha256:" + "a" * 64
+        backend = WorkspacePodman({route: context}, {route: image}, qa_plans={route: {}})
+        def build(key):
+            job = submit_workspace(jobs, "operator", "demo", self.sha, "expo-apk-qa", key, backend=backend)
+            def run(expected, *args, **kwargs):
+                if args[0] == "container":
+                    return CompletedProcess(args, 1)
+                if args[0] == "ps":
+                    return CompletedProcess(args, 0, stdout=b"")
+                apk_path(jobs.probe.root, job).write_bytes(b"unfinalized synthetic bytes")
+                return CompletedProcess(args, 0)
+            context.run.side_effect = run
+            run_pending(jobs, workspace_backend=backend)
+            return job
+        tools = Mock(spec=AndroidQATools)
+        metadata = {"package": "example.demo.qa", "version_code": 42,
+                    "abis": ["arm64-v8a", "x86_64"], "debuggable": False}
+        tools.inspect.side_effect = lambda *args: dict(metadata)
+        tools.certificate.return_value = "d" * 64
+        tools.verify.return_value = "d" * 64
+        def generate(directory, password):
+            fd = os.open(directory / "qa.p12", os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            os.close(fd)
+        def sign(source, dest, directory, password, work):
+            fd = os.open(dest, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            with os.fdopen(fd, "wb") as file:
+                file.write(b"signed synthetic bytes")
+        tools.generate.side_effect = generate
+        tools.sign.side_effect = sign
+        def finalize(job, package="example.demo.qa"):
+            return finalize_qa_build(jobs, "operator", job, expected_project="demo",
+                expected_sha=self.sha, expected_package=package, tools=tools)
+        first = build("first-finalize")
+        with self.assertRaises(ValueError):
+            finalize(first, "example.other.qa")
+        tools.generate.assert_not_called()
+        result = finalize(first)
+        self.assertTrue(result["signature_verified"])
+        self.assertFalse(result["published"])
+        self.assertEqual(finalize(first), result)
+        tools.generate.assert_called_once()
+        tools.sign.assert_called_once()
+        second = build("second-finalize")
+        metadata["version_code"] = 41
+        with self.assertRaises(ValueError):
+            finalize(second)
+        metadata["version_code"] = 43
+        second_result = finalize(second)
+        self.assertEqual(second_result["certificate_sha256"], result["certificate_sha256"])
+        tools.generate.assert_called_once()
+        target = jobs.probe.root / "qa-signing" / "123" / "artifacts" / second / "app-qa.apk"
+        target.write_bytes(b"tampered")
+        with self.assertRaises(ValueError):
+            finalize(second)
+        self.assertEqual(jobs.pending_effects(), [])
+
     def test_context_bound_execution_cannot_use_ci_executor(self):
         from project_os_bridge.workspace_podman import WorkspacePodman
         from project_os_bridge.podman_context import PodmanContext
