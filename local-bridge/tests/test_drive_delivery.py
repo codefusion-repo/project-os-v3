@@ -103,3 +103,31 @@ class DriveDeliveryTests(unittest.TestCase):
             deliver_qa(reopened, "operator", job, **args)
         pub.reserve.assert_called_once()
         pub.upload.assert_called_once()
+
+    def test_reserved_id_can_resume_before_any_upload(self):
+        policy = Policy([("operator", "submit", "disposable"), ("operator", "read", "disposable"),
+                         ("operator", "workspace_delivery", "demo")])
+        jobs = Jobs(self.root, policy)
+        job = jobs.submit("operator", "disposable", "qa-reserved")
+        jobs.claim()
+        jobs.finish(job, "SUCCEEDED", {})
+        receipt = {"artifact": self.artifact, "workspace_sha256": "c" * 64}
+        pub = Mock()
+        pub.binding = "d" * 64
+        pub.reserve.return_value = "remote"
+        pub.verify.return_value = {"file_id": "remote", "sha256": self.artifact["sha256"],
+            "size": self.artifact["size"], "url": "https://drive.google.com/file/d/remote/view"}
+        guard = Mock(side_effect=[None, None, PermissionError("interrupted before create")])
+        args = dict(project="demo", head="a" * 40, repository_id=123, pr=1,
+                    publisher=pub, check_target=guard)
+        with patch("project_os_bridge.qa_drive_job._verified_qa_delivery_locked",
+                   return_value=(self.raw, receipt)):
+            with self.assertRaises(PermissionError):
+                deliver_qa(jobs, "operator", job, **args)
+            self.assertEqual(jobs.evidence("operator", job)["result"]["qa_delivery"]["state"], "RESERVED")
+            pub.upload.assert_not_called()
+            guard.side_effect = None
+            result = deliver_qa(Jobs(self.root, policy), "operator", job, **args, reconcile_only=True)
+            self.assertEqual(result["state"], "SUCCEEDED")
+        pub.reserve.assert_called_once()
+        pub.upload.assert_called_once()

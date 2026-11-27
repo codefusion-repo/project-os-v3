@@ -120,9 +120,9 @@ class MaintenanceTests(unittest.TestCase):
         db = self.service.state / "jobs.sqlite3"
         db.touch(mode=0o600)
         with sqlite3.connect(db) as conn:
-            conn.execute("CREATE TABLE jobs (state TEXT)")
+            conn.execute("CREATE TABLE jobs (state TEXT, result TEXT)")
             conn.execute("CREATE TABLE fixture_effects (resolved_at TEXT)")
-            conn.execute("INSERT INTO jobs VALUES ('QUEUED')")
+            conn.execute("INSERT INTO jobs(state) VALUES ('QUEUED')")
         before = db.read_bytes()
         with self.assertRaises(RuntimeError):
             self.service.idle_jobs()
@@ -134,6 +134,18 @@ class MaintenanceTests(unittest.TestCase):
             self.service.idle_jobs()
         with sqlite3.connect(db) as conn:
             conn.execute("UPDATE fixture_effects SET resolved_at='fixture'")
+        self.service.idle_jobs()
+        for delivery_state in ("QUEUED", "RUNNING"):
+            with sqlite3.connect(db) as conn:
+                conn.execute("UPDATE jobs SET result=?", (json.dumps({"qa_delivery_request":
+                    {"state": delivery_state}}),))
+            before = db.read_bytes()
+            with self.assertRaises(RuntimeError):
+                self.service.idle_jobs()
+            self.assertEqual(before, db.read_bytes())
+        with sqlite3.connect(db) as conn:
+            conn.execute("UPDATE jobs SET result=?", (json.dumps({"qa_delivery_request":
+                {"state": "INTERRUPTED"}}),))
         self.service.idle_jobs()
 
     def run_fixture(self, *, rollback=False, fail=None, revoke=False):

@@ -193,7 +193,7 @@ class UpgradeTests(unittest.TestCase):
         db = root / "state/jobs.sqlite3"
         db.touch(mode=0o600)
         with sqlite3.connect(db) as conn:
-            conn.executescript("CREATE TABLE jobs(state TEXT);"
+            conn.executescript("CREATE TABLE jobs(state TEXT, result TEXT);"
                                "CREATE TABLE fixture_effects(resolved_at TEXT);")
         unit = root / "service" / upgrade.UNIT
         unit.touch(mode=0o600)
@@ -762,19 +762,31 @@ class UpgradeTests(unittest.TestCase):
         db = self.kit / "jobs.sqlite3"
         db.touch(mode=0o600)
         with sqlite3.connect(db) as conn:
-            conn.executescript("CREATE TABLE jobs(state TEXT);"
+            conn.executescript("CREATE TABLE jobs(state TEXT, result TEXT);"
                                "CREATE TABLE fixture_effects(resolved_at TEXT);"
-                               "INSERT INTO jobs VALUES('SUCCEEDED');")
+                               "INSERT INTO jobs(state) VALUES('SUCCEEDED');")
         before = db.read_bytes()
         upgrade.check_jobs(self.kit)
         self.assertEqual(before, db.read_bytes())
         for state in ("RUNNING", "QUEUED", "unexpected", None):
             with sqlite3.connect(db) as conn:
-                conn.execute("INSERT INTO jobs VALUES(?)", (state,))
+                conn.execute("INSERT INTO jobs(state) VALUES(?)", (state,))
             with self.assertRaises(RuntimeError):
                 upgrade.check_jobs(self.kit)
             with sqlite3.connect(db) as conn:
                 conn.execute("DELETE FROM jobs WHERE state IS NOT 'SUCCEEDED'")
+        for delivery_state in ("QUEUED", "RUNNING"):
+            with sqlite3.connect(db) as conn:
+                conn.execute("UPDATE jobs SET result=?", (json.dumps({"qa_delivery_request":
+                    {"state": delivery_state}}),))
+            before = db.read_bytes()
+            with self.assertRaises(RuntimeError):
+                upgrade.check_jobs(self.kit)
+            self.assertEqual(before, db.read_bytes())
+        with sqlite3.connect(db) as conn:
+            conn.execute("UPDATE jobs SET result=?", (json.dumps({"qa_delivery_request":
+                {"state": "INTERRUPTED"}}),))
+        upgrade.check_jobs(self.kit)
         with sqlite3.connect(db) as conn:
             conn.execute("INSERT INTO fixture_effects VALUES(NULL)")
         with self.assertRaises(RuntimeError):

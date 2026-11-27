@@ -30,6 +30,7 @@ def deliver_qa(jobs, principal, job_id, *, project, head, repository_id, pr,
 
     A reserved ID is committed before upload. After an ambiguous create, only
     read-back reconciliation is allowed; a missing file does not prove absence.
+    RESERVED is proof no create was attempted and can proceed using the same ID.
     Successful replay re-verifies bytes and never creates a second file.
     """
     if type(pr) is not int or not 0 < pr <= 2147483647:
@@ -58,7 +59,7 @@ def deliver_qa(jobs, principal, job_id, *, project, head, repository_id, pr,
                 or current.get("state") not in {"RESERVED", "UNCERTAIN", "SUCCEEDED"}):
             raise PermissionError("QA_DELIVERY_BINDING_CHANGED")
         file_id = drive_id(current["file_id"])
-        if current["state"] == "RESERVED" and not reconcile_only:
+        if current["state"] == "RESERVED":
             guard()
             if hashlib.sha256(raw).hexdigest() != artifact["sha256"] or len(raw) != artifact["size"]:
                 raise ValueError("QA_DELIVERY_BYTES_CHANGED")
