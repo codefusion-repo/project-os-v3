@@ -9,6 +9,7 @@ import json
 import os
 from pathlib import Path
 import shutil
+import stat
 import subprocess
 import tempfile
 import zipfile
@@ -28,21 +29,42 @@ def command(*args):
                    timeout=180, check=True, umask=0o077)
 
 
+def copy_fixture_tools(source, destination):
+    # copytree preserves source modes. Remove group/other write permission
+    # only on the new fixture copy, not the runner's installed SDK/JDK.
+    shutil.copytree(source.resolve(strict=True), destination)
+    for path in (destination, *destination.rglob("*")):
+        info = path.lstat()
+        if not (stat.S_ISDIR(info.st_mode) or stat.S_ISREG(info.st_mode)):
+            raise ValueError("QA_CI_TOOL_COPY_UNSUPPORTED")
+        path.chmod(stat.S_IMODE(info.st_mode) & ~0o022)
+
+
 def main():
-    # Copy preinstalled runner tools to a private fixture directory. Hosted
-    # toolcache ancestors may be group writable; do not relax the signer's
-    # admission policy or change permissions of system tools.
+    # The workflow creates a new owner-private directory under /opt in the
+    # disposable VM; runner HOME or toolcache ancestors can be writable by
+    # groups. Preserve the production admission policy unchanged.
     sdk = Path(os.environ["ANDROID_HOME"])
     ndk = Path(os.environ["ANDROID_NDK_HOME"]) / "toolchains/llvm/prebuilt/linux-x86_64/bin"
     fixture = WorkspacePreflightTests()
     fixture.setUp()
     try:
-        with tempfile.TemporaryDirectory(prefix=".project-os-signing-", dir=Path.home()) as tmp:
+        with tempfile.TemporaryDirectory(prefix="signing-", dir="/opt/project-os-qa-ci") as tmp:
             root = Path(tmp).resolve()
             java = root / "java"
             tools = root / "build-tools"
-            shutil.copytree(Path(os.environ["JAVA_HOME_17_X64"]).resolve(strict=True), java)
-            shutil.copytree(sdk / "build-tools/36.0.0", tools)
+            copy_fixture_tools(Path(os.environ["JAVA_HOME_17_X64"]), java)
+            copy_fixture_tools(sdk / "build-tools/36.0.0", tools)
+            for executable in (java / "bin/keytool", java / "bin/java",
+                               tools / "aapt", tools / "apksigner", tools / "zipalign"):
+                for component in (executable, *executable.parents):
+                    info = component.stat()
+                    if info.st_uid not in {0, os.getuid()} or info.st_mode & 0o022:
+                        print("QA_CI_TOOL_ADMISSION", component.name,
+                              "mode=" + oct(stat.S_IMODE(info.st_mode)),
+                              "trusted_owner=" + str(info.st_uid in {0, os.getuid()}),
+                              flush=True)
+                        raise PermissionError("QA_CI_TOOLCHAIN_UNAVAILABLE")
             manifest = root / "AndroidManifest.xml"
             source = root / "fixture.c"
             source.write_text("int project_os_fixture(void) { return 42; }\n")
