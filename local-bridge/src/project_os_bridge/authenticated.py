@@ -11,7 +11,7 @@ import sys
 import threading
 import time
 from pathlib import Path
-from pydantic import StrictInt, StrictStr
+from pydantic import StrictBool, StrictInt, StrictStr
 
 from mcp.server import MCPServer
 from mcp.server.auth.middleware.auth_context import get_access_token
@@ -51,9 +51,44 @@ def fixture_enabled(verifier, image, context_id=None):
         return False
 
 
-def build_server(verifier, jobs, fixture_reader=None, *, fixture_image=None, diagnostics=None, context_id=None, github_provider=None, maintenance=None):
+def build_server(verifier, jobs, fixture_reader=None, *, fixture_image=None, diagnostics=None, context_id=None, github_provider=None, maintenance=None, workspace_candidate=False, workspace_backend=None):
+    from .workspace_jobs import SupervisedWorkspacePolicy
+    supervised_workspace = type(jobs.policy) is SupervisedWorkspacePolicy
+    if supervised_workspace:
+        workflows = {"probe_check", "workspace_prepare"}
+        if workspace_backend is not None:
+            from .workspace_podman import WorkspacePodman
+            if type(workspace_backend) is not WorkspacePodman or jobs.policy.backend is not workspace_backend:
+                raise ValueError("Supervised registered backend required")
+            workflows.add("workspace_execute")
+        if (not workspace_candidate or jobs.policy.verifier is not verifier
+                or jobs.probe.root != verifier.state_dir
+                or jobs.workflows != frozenset(workflows)
+                or fixture_reader is not None or fixture_image is not None
+                or jobs.policy.backend is not workspace_backend):
+            raise ValueError("Supervised workspace profile required")
+    if workspace_backend is not None and not workspace_candidate:
+        raise ValueError("Dedicated workspace candidate required")
+    if workspace_candidate and not supervised_workspace:
+        from .workspace_jobs import local_runtime
+        from .workspace_podman import WorkspacePodman
+        workflows = {"workspace_prepare"}
+        if workspace_backend is not None:
+            if type(workspace_backend) is not WorkspacePodman:
+                raise ValueError("Registered Podman backend required")
+            workflows.add("workspace_execute")
+            workspace_backend.identities()
+        if (jobs.workflows != frozenset(workflows) or jobs.probe.root == verifier.state_dir
+                or fixture_reader is not None or fixture_image is not None or github_provider is not None
+                or maintenance is not None or diagnostics is not None):
+            raise ValueError("Dedicated workspace candidate required")
+        local_runtime(jobs.probe.root)
     if github_provider is not None and (type(github_provider) not in (GitHubContext, MultiProjectContext) or fixture_image is not None or fixture_reader is not None):
         raise ValueError("Invalid GitHub context configuration")
+    delivery = None
+    if supervised_workspace and workspace_backend is not None and type(github_provider) is MultiProjectContext:
+        from .qa_drive_operational import SupervisedDriveDelivery
+        delivery = SupervisedDriveDelivery(jobs, github_provider)
     mcp = MCPServer("Project OS authenticated disposable jobs",
                     token_verifier=verifier,
                     # Let AuthSettings preserve the exact path-less issuer string.
@@ -85,6 +120,25 @@ def build_server(verifier, jobs, fixture_reader=None, *, fixture_image=None, dia
                     result["installation"] = {"status": "receipt_observed", **installed_receipt()}
                 except (OSError, ValueError, TypeError, RecursionError):
                     pass  # No private paths or exception details.
+            if workspace_candidate:
+                result["workspace_prepare_registered"] = True
+                result["workspace_prepare_available"] = (jobs.policy.available() if supervised_workspace else True)
+                result["workspace_execution_registered"] = workspace_backend is not None
+                result["workspace_execution_available"] = False
+                if workspace_backend is not None:
+                    try:
+                        from .workspace_jobs import local_runtime
+                        local_runtime(jobs.probe.root, jobs.policy)
+                        if not supervised_workspace or jobs.policy.execution_available():
+                            workspace_backend.identities()
+                            result["workspace_execution_available"] = True
+                    except (OSError, ValueError):
+                        pass
+                    result["workspace_execution_scope"] = ("supervised-local-binding" if supervised_workspace
+                                                           else "dedicated-candidate")
+            if delivery is not None:
+                result["qa_delivery_registered"] = True
+                result["qa_delivery_available"] = delivery.available(actor)
             if maintenance is not None:
                 result["maintenance_registered"] = True
                 result["maintenance_authorized"] = maintenance.enabled()
@@ -177,20 +231,206 @@ def build_server(verifier, jobs, fixture_reader=None, *, fixture_image=None, dia
                 raise PermissionError("DENIED")
             return {"job_id":jobs.submit(actor,"disposable","git_fixture_check",request_key)}
 
+    if workspace_candidate:
+        from .workspace_jobs import (submit_workspace, require_workspace_job,
+                                      workspace_changes as read_workspace_changes,
+                                      workspace_context as read_workspace_context)
+
+        async def submit_workspace_request(project, expected_sha, profile, request_key, *, execute, changes=None):
+            actor = principal()
+            token = get_access_token()
+
+            def check():
+                if (principal() != actor or token.expires_at is None
+                        or token.expires_at <= time.time()):
+                    raise PermissionError("DENIED")
+
+            def submit():
+                try:
+                    check()
+                    job = submit_workspace(jobs, actor, project, expected_sha, profile,
+                                           request_key, authorize=check,
+                                           backend=workspace_backend if execute else None, changes=changes)
+                    require_workspace_job(jobs, actor, job, allow_execute=workspace_backend is not None)
+                    check()
+                    return {"job_id": job}
+                except PermissionError:
+                    raise PermissionError("DENIED") from None
+                except (OSError, ValueError, TypeError):
+                    raise ValueError("WORKSPACE_UNAVAILABLE_OR_INVALID_REQUEST") from None
+                except Exception:
+                    raise RuntimeError("WORKSPACE_SUBMISSION_FAILED") from None
+
+            return await asyncio.to_thread(submit)
+
+        @mcp.tool(annotations=write)
+        async def submit_workspace_job(project: StrictStr, expected_sha: StrictStr,
+                                       profile: StrictStr, request_key: StrictStr,
+                                       changes: list[dict[str, StrictStr | None]] | None = None) -> dict:
+            """Prepare an exact committed revision; bounded text edits require a separate grant."""
+            return await submit_workspace_request(project, expected_sha, profile, request_key,
+                                                  execute=False, changes=changes)
+
+        if workspace_backend is not None:
+            @mcp.tool(annotations=write)
+            async def submit_workspace_execute(project: StrictStr, expected_sha: StrictStr,
+                                               profile: StrictStr, request_key: StrictStr,
+                                               changes: list[dict[str, StrictStr | None]] | None = None) -> dict:
+                """Queue a registered offline profile with optional grant-bound relative text edits.
+                Image and context are selected locally; no host paths, commands or image input."""
+                return await submit_workspace_request(project, expected_sha, profile, request_key,
+                                                      execute=True, changes=changes)
+
+        @mcp.tool(annotations=read)
+        async def workspace_changes(job_id: StrictStr) -> dict:
+            """Read a bounded historical diff of a caller's applied edits, not live files."""
+            actor = principal()
+            def collect():
+                try:
+                    result = read_workspace_changes(jobs, actor, job_id,
+                                                    allow_execute=workspace_backend is not None)
+                    if principal() != actor:
+                        raise PermissionError("DENIED")
+                    return result
+                except PermissionError:
+                    raise PermissionError("DENIED") from None
+                except (OSError, ValueError, TypeError, KeyError):
+                    raise ValueError("WORKSPACE_CHANGES_UNAVAILABLE") from None
+            return await asyncio.to_thread(collect)
+
+        @mcp.tool(annotations=read)
+        async def workspace_context(project: StrictStr, expected_sha: StrictStr,
+                                    profile: StrictStr, paths: list[StrictStr],
+                                    include_dirty: StrictBool = False) -> dict:
+            """Read selected committed text, or with a separate grant, its tracked local diff."""
+            actor = principal()
+            token = get_access_token()
+            def collect():
+                try:
+                    result = read_workspace_context(jobs, actor, project, expected_sha, profile, paths,
+                                                    include_dirty=include_dirty)
+                    if principal() != actor or token.expires_at is None or token.expires_at <= time.time():
+                        raise PermissionError("DENIED")
+                    return result
+                except PermissionError:
+                    raise PermissionError("DENIED") from None
+                except (OSError, ValueError, TypeError, KeyError):
+                    raise ValueError("WORKSPACE_CONTEXT_UNAVAILABLE") from None
+            return await asyncio.to_thread(collect)
+
+    if delivery is not None:
+        @mcp.tool(annotations=write)
+        async def deliver_qa_apk(job_id: StrictStr, project: StrictStr, expected_sha: StrictStr,
+                                 pr: StrictInt, reconcile_only: StrictBool = False) -> dict:
+            """Queue delivery of a finalized QA APK; poll qa_delivery_status.
+            Explicit reconciliation uses the same job and reserved remote ID."""
+            actor = principal()
+            token = get_access_token()
+
+            def check():
+                if principal() != actor or token.expires_at is None or token.expires_at <= time.time():
+                    raise PermissionError("DENIED")
+
+            def execute():
+                try:
+                    check()
+                    return delivery.submit(actor, job_id, project, expected_sha, pr,
+                                            check_session=check, reconcile_only=reconcile_only)
+                except PermissionError:
+                    raise PermissionError("DENIED") from None
+                except WorkerBusy:
+                    raise RuntimeError("QA_DELIVERY_WORKER_BUSY") from None
+                except Exception:
+                    # Never expose upstream bodies, upload session URLs or private paths.
+                    raise RuntimeError("QA_DELIVERY_UNAVAILABLE; inspect existing job evidence before retry") from None
+            return await asyncio.to_thread(execute)
+
+        @mcp.tool(annotations=read)
+        async def qa_delivery_status(job_id: StrictStr, project: StrictStr,
+                                     expected_sha: StrictStr, pr: StrictInt) -> dict:
+            """Return delivery status and verified link only for the authorized current PR."""
+            actor = principal()
+            token = get_access_token()
+            def check():
+                if principal() != actor or token.expires_at is None or token.expires_at <= time.time():
+                    raise PermissionError("DENIED")
+            def collect():
+                try:
+                    return delivery.status(actor, job_id, project, expected_sha, pr, check_session=check)
+                except PermissionError:
+                    raise PermissionError("DENIED") from None
+                except Exception:
+                    raise RuntimeError("QA_DELIVERY_STATUS_UNAVAILABLE") from None
+            return await asyncio.to_thread(collect)
+
+        @mcp.tool(annotations=read)
+        async def qa_delivery_preflight(project: StrictStr, expected_sha: StrictStr, pr: StrictInt) -> dict:
+            """Check actual private PR read permission without touching Drive."""
+            actor = principal()
+            token = get_access_token()
+            def check():
+                if principal() != actor or token.expires_at is None or token.expires_at <= time.time():
+                    raise PermissionError("DENIED")
+            def collect():
+                try:
+                    return delivery.preflight(actor, project, expected_sha, pr, check_session=check)
+                except PermissionError:
+                    raise PermissionError("DENIED") from None
+                except Exception:
+                    raise RuntimeError("QA_PR_READ_UNAVAILABLE") from None
+            return await asyncio.to_thread(collect)
+
+    def workspace_access(actor, job_id):
+        if supervised_workspace:
+            with jobs.transaction() as conn:
+                row = conn.execute("SELECT resource, workflow FROM jobs WHERE id=? AND principal=?",
+                                   (job_id, actor)).fetchone()
+            if row is None:
+                raise PermissionError("DENIED")
+            if row["resource"] == "disposable" and row["workflow"] == "probe_check":
+                return
+        if workspace_candidate:
+            try:
+                require_workspace_job(jobs, actor, job_id, allow_execute=workspace_backend is not None)
+            except (PermissionError, OSError, ValueError, TypeError):
+                raise PermissionError("DENIED") from None
+            if principal() != actor:
+                raise PermissionError("DENIED")
+
+    def redact_delivery(actor, job_id, result):
+        payload = result.get("result")
+        if isinstance(payload, dict) and "qa_delivery_request" in payload:
+            payload["qa_delivery_request"] = {"state": payload["qa_delivery_request"].get("state")}
+        if isinstance(payload, dict) and "qa_delivery" in payload:
+            # Historical generic job reads reveal state only, not the private file ID/link.
+            # The delivery tool revalidates live PR, current grant and remote file.
+            payload["qa_delivery"] = {"state": payload["qa_delivery"].get("state")}
+        return result
+
     @mcp.tool(annotations=read)
     def get_job_status(job_id: str) -> dict:
         """Read the caller's disposable job result."""
-        return jobs.get(principal(),job_id)
+        actor = principal()
+        workspace_access(actor, job_id)
+        result = jobs.get(actor, job_id)
+        workspace_access(actor, job_id)
+        return redact_delivery(actor, job_id, result)
 
     @mcp.tool(annotations=read)
     def get_job_evidence(job_id: str) -> dict:
         """Read the caller's persisted result and transitions; never execute a job."""
-        return jobs.evidence(principal(),job_id)
+        actor = principal()
+        workspace_access(actor, job_id)
+        result = jobs.evidence(actor, job_id)
+        workspace_access(actor, job_id)
+        return redact_delivery(actor, job_id, result)
 
     @mcp.tool(annotations=write)
     def cancel_job(job_id: str) -> dict:
         """Cancel the caller's queued disposable job; running jobs are not cancellable."""
-        return {"cancelled":jobs.cancel(principal(),job_id)}
+        actor = principal()
+        workspace_access(actor, job_id)
+        return {"cancelled":jobs.cancel(actor,job_id)}
 
     if fixture_reader is not None:
         @mcp.tool(annotations=read)
@@ -318,9 +558,9 @@ class LocalAuthorizationMiddleware:
         await self.app(scope, receive, send)
 
 
-def build_http_app(verifier, jobs, fixture_reader=None, *, audit=None, limit=120, fixture_image=None, diagnostics=None, context_id=None, github_provider=None, maintenance=None):
+def build_http_app(verifier, jobs, fixture_reader=None, *, audit=None, limit=120, fixture_image=None, diagnostics=None, context_id=None, github_provider=None, maintenance=None, workspace_candidate=False, workspace_backend=None):
     """Use the same authenticated ASGI stack in production and HTTP tests."""
-    server = build_server(verifier, jobs, fixture_reader, fixture_image=fixture_image, diagnostics=diagnostics, context_id=context_id, github_provider=github_provider, maintenance=maintenance)
+    server = build_server(verifier, jobs, fixture_reader, fixture_image=fixture_image, diagnostics=diagnostics, context_id=context_id, github_provider=github_provider, maintenance=maintenance, workspace_candidate=workspace_candidate, workspace_backend=workspace_backend)
     app = server.streamable_http_app(
         stateless_http=True, json_response=True, max_request_body_size=65536,
         host="127.0.0.1",
@@ -392,8 +632,34 @@ def exclusive_http_service(root):
         os.close(fd)
 
 
-def serve_with_worker(server, jobs, verifier, fixture_image, *, readiness=None, podman_context=None, context_id=None):
+def serve_with_worker(server, jobs, verifier, fixture_image, *, readiness=None, podman_context=None,
+                      context_id=None, workspace_backend=None, github_provider=None):
     """Stop HTTP on infrastructure failure; preserve in-flight cleanup on shutdown."""
+    if workspace_backend is not None:
+        from .workspace_podman import WorkspacePodman
+        from .workspace_jobs import local_runtime, SupervisedWorkspacePolicy
+        supervised = type(jobs.policy) is SupervisedWorkspacePolicy
+        expected = {"workspace_prepare", "workspace_execute"}
+        if supervised:
+            expected.add("probe_check")
+        if (type(workspace_backend) is not WorkspacePodman or readiness is None
+                or fixture_image is not None or podman_context is not None or context_id is not None
+                or jobs.workflows != frozenset(expected)
+                or (supervised and (jobs.probe.root != verifier.state_dir
+                    or jobs.policy.verifier is not verifier or jobs.policy.backend is not workspace_backend))
+                or (not supervised and jobs.probe.root == verifier.state_dir)):
+            raise ValueError("Supervised workspace backend required")
+        # Startup may precede global opt-in. No dispatch until verified TLS and
+        # live admission; loading the existing binding does not grant access.
+        if not supervised:
+            local_runtime(jobs.probe.root)
+        workspace_backend.identities()
+    delivery_worker = None
+    if (workspace_backend is not None and type(jobs.policy) is SupervisedWorkspacePolicy
+            and type(github_provider) is MultiProjectContext):
+        from .qa_drive_operational import SupervisedDriveDelivery
+        from .qa_drive_queue import recover, process_one
+        delivery_worker = SupervisedDriveDelivery(jobs, github_provider)
     stop = threading.Event()
     failed = threading.Event()
 
@@ -416,13 +682,19 @@ def serve_with_worker(server, jobs, verifier, fixture_image, *, readiness=None, 
                         break
                     except OSError:
                         stop.wait(0.25)
+            if delivery_worker is not None:
+                recover(jobs)
             while not stopping():
                 try:
                     if verifier.enabled():
                         run_pending(jobs, fixture_image=fixture_image, podman_context=podman_context,
                                     context_id=context_id,
                                     enabled=lambda: verifier.enabled() and not stopping(),
-                                    fixture_allowed=lambda: fixture_enabled(verifier, fixture_image, context_id))
+                                    fixture_allowed=lambda: fixture_enabled(verifier, fixture_image, context_id),
+                                    workspace_backend=workspace_backend)
+                        if delivery_worker is not None:
+                            process_one(jobs, delivery_worker,
+                                        enabled=lambda: verifier.enabled() and not stopping())
                     if jobs.pending_effects():
                         raise RuntimeError("RECONCILIATION_REQUIRED")
                 except WorkerBusy:
@@ -515,7 +787,19 @@ def main():
             if venv.name == ".venv" and venv.parent.name == "local-bridge":
                 maintenance = Maintenance(root, venv.parents[1])
                 grants.append((verifier.subject, "maintenance", "installation"))
-        jobs = Jobs(args.state_dir, Policy(grants), workflows=workflows)
+        from .workspace_jobs import load_supervised_workspace_policy, load_supervised_workspace_backend
+        try:
+            workspace_policy = load_supervised_workspace_policy(
+                verifier, grants, supervised=diagnostics is not None and args.fixture_image is None,
+                multi=args.github_projects)
+            workspace_backend = load_supervised_workspace_backend(workspace_policy)
+        except (OSError, ValueError, TypeError, subprocess.SubprocessError):
+            parser.error("Invalid private supervised workspace binding")
+        if workspace_policy is not None:
+            workflows = (*workflows, "workspace_prepare")
+        if workspace_backend is not None:
+            workflows = (*workflows, "workspace_execute")
+        jobs = Jobs(args.state_dir, workspace_policy or Policy(grants), workflows=workflows)
         if jobs.pending_effects():
             parser.error("RECONCILIATION_REQUIRED; stop and use local reconciliation")
         if args.fixture_image and args.supervised_ca is None:
@@ -528,12 +812,14 @@ def main():
         fixture = (None if github_provider is not None else
                    SyntheticGitHubReader(Policy([(verifier.subject,"github_read","disposable")]),args.state_dir))
         app = build_http_app(verifier,jobs,fixture,fixture_image=args.fixture_image,diagnostics=diagnostics,
-                             context_id=context_id,github_provider=github_provider,maintenance=maintenance)
+                             context_id=context_id,github_provider=github_provider,maintenance=maintenance,
+                             workspace_candidate=workspace_policy is not None, workspace_backend=workspace_backend)
         import uvicorn
         server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=args.port,
                                               access_log=False, **tls))
         serve_with_worker(server, jobs, verifier, args.fixture_image, readiness=readiness,
-                          podman_context=podman_context, context_id=context_id)
+                          podman_context=podman_context, context_id=context_id,
+                          workspace_backend=workspace_backend, github_provider=github_provider)
 
 
 if __name__ == "__main__":

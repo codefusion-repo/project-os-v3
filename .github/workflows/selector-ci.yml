@@ -59,6 +59,14 @@ jobs:
         # Ubuntu 24.04 supplies system Python 3.12; no toolcache override or
         # permission changes. The public coordinator enforces the same policy.
         run: env -u LD_LIBRARY_PATH -u PYTHONHOME -u PYTHONPATH PATH=/usr/bin:/bin /bin/bash local-bridge/scripts/ci-install.sh
+      - name: Verify real Android QA signing and exact delivery input
+        env:
+          PYTHONPATH: local-bridge/tests
+        run: |
+          # Fresh disposable GitHub-hosted VM only, never the PM host.
+          test ! -e /project-os-qa-ci && test ! -L /project-os-qa-ci
+          sudo install -d -m 0700 -o "$(id -u)" -g "$(id -g)" /project-os-qa-ci
+          local-bridge/.venv/bin/python local-bridge/scripts/ci-android-qa-signing.py
       - name: Record verified wheel receipt for maintenance preflight
         id: wheel-receipt
         run: |
@@ -81,6 +89,91 @@ jobs:
         with:
           name: ${{ steps.wheel-receipt.outputs.name }}
           path: ${{ runner.temp }}/maintenance-wheel-receipt.json
+          if-no-files-found: error
+          retention-days: 90
+
+  mobile-profile-smoke:
+    # CI-only trusted synthetic projects; not an approved local execution image.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        stack: [flutter, expo]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install locked Bridge imports for disposable job orchestration
+        run: |
+          python3 -m venv "$RUNNER_TEMP/mobile-bridge"
+          "$RUNNER_TEMP/mobile-bridge/bin/python" -m pip install --require-hashes --only-binary=:all: -r local-bridge/requirements-linux-py312.lock
+      - name: Require rootless Podman and OCI conversion tools
+        run: |
+          command -v podman
+          if ! command -v skopeo >/dev/null; then
+            sudo apt-get update
+            sudo apt-get install -y --no-install-recommends skopeo
+          fi
+          podman --version
+          skopeo --version
+      - name: Materialize synthetic revision and execute registered profile commands through rootless Podman
+        env:
+          MOBILE_STACK: ${{ matrix.stack }}
+          PYTHONPATH: local-bridge/src:local-bridge/tests
+        run: '"$RUNNER_TEMP/mobile-bridge/bin/python" local-bridge/scripts/ci-mobile-smoke.py'
+      - name: Preserve mobile smoke evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: mobile-smoke-${{ matrix.stack }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/mobile-smoke-evidence/
+          if-no-files-found: error
+          retention-days: 90
+
+  mobile-apk-smoke:
+    # Both reference APKs use the same CI-only job contract; no emulator or local runtime.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 55
+    strategy:
+      fail-fast: false
+      matrix:
+        stack: [flutter, expo]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install locked Bridge imports
+        run: |
+          python3 -m venv "$RUNNER_TEMP/mobile-bridge"
+          "$RUNNER_TEMP/mobile-bridge/bin/python" -m pip install --require-hashes --only-binary=:all: -r local-bridge/requirements-linux-py312.lock
+      - name: Require rootless Podman and OCI conversion tools
+        run: |
+          command -v podman
+          if ! command -v skopeo >/dev/null; then
+            sudo apt-get update
+            sudo apt-get install -y --no-install-recommends skopeo
+          fi
+          podman --version
+          skopeo --version
+      - name: Build synthetic debug APK through authenticated durable Podman job offline
+        env:
+          MOBILE_STACK: ${{ matrix.stack }}
+          MOBILE_APK: '1'
+          PYTHONPATH: local-bridge/src:local-bridge/tests
+        run: '"$RUNNER_TEMP/mobile-bridge/bin/python" local-bridge/scripts/ci-mobile-smoke.py'
+      - name: Preserve APK and evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: mobile-apk-${{ matrix.stack }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/mobile-smoke-evidence/
           if-no-files-found: error
           retention-days: 90
 

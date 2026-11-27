@@ -34,7 +34,7 @@ class Jobs:
         self.probe = Probe(root)
         self.policy = policy
         self.workflows = frozenset(workflows)
-        if not self.workflows <= {"probe_check", "git_fixture_check"}:
+        if not self.workflows <= {"probe_check", "git_fixture_check", "fixture_package", "workspace_prepare", "workspace_execute"}:
             raise ValueError("Unknown workflow configuration")
         self.db = root / "jobs.sqlite3"
         import os
@@ -52,6 +52,16 @@ class Jobs:
             c.execute("""CREATE TABLE IF NOT EXISTS events (
                 id INTEGER PRIMARY KEY, job_id TEXT NOT NULL, state TEXT NOT NULL,
                 at TEXT NOT NULL)""")
+
+            # Parameters are scoped to the disposable package profile. Keep the
+            # existing jobs schema readable/writable by retained older runtimes.
+            if "fixture_package" in self.workflows:
+                c.execute("""CREATE TABLE IF NOT EXISTS package_inputs (
+                    job_id TEXT PRIMARY KEY, expected_sha TEXT NOT NULL)""")
+
+            if self.workflows & {"workspace_prepare", "workspace_execute"}:
+                c.execute("""CREATE TABLE IF NOT EXISTS workspace_inputs (
+                    job_id TEXT PRIMARY KEY, request TEXT NOT NULL)""")
 
             # Legacy interrupted/uncertain fixtures have no recorded identity.
             # Do not infer absence or silently migrate their external effects.
@@ -95,12 +105,28 @@ class Jobs:
     def event(self, c, job_id, state):
         c.execute("INSERT INTO events(job_id,state,at) VALUES(?,?,?)", (job_id,state,now()))
 
-    def submit(self, principal, resource, workflow, request_key):
+    def submit(self, principal, resource, workflow, request_key, *, expected_sha=None, workspace=None):
         self.policy.require(principal, "submit", resource)
-        if resource != "disposable" or workflow not in self.workflows:
+        expected_resource = "disposable"
+        if workflow in {"workspace_prepare", "workspace_execute"}:
+            from .workspace_jobs import workspace_resource
+            expected_resource = workspace_resource(self.policy)
+        if resource != expected_resource or workflow not in self.workflows:
             raise ValueError("Unknown workflow or resource")
         if workflow == "git_fixture_check":
             self.policy.require(principal, "git_workflow", resource)
+        if workflow == "fixture_package":
+            self.policy.require(principal, "fixture_package", resource)
+            if not isinstance(expected_sha, str) or not re.fullmatch(r"[0-9a-f]{40}", expected_sha):
+                raise ValueError("Full fixture SHA required")
+        elif expected_sha is not None:
+            raise ValueError("Unexpected revision parameter")
+        if workflow in {"workspace_prepare", "workspace_execute"}:
+            from .workspace_jobs import authorize_request
+            authorize_request(self.policy, principal, workspace, execute=workflow == "workspace_execute")
+            workspace = json.dumps(workspace, sort_keys=True, separators=(",", ":"))
+        elif workspace is not None:
+            raise ValueError("Unexpected workspace parameters")
         if not isinstance(request_key, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,80}", request_key):
             raise ValueError("Invalid request key")
         with self.transaction() as c:
@@ -109,6 +135,16 @@ class Jobs:
             if row:
                 if row["workflow"] != workflow:
                     raise ValueError("Idempotency conflict")
+                if workflow == "fixture_package":
+                    parameters = c.execute("SELECT expected_sha FROM package_inputs WHERE job_id=?",
+                                           (row["id"],)).fetchone()
+                    if not parameters or parameters["expected_sha"] != expected_sha:
+                        raise ValueError("Idempotency conflict")
+                if workflow in {"workspace_prepare", "workspace_execute"}:
+                    parameters = c.execute("SELECT request FROM workspace_inputs WHERE job_id=?",
+                                           (row["id"],)).fetchone()
+                    if not parameters or parameters["request"] != workspace:
+                        raise ValueError("Idempotency conflict")
                 return row["id"]
             if c.execute("SELECT 1 FROM fixture_effects WHERE resolved_at IS NULL LIMIT 1").fetchone():
                 raise QueueLimitError("RECONCILIATION_REQUIRED")
@@ -121,10 +157,23 @@ class Jobs:
             if workflow == "git_fixture_check" and c.execute(
                     "SELECT count(*) FROM jobs WHERE workflow='git_fixture_check'").fetchone()[0] >= 8:
                 raise QueueLimitError("FIXTURE_STORAGE_LIMIT")
+            if workflow == "fixture_package" and c.execute(
+                    "SELECT count(*) FROM jobs WHERE workflow='fixture_package'").fetchone()[0] >= 8:
+                raise QueueLimitError("FIXTURE_STORAGE_LIMIT")
+            if workflow == "workspace_execute" and "context_id" not in json.loads(workspace) and c.execute(
+                    "SELECT 1 FROM jobs WHERE workflow='workspace_execute' LIMIT 1").fetchone():
+                raise QueueLimitError("DISPOSABLE_EXECUTION_ALREADY_USED")
+            if workflow in {"workspace_prepare", "workspace_execute"} and c.execute(
+                    "SELECT count(*) FROM jobs WHERE workflow IN ('workspace_prepare','workspace_execute')").fetchone()[0] >= 8:
+                raise QueueLimitError("WORKSPACE_STORAGE_LIMIT")
             job_id = uuid.uuid4().hex
             stamp = now()
             c.execute("INSERT INTO jobs VALUES(?,?,?,?,?,?,?,?,?)",
                       (job_id,principal,resource,workflow,request_key,"QUEUED",None,stamp,stamp))
+            if workflow == "fixture_package":
+                c.execute("INSERT INTO package_inputs VALUES(?,?)", (job_id, expected_sha))
+            if workflow in {"workspace_prepare", "workspace_execute"}:
+                c.execute("INSERT INTO workspace_inputs VALUES(?,?)", (job_id, workspace))
             self.event(c, job_id, "QUEUED")
             return job_id
 
@@ -149,7 +198,16 @@ class Jobs:
                     "result":json.loads(row["result"]) if row["result"] else None,
                     "events":[dict(event) for event in events]}
 
-    def claim(self, *, fixture_context=None):
+    def claim(self, *, fixture_context=None, workspace_context=None, workspace_contexts=None):
+        if workspace_contexts is not None:
+            if (workspace_context is not None or not isinstance(workspace_contexts, dict)
+                    or any(not isinstance(key, str) or not isinstance(value, str)
+                           or not re.fullmatch(r"[0-9a-f]{64}", value)
+                           for key, value in workspace_contexts.items())):
+                raise ValueError("Invalid workspace contexts")
+        if workspace_context is not None and (not isinstance(workspace_context, str)
+                or not re.fullmatch(r"[0-9a-f]{64}", workspace_context)):
+            raise ValueError("Invalid workspace context")
         if fixture_context is not None and (not isinstance(fixture_context, str)
                 or not re.fullmatch(r"[0-9a-f]{64}", fixture_context)):
             raise ValueError("Invalid fixture context")
@@ -164,6 +222,39 @@ class Jobs:
                     self.policy.require(row["principal"], "submit", row["resource"])
                     if row["workflow"] not in self.workflows:
                         raise PermissionError("Workflow disabled")
+                    if row["workflow"] == "fixture_package":
+                        self.policy.require(row["principal"], "fixture_package", row["resource"])
+                        parameters = c.execute("SELECT expected_sha FROM package_inputs WHERE job_id=?",
+                                               (row["id"],)).fetchone()
+                        if not parameters or not re.fullmatch(r"[0-9a-f]{40}", parameters["expected_sha"]):
+                            raise PermissionError("Missing package revision")
+                    if row["workflow"] in {"workspace_prepare", "workspace_execute"}:
+                        from .workspace_jobs import authorize_request
+                        parameters = c.execute("SELECT request FROM workspace_inputs WHERE job_id=?",
+                                               (row["id"],)).fetchone()
+                        if not parameters:
+                            raise PermissionError("Missing workspace request")
+                        try:
+                            workspace = json.loads(parameters["request"])
+                            authorize_request(self.policy, row["principal"], workspace,
+                                              execute=row["workflow"] == "workspace_execute")
+                        except (ValueError, TypeError):
+                            raise PermissionError("Invalid workspace request") from None
+                    selected_context = workspace_context
+                    if row["workflow"] == "workspace_execute":
+                        if workspace_contexts is not None:
+                            from .workspace_profiles import execution_route
+                            key = execution_route(workspace["profile"], workspace["project"])
+                            selected_context = workspace_contexts.get(key)
+                            # Profile-only bindings are limited to the dedicated
+                            # disposable candidate, never supervised workspace jobs.
+                            if (selected_context is None and row["resource"] == "disposable"
+                                    and all(":" not in item for item in workspace_contexts)):
+                                selected_context = workspace_contexts.get(workspace["profile"])
+                            if selected_context is None:
+                                raise PermissionError("Workspace profile context unavailable")
+                        if workspace.get("context_id") != selected_context:
+                            raise PermissionError("Workspace context unavailable")
                     if row["workflow"] == "git_fixture_check":
                         self.policy.require(row["principal"], "git_workflow", row["resource"])
                         if fixture_context is None:
@@ -174,11 +265,17 @@ class Jobs:
                     continue
                 self.transition(c,row["id"],"QUEUED","RUNNING")
                 claimed = dict(row)
-                if row["workflow"] == "git_fixture_check":
+                if row["workflow"] in {"workspace_prepare", "workspace_execute"}:
+                    claimed["workspace"] = workspace
+                if row["workflow"] == "fixture_package":
+                    claimed["expected_sha"] = parameters["expected_sha"]
+                if row["workflow"] == "git_fixture_check" or (
+                        row["workflow"] == "workspace_execute" and selected_context is not None):
+                    effect_context = fixture_context if row["workflow"] == "git_fixture_check" else selected_context
                     token = uuid.uuid4().hex
                     c.execute("INSERT INTO fixture_effects(job_id,token,context_id) VALUES(?,?,?)",
-                              (row["id"],token,fixture_context))
-                    claimed.update(effect_token=token, effect_context=fixture_context)
+                              (row["id"],token,effect_context))
+                    claimed.update(effect_token=token, effect_context=effect_context)
                 return claimed
 
     def transition(self,c,job_id,old,new,result=None):

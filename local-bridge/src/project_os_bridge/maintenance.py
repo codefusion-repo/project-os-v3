@@ -276,7 +276,7 @@ class Maintenance:
             return (all(private_bytes(self.state / name, 0) == b""
                         for name in (FLAG, FLAGS[0]))
                     and not any(os.path.lexists(self.state / name)
-                                for name in ("fixture-image", "local-fixture-mode")))
+                                for name in ("fixture-image", "local-fixture-mode", "workspace-grants.json", "workspace-execution.json")))
         except (OSError, ValueError):
             return False
 
@@ -426,6 +426,8 @@ class Maintenance:
             if conn.execute("SELECT 1 FROM jobs WHERE state IS NULL OR state NOT IN "
                             "('SUCCEEDED','FAILED','BLOCKED','CANCELLED','INTERRUPTED') LIMIT 1").fetchone():
                 raise RuntimeError("Pending jobs")
+            if conn.execute("SELECT 1 FROM jobs WHERE json_extract(result,'$.qa_delivery_request.state') IN ('QUEUED','RUNNING') LIMIT 1").fetchone():
+                raise RuntimeError("Pending QA delivery")
             if conn.execute("SELECT 1 FROM fixture_effects WHERE resolved_at IS NULL LIMIT 1").fetchone():
                 raise RuntimeError("Unresolved effects")
 
