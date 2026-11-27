@@ -24,7 +24,7 @@ SUPERVISED_GRANTS = "workspace-grants.json"
 SUPERVISED_EXECUTION = "workspace-execution.json"
 PREPARATION_OPS = frozenset({"workspace_prepare", "workspace_materialize",
                              "workspace_change", "workspace_context", "workspace_dirty_context", *PROFILES})
-WORKSPACE_OPS = PREPARATION_OPS | {"workspace_execute"}
+WORKSPACE_OPS = PREPARATION_OPS | {"workspace_execute", "workspace_delivery"}
 
 
 class SupervisedWorkspacePolicy(Policy):
@@ -99,7 +99,7 @@ class SupervisedWorkspacePolicy(Policy):
                     return
             elif (operation in WORKSPACE_OPS and operation in self.initial.get(resource, ())
                   and operation in current.get(resource, ())
-                  and (operation != "workspace_execute" or self.execution_available(resource))):
+                  and (operation not in {"workspace_execute", "workspace_delivery"} or self.execution_available(resource))):
                 return
             raise PermissionError("DENIED")
         super().require(principal, operation, resource)

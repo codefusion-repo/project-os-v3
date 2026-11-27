@@ -35,7 +35,8 @@ def drive_id(value):
 
 
 class DrivePublisher:
-    def __init__(self, credential_path, folder_id, owner_permission_id, *, transport=None):
+    def __init__(self, credential_path, folder_id, owner_permission_id, *, transport=None, check_access=lambda: None):
+        self.check_access = check_access
         self.folder = drive_id(folder_id)
         self.owner = drive_id(owner_permission_id)
         self.credential_path = credential_path
@@ -61,6 +62,7 @@ class DrivePublisher:
         self.http.close()
 
     def _check(self):
+        self.check_access()
         if _private_bytes(self.credential_path, 16384) != self._credential:
             raise PermissionError("DRIVE_CREDENTIAL_CHANGED")
 
@@ -81,6 +83,7 @@ class DrivePublisher:
                     body.extend(chunk)
                     if len(body) > limit:
                         raise DriveDeliveryError("DRIVE_RESPONSE_LIMIT")
+                self._check()
                 return response.status_code, dict(response.headers), bytes(body)
         except httpx.HTTPError:
             raise DriveDeliveryError("DRIVE_TRANSPORT_UNCERTAIN") from None
@@ -156,6 +159,7 @@ class DrivePublisher:
         if (u.scheme != "https" or u.netloc != "www.googleapis.com"
                 or u.path != "/upload/drive/v3/files" or not u.query or u.fragment):
             raise DriveDeliveryError("DRIVE_SESSION_INVALID")
+        self.require_folder()
         self._request("PUT", location, expected=(200, 201), auth=False,
                       headers={"Content-Type": MIME, "Content-Length": str(len(raw)),
                                "Content-Range": f"bytes 0-{len(raw)-1}/{len(raw)}"},

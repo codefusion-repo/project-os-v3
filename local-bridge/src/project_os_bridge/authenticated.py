@@ -85,6 +85,10 @@ def build_server(verifier, jobs, fixture_reader=None, *, fixture_image=None, dia
         local_runtime(jobs.probe.root)
     if github_provider is not None and (type(github_provider) not in (GitHubContext, MultiProjectContext) or fixture_image is not None or fixture_reader is not None):
         raise ValueError("Invalid GitHub context configuration")
+    delivery = None
+    if supervised_workspace and workspace_backend is not None and type(github_provider) is MultiProjectContext:
+        from .qa_drive_operational import SupervisedDriveDelivery
+        delivery = SupervisedDriveDelivery(jobs, github_provider)
     mcp = MCPServer("Project OS authenticated disposable jobs",
                     token_verifier=verifier,
                     # Let AuthSettings preserve the exact path-less issuer string.
@@ -132,6 +136,9 @@ def build_server(verifier, jobs, fixture_reader=None, *, fixture_image=None, dia
                         pass
                     result["workspace_execution_scope"] = ("supervised-local-binding" if supervised_workspace
                                                            else "dedicated-candidate")
+            if delivery is not None:
+                result["qa_delivery_registered"] = True
+                result["qa_delivery_available"] = delivery.available(actor)
             if maintenance is not None:
                 result["maintenance_registered"] = True
                 result["maintenance_authorized"] = maintenance.enabled()
@@ -311,6 +318,33 @@ def build_server(verifier, jobs, fixture_reader=None, *, fixture_image=None, dia
                     raise ValueError("WORKSPACE_CONTEXT_UNAVAILABLE") from None
             return await asyncio.to_thread(collect)
 
+    if delivery is not None:
+        @mcp.tool(annotations=write)
+        async def deliver_qa_apk(job_id: StrictStr, project: StrictStr, expected_sha: StrictStr,
+                                 pr: StrictInt, reconcile_only: StrictBool = False) -> dict:
+            """Deliver a finalized QA APK to the enrolled private Drive folder.
+            Reuse the same job after uncertain results; never return APK bytes or credentials."""
+            actor = principal()
+            token = get_access_token()
+
+            def check():
+                if principal() != actor or token.expires_at is None or token.expires_at <= time.time():
+                    raise PermissionError("DENIED")
+
+            def execute():
+                try:
+                    check()
+                    return delivery.deliver(actor, job_id, project, expected_sha, pr,
+                                            check_session=check, reconcile_only=reconcile_only)
+                except PermissionError:
+                    raise PermissionError("DENIED") from None
+                except WorkerBusy:
+                    raise RuntimeError("QA_DELIVERY_WORKER_BUSY") from None
+                except Exception:
+                    # Never expose upstream bodies, upload session URLs or private paths.
+                    raise RuntimeError("QA_DELIVERY_UNAVAILABLE; inspect existing job evidence before retry") from None
+            return await asyncio.to_thread(execute)
+
     def workspace_access(actor, job_id):
         if supervised_workspace:
             with jobs.transaction() as conn:
@@ -328,6 +362,14 @@ def build_server(verifier, jobs, fixture_reader=None, *, fixture_image=None, dia
             if principal() != actor:
                 raise PermissionError("DENIED")
 
+    def redact_delivery(actor, job_id, result):
+        payload = result.get("result")
+        if isinstance(payload, dict) and "qa_delivery" in payload:
+            # Historical generic job reads reveal state only, not the private file ID/link.
+            # The delivery tool revalidates live PR, current grant and remote file.
+            payload["qa_delivery"] = {"state": payload["qa_delivery"].get("state")}
+        return result
+
     @mcp.tool(annotations=read)
     def get_job_status(job_id: str) -> dict:
         """Read the caller's disposable job result."""
@@ -335,7 +377,7 @@ def build_server(verifier, jobs, fixture_reader=None, *, fixture_image=None, dia
         workspace_access(actor, job_id)
         result = jobs.get(actor, job_id)
         workspace_access(actor, job_id)
-        return result
+        return redact_delivery(actor, job_id, result)
 
     @mcp.tool(annotations=read)
     def get_job_evidence(job_id: str) -> dict:
@@ -344,7 +386,7 @@ def build_server(verifier, jobs, fixture_reader=None, *, fixture_image=None, dia
         workspace_access(actor, job_id)
         result = jobs.evidence(actor, job_id)
         workspace_access(actor, job_id)
-        return result
+        return redact_delivery(actor, job_id, result)
 
     @mcp.tool(annotations=write)
     def cancel_job(job_id: str) -> dict:
