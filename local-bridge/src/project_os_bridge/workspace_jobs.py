@@ -80,7 +80,7 @@ def submit_workspace(jobs, principal, project, expected_sha, profile, request_ke
     request = {"project": project, "profile": profile, "expected_sha": expected_sha,
                "binding": binding_digest(entry, root)}
     if changes is not None:
-        policy.require(principal, "workspace_change", project)
+        jobs.policy.require(principal, "workspace_change", project)
         request["changes"] = normalize_changes(changes)
     execute = image_id is not None
     if execute:

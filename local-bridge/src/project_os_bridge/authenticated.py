@@ -505,8 +505,19 @@ def exclusive_http_service(root):
         os.close(fd)
 
 
-def serve_with_worker(server, jobs, verifier, fixture_image, *, readiness=None, podman_context=None, context_id=None):
+def serve_with_worker(server, jobs, verifier, fixture_image, *, readiness=None, podman_context=None,
+                      context_id=None, workspace_backend=None):
     """Stop HTTP on infrastructure failure; preserve in-flight cleanup on shutdown."""
+    if workspace_backend is not None:
+        from .workspace_podman import WorkspacePodman
+        from .workspace_jobs import local_runtime
+        if (type(workspace_backend) is not WorkspacePodman or readiness is None
+                or fixture_image is not None or podman_context is not None or context_id is not None
+                or jobs.workflows != frozenset({"workspace_prepare", "workspace_execute"})
+                or jobs.probe.root == verifier.state_dir):
+            raise ValueError("Dedicated supervised workspace candidate required")
+        local_runtime(jobs.probe.root)
+        workspace_backend.identity()
     stop = threading.Event()
     failed = threading.Event()
 
@@ -535,7 +546,8 @@ def serve_with_worker(server, jobs, verifier, fixture_image, *, readiness=None, 
                         run_pending(jobs, fixture_image=fixture_image, podman_context=podman_context,
                                     context_id=context_id,
                                     enabled=lambda: verifier.enabled() and not stopping(),
-                                    fixture_allowed=lambda: fixture_enabled(verifier, fixture_image, context_id))
+                                    fixture_allowed=lambda: fixture_enabled(verifier, fixture_image, context_id),
+                                    workspace_backend=workspace_backend)
                     if jobs.pending_effects():
                         raise RuntimeError("RECONCILIATION_REQUIRED")
                 except WorkerBusy:
