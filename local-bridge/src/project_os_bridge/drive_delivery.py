@@ -5,6 +5,7 @@ No generic Drive access, arbitrary destination URL or permission mutation.
 """
 import hashlib
 import json
+import logging
 import re
 from urllib.parse import urlsplit
 
@@ -49,6 +50,9 @@ class DrivePublisher:
         # Binding change invalidates an in-flight request; do not record secret material.
         self.binding = hashlib.sha256(json.dumps({"folder": self.folder, "owner": self.owner,
             "client_id": config["client_id"], "scope": SCOPE}, sort_keys=True).encode()).hexdigest()
+        # Request URLs can include bearer-like resumable upload session IDs.
+        logging.getLogger("httpx").setLevel(logging.WARNING)
+        logging.getLogger("httpcore").setLevel(logging.WARNING)
         self.http = httpx.Client(transport=transport, trust_env=False, follow_redirects=False,
                                  timeout=httpx.Timeout(90, connect=15))
         self._token = None
@@ -153,7 +157,8 @@ class DrivePublisher:
                 or u.path != "/upload/drive/v3/files" or not u.query or u.fragment):
             raise DriveDeliveryError("DRIVE_SESSION_INVALID")
         self._request("PUT", location, expected=(200, 201), auth=False,
-                      headers={"Content-Type": MIME, "Content-Length": str(len(raw))},
+                      headers={"Content-Type": MIME, "Content-Length": str(len(raw)),
+                               "Content-Range": f"bytes 0-{len(raw)-1}/{len(raw)}"},
                       content=raw)
 
     def verify(self, file_id, artifact, properties):
