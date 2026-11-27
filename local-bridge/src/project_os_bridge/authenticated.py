@@ -322,8 +322,8 @@ def build_server(verifier, jobs, fixture_reader=None, *, fixture_image=None, dia
         @mcp.tool(annotations=write)
         async def deliver_qa_apk(job_id: StrictStr, project: StrictStr, expected_sha: StrictStr,
                                  pr: StrictInt, reconcile_only: StrictBool = False) -> dict:
-            """Deliver a finalized QA APK to the enrolled private Drive folder.
-            Reuse the same job after uncertain results; never return APK bytes or credentials."""
+            """Queue delivery of a finalized QA APK; poll qa_delivery_status.
+            Explicit reconciliation uses the same job and reserved remote ID."""
             actor = principal()
             token = get_access_token()
 
@@ -334,7 +334,7 @@ def build_server(verifier, jobs, fixture_reader=None, *, fixture_image=None, dia
             def execute():
                 try:
                     check()
-                    return delivery.deliver(actor, job_id, project, expected_sha, pr,
+                    return delivery.submit(actor, job_id, project, expected_sha, pr,
                                             check_session=check, reconcile_only=reconcile_only)
                 except PermissionError:
                     raise PermissionError("DENIED") from None
@@ -344,6 +344,41 @@ def build_server(verifier, jobs, fixture_reader=None, *, fixture_image=None, dia
                     # Never expose upstream bodies, upload session URLs or private paths.
                     raise RuntimeError("QA_DELIVERY_UNAVAILABLE; inspect existing job evidence before retry") from None
             return await asyncio.to_thread(execute)
+
+        @mcp.tool(annotations=read)
+        async def qa_delivery_status(job_id: StrictStr, project: StrictStr,
+                                     expected_sha: StrictStr, pr: StrictInt) -> dict:
+            """Return delivery status and verified link only for the authorized current PR."""
+            actor = principal()
+            token = get_access_token()
+            def check():
+                if principal() != actor or token.expires_at is None or token.expires_at <= time.time():
+                    raise PermissionError("DENIED")
+            def collect():
+                try:
+                    return delivery.status(actor, job_id, project, expected_sha, pr, check_session=check)
+                except PermissionError:
+                    raise PermissionError("DENIED") from None
+                except Exception:
+                    raise RuntimeError("QA_DELIVERY_STATUS_UNAVAILABLE") from None
+            return await asyncio.to_thread(collect)
+
+        @mcp.tool(annotations=read)
+        async def qa_delivery_preflight(project: StrictStr, expected_sha: StrictStr, pr: StrictInt) -> dict:
+            """Check actual private PR read permission without touching Drive."""
+            actor = principal()
+            token = get_access_token()
+            def check():
+                if principal() != actor or token.expires_at is None or token.expires_at <= time.time():
+                    raise PermissionError("DENIED")
+            def collect():
+                try:
+                    return delivery.preflight(actor, project, expected_sha, pr, check_session=check)
+                except PermissionError:
+                    raise PermissionError("DENIED") from None
+                except Exception:
+                    raise RuntimeError("QA_PR_READ_UNAVAILABLE") from None
+            return await asyncio.to_thread(collect)
 
     def workspace_access(actor, job_id):
         if supervised_workspace:
@@ -364,6 +399,8 @@ def build_server(verifier, jobs, fixture_reader=None, *, fixture_image=None, dia
 
     def redact_delivery(actor, job_id, result):
         payload = result.get("result")
+        if isinstance(payload, dict) and "qa_delivery_request" in payload:
+            payload["qa_delivery_request"] = {"state": payload["qa_delivery_request"].get("state")}
         if isinstance(payload, dict) and "qa_delivery" in payload:
             # Historical generic job reads reveal state only, not the private file ID/link.
             # The delivery tool revalidates live PR, current grant and remote file.
@@ -596,7 +633,7 @@ def exclusive_http_service(root):
 
 
 def serve_with_worker(server, jobs, verifier, fixture_image, *, readiness=None, podman_context=None,
-                      context_id=None, workspace_backend=None):
+                      context_id=None, workspace_backend=None, github_provider=None):
     """Stop HTTP on infrastructure failure; preserve in-flight cleanup on shutdown."""
     if workspace_backend is not None:
         from .workspace_podman import WorkspacePodman
@@ -617,6 +654,12 @@ def serve_with_worker(server, jobs, verifier, fixture_image, *, readiness=None, 
         if not supervised:
             local_runtime(jobs.probe.root)
         workspace_backend.identities()
+    delivery_worker = None
+    if (workspace_backend is not None and type(jobs.policy) is SupervisedWorkspacePolicy
+            and type(github_provider) is MultiProjectContext):
+        from .qa_drive_operational import SupervisedDriveDelivery
+        from .qa_drive_queue import recover, process_one
+        delivery_worker = SupervisedDriveDelivery(jobs, github_provider)
     stop = threading.Event()
     failed = threading.Event()
 
@@ -639,6 +682,8 @@ def serve_with_worker(server, jobs, verifier, fixture_image, *, readiness=None, 
                         break
                     except OSError:
                         stop.wait(0.25)
+            if delivery_worker is not None:
+                recover(jobs)
             while not stopping():
                 try:
                     if verifier.enabled():
@@ -647,6 +692,9 @@ def serve_with_worker(server, jobs, verifier, fixture_image, *, readiness=None, 
                                     enabled=lambda: verifier.enabled() and not stopping(),
                                     fixture_allowed=lambda: fixture_enabled(verifier, fixture_image, context_id),
                                     workspace_backend=workspace_backend)
+                        if delivery_worker is not None:
+                            process_one(jobs, delivery_worker,
+                                        enabled=lambda: verifier.enabled() and not stopping())
                     if jobs.pending_effects():
                         raise RuntimeError("RECONCILIATION_REQUIRED")
                 except WorkerBusy:
@@ -771,7 +819,7 @@ def main():
                                               access_log=False, **tls))
         serve_with_worker(server, jobs, verifier, args.fixture_image, readiness=readiness,
                           podman_context=podman_context, context_id=context_id,
-                          workspace_backend=workspace_backend)
+                          workspace_backend=workspace_backend, github_provider=github_provider)
 
 
 if __name__ == "__main__":

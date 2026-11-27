@@ -222,6 +222,8 @@ def check_jobs(state):
         if conn.execute(f"SELECT count(*) FROM jobs WHERE state IS NULL OR state NOT IN ({marks})",
                         STATES).fetchone()[0]:
             raise RuntimeError("Pending or unknown jobs")
+        if conn.execute("SELECT 1 FROM jobs WHERE json_extract(result,'$.qa_delivery_request.state') IN ('QUEUED','RUNNING') LIMIT 1").fetchone():
+            raise RuntimeError("Pending QA delivery")
         if conn.execute("SELECT count(*) FROM fixture_effects WHERE resolved_at IS NULL").fetchone()[0]:
             raise RuntimeError("Unresolved effects")
 

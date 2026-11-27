@@ -1,5 +1,6 @@
 """Supervised private Drive binding, with the existing GitHub read provider."""
 import json
+import hashlib
 import re
 
 from .drive_delivery import DrivePublisher, DriveDeliveryError, drive_id
@@ -77,6 +78,72 @@ class SupervisedDriveDelivery:
         except (OSError, ValueError, TypeError, KeyError):
             pass
         return False
+
+    def preflight(self, actor, project, head, pr, *, check_session):
+        check_session()
+        self.jobs.policy.require(actor, "workspace_delivery", project)
+        entry = self.jobs.policy.initial_entries.get(project)
+        if entry is None:
+            raise PermissionError("QA_REPOSITORY_UNAVAILABLE")
+        context, _ = self.github.open_project(actor, project)
+        require_live_pr(context, actor, project, entry["repository_id"], pr, head,
+                        check_access=check_session)
+        return {"repository_id": entry["repository_id"], "head": head, "pr": pr,
+                "private_pr_verified": True}
+
+    def _target(self, actor, job_id, project, head, pr, *, check_session):
+        check_session()
+        self.jobs.policy.require(actor, "workspace_delivery", project)
+        request = require_workspace_job(self.jobs, actor, job_id, allow_execute=True)
+        if (request["project"] != project or request["expected_sha"] != head
+                or "changes" in request or "qa_signer_sha256" not in request
+                or type(pr) is not int or not 0 < pr <= 2147483647):
+            raise PermissionError("QA_JOB_TARGET_CHANGED")
+        entry = self.jobs.policy.initial_entries.get(project)
+        if entry is None:
+            raise PermissionError("QA_REPOSITORY_UNAVAILABLE")
+        raw, _, _ = self._binding()
+        return {"project": project, "head": head, "pr": pr,
+                "repository_id": entry["repository_id"],
+                "binding_sha256": hashlib.sha256(raw).hexdigest()}
+
+    def submit(self, actor, job_id, project, head, pr, *, check_session, reconcile_only=False):
+        from .qa_drive_queue import submit
+        target = self._target(actor, job_id, project, head, pr, check_session=check_session)
+        check_session()
+        state = submit(self.jobs, actor, job_id, target, reconcile_only=reconcile_only)
+        return {"state": state, "job_id": job_id}
+
+    def status(self, actor, job_id, project, head, pr, *, check_session):
+        target = self._target(actor, job_id, project, head, pr, check_session=check_session)
+        result = self.jobs.evidence(actor, job_id)["result"]
+        request = result.get("qa_delivery_request")
+        if not request or request["target"] != target:
+            raise PermissionError("QA_DELIVERY_REQUEST_UNAVAILABLE")
+        reply = {"job_id": job_id, "state": request["state"]}
+        if request["state"] == "SUCCEEDED":
+            # Remote bytes were verified by the worker. Before disclosure,
+            # recheck the current live PR and local grants, not a large download.
+            self.preflight(actor, project, head, pr, check_session=check_session)
+            outcome = result.get("qa_delivery") or {}
+            if outcome.get("state") != "SUCCEEDED":
+                raise ValueError("QA_DELIVERY_RESULT_UNAVAILABLE")
+            if self._target(actor, job_id, project, head, pr, check_session=check_session) != target:
+                raise PermissionError("QA_DELIVERY_TARGET_CHANGED")
+            reply.update(head=head, pr=pr, repository_id=target["repository_id"],
+                         artifact=outcome["artifact"], remote=outcome["remote"])
+        check_session()
+        return reply
+
+    def run_queued(self, actor, job_id, target, *, check_session, reconcile_only=False):
+        project, head, pr = (target[key] for key in ("project", "head", "pr"))
+        def check():
+            check_session()
+            if self._target(actor, job_id, project, head, pr, check_session=check_session) != target:
+                raise PermissionError("QA_DELIVERY_TARGET_CHANGED")
+        check()
+        return self.deliver(actor, job_id, project, head, pr,
+                            check_session=check, reconcile_only=reconcile_only)
 
     def deliver(self, actor, job_id, project, head, pr, *, check_session, reconcile_only=False):
         check_session()

@@ -426,6 +426,8 @@ class Maintenance:
             if conn.execute("SELECT 1 FROM jobs WHERE state IS NULL OR state NOT IN "
                             "('SUCCEEDED','FAILED','BLOCKED','CANCELLED','INTERRUPTED') LIMIT 1").fetchone():
                 raise RuntimeError("Pending jobs")
+            if conn.execute("SELECT 1 FROM jobs WHERE json_extract(result,'$.qa_delivery_request.state') IN ('QUEUED','RUNNING') LIMIT 1").fetchone():
+                raise RuntimeError("Pending QA delivery")
             if conn.execute("SELECT 1 FROM fixture_effects WHERE resolved_at IS NULL LIMIT 1").fetchone():
                 raise RuntimeError("Unresolved effects")
 
