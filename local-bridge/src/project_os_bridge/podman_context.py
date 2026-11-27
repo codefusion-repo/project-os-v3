@@ -240,7 +240,10 @@ class PodmanContext:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
             self.host(identity)
             if not os.path.lexists(pin):
-                loaded = self.run(identity, "pull", "--quiet", f"oci:{layout}:candidate", timeout=120, capture=True)
+                # Mobile SDK images are substantially larger than the Alpine fixture.
+                # This is a bounded local OCI import, not project execution.
+                timeout = 600 if kind == "mobile-validation" else 120
+                loaded = self.run(identity, "pull", "--quiet", f"oci:{layout}:candidate", timeout=timeout, capture=True)
                 image_id = loaded.stdout.strip().decode("ascii")
                 if loaded.returncode or not re.fullmatch(r"(?:sha256:)?[0-9a-f]{64}", image_id):
                     raise ValueError("OCI layout import failed")

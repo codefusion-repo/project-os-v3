@@ -4,7 +4,7 @@ from pathlib import Path
 import tempfile
 import unittest
 from unittest.mock import patch
-from subprocess import CompletedProcess
+from subprocess import CompletedProcess, TimeoutExpired
 
 from project_os_bridge.podman_context import PodmanContext, FIXTURE_TAG
 
@@ -77,9 +77,29 @@ class PodmanContextTests(unittest.TestCase):
             self.assertEqual(self.context.import_layout(layout, DIGEST), image)
             self.assertEqual(image, FIXTURE_TAG.split(":")[0] + "@" + DIGEST)
             self.assertEqual(sum(call.args[0] == "pull" for call in podman.call_args_list), 1)
+            self.assertEqual(podman.call_args_list[0].kwargs["timeout"], 120)
         with patch.object(self.context, "_run") as podman, self.assertRaises(PermissionError):
             self.context.require_import(self.identity, image.replace("a" * 64, "c" * 64))
         podman.assert_not_called()
+
+    def test_mobile_import_has_bounded_budget_and_timeout_never_pins(self):
+        layout = self.parent / "layout"
+        layout.mkdir()
+        (layout / "index.json").write_text(json.dumps({"manifests": [{"digest": DIGEST}]}))
+        with patch.object(self.context, "_host"), patch.object(
+                self.context, "_run", side_effect=TimeoutExpired("podman", 600)) as podman:
+            with self.assertRaises(TimeoutExpired):
+                self.context.import_layout(layout, DIGEST, kind="mobile-validation")
+            self.assertEqual(podman.call_args.kwargs["timeout"], 600)
+            self.assertFalse((self.context.root / "image").exists())
+        result = lambda output=b"": CompletedProcess([], 0, output)
+        with patch.object(self.context, "_host"), patch.object(self.context, "_run", side_effect=[
+                result(IMAGE_ID.encode()), result(DIGEST.encode()), result(), result(DIGEST.encode()),
+                result(DIGEST.encode())]) as podman:
+            image = self.context.import_layout(layout, DIGEST, kind="mobile-validation")
+            self.assertEqual(image, "localhost/project-os-mobile-ci@" + DIGEST)
+            self.assertEqual(podman.call_args_list[0].kwargs["timeout"], 600)
+            self.assertEqual((self.context.root / "image").read_text(), image + "\n")
 
     def test_empty_engine_home_directories_do_not_supply_host_data(self):
         (self.context.root / "home/.config/containers").mkdir(parents=True)
