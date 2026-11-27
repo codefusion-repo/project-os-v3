@@ -776,8 +776,11 @@ class AuthTests(unittest.TestCase):
             os.replace(tmp, runtime)
         publish(grants)
         verifier = Verifier(ISSUER, RESOURCE, SUBJECT, state, jwks=self.jwks)
-        provider = load_operational_provider(verifier, supervised=True, multi=True)
         (state / FLAG).touch(mode=0o600)
+        # Reconstruct the provider with the previous opt-in already present,
+        # as on a routine supervised restart. Existing HTTP overlap/revocation
+        # checks exercise both restored grants without creating new access.
+        provider = load_operational_provider(verifier, supervised=True, multi=True)
         app = build_http_app(verifier, Jobs(state, Policy([])), github_provider=provider)
         headers = {"Accept": "application/json, text/event-stream",
                    "Authorization": "Bearer " + self.token()}

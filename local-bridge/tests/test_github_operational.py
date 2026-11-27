@@ -62,11 +62,36 @@ class OperationalGitHubTests(unittest.TestCase):
                 provider.read("user_fixture", "demo", [1])
             request.assert_not_called()
         self.flag.touch(mode=0o600)
+        restarted = load_operational_provider(self.verifier, supervised=True, project_config=self.binding)
+        self.assertEqual(restarted.require("user_fixture", "demo"), "example/demo")
+        with self.assertRaises(PermissionError):
+            load_operational_provider(self.verifier, supervised=False, project_config=self.binding)
+        with self.assertRaises(PermissionError):
+            load_operational_provider(self.verifier, supervised=True)
+        self.verifier.enabled = lambda: False
+        with self.assertRaises(PermissionError):
+            restarted.require("user_fixture", "demo")
+        self.verifier.enabled = lambda: True
+        self.flag.unlink()
+        with self.assertRaises(PermissionError):
+            restarted.require("user_fixture", "demo")
+        self.binding.write_text('{"principal":"user_fixture","principal":"other"}')
+        with self.assertRaises(ValueError):
+            load_operational_provider(self.verifier, supervised=True, project_config=self.binding)
+
+    def test_restart_rejects_malformed_persistent_opt_in(self):
+        self.configure()
+        self.flag.touch(mode=0o600)
+        self.flag.write_text("not empty")
+        with self.assertRaises((PermissionError, ValueError)):
+            load_operational_provider(self.verifier, supervised=True, project_config=self.binding)
+        self.flag.write_text("")
+        self.flag.chmod(0o644)
         with self.assertRaises(PermissionError):
             load_operational_provider(self.verifier, supervised=True, project_config=self.binding)
         self.flag.unlink()
-        self.binding.write_text('{"principal":"user_fixture","principal":"other"}')
-        with self.assertRaises(ValueError):
+        self.flag.symlink_to(self.binding)
+        with self.assertRaises(OSError):
             load_operational_provider(self.verifier, supervised=True, project_config=self.binding)
 
     def test_positive_and_revocation_before_next_request(self):

@@ -216,17 +216,22 @@ class MultiProjectContext:
 
 
 def load_operational_provider(verifier, *, supervised, project_config=None, multi=False):
-    """Register only from explicit private binding with no active opt-in.
+    """Register an explicit private binding; preserve an existing valid opt-in.
 
-    Startup never grants repository access. The local operator may enable the
-    separate marker only after the existing gates. Credential provenance and
+    Initial enrollment and maintenance still require the operator preflight
+    with opt-ins absent. A routine restart of the reviewed supervised profile
+    does not create or restore markers. Every access rechecks global admission,
+    the private marker and the exact project grant. Credential provenance and
     host gates are independent prerequisites, not established by this loader.
     """
     state = verifier.state_dir
     private_directory(state)
     flag = state / FLAG
     if os.path.lexists(flag):
-        raise PermissionError("Revoke GitHub context before startup")
+        if supervised is not True or (not multi and project_config is None):
+            raise PermissionError("GitHub opt-in requires supervised private binding")
+        if _private_bytes(flag, 0) != b"":
+            raise PermissionError("Invalid GitHub context opt-in")
     if multi:
         if supervised is not True or project_config is not None:
             raise PermissionError("Exclusive supervised multi-project profile required")
