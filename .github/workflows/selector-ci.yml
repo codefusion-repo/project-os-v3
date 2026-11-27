@@ -59,6 +59,10 @@ jobs:
         # Ubuntu 24.04 supplies system Python 3.12; no toolcache override or
         # permission changes. The public coordinator enforces the same policy.
         run: env -u LD_LIBRARY_PATH -u PYTHONHOME -u PYTHONPATH PATH=/usr/bin:/bin /bin/bash local-bridge/scripts/ci-install.sh
+      - name: Verify real Android QA signing and exact delivery input
+        env:
+          PYTHONPATH: local-bridge/tests
+        run: local-bridge/.venv/bin/python local-bridge/scripts/ci-android-qa-signing.py
       - name: Record verified wheel receipt for maintenance preflight
         id: wheel-receipt
         run: |
