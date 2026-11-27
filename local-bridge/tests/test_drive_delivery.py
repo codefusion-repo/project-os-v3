@@ -108,7 +108,7 @@ class DriveDeliveryTests(unittest.TestCase):
         policy = Policy([("operator", "submit", "disposable"), ("operator", "read", "disposable"),
                          ("operator", "workspace_delivery", "demo")])
         jobs = Jobs(self.root, policy)
-        job = jobs.submit("operator", "disposable", "qa-reserved")
+        job = jobs.submit("operator", "disposable", "probe_check", "qa-reserved")
         jobs.claim()
         jobs.finish(job, "SUCCEEDED", {})
         receipt = {"artifact": self.artifact, "workspace_sha256": "c" * 64}
