@@ -1281,13 +1281,16 @@ class AuthTests(unittest.TestCase):
         config = state / SUPERVISED_EXECUTION
         config.touch(mode=0o600)
         identity = "c" * 64
-        data = {"expo-test": {"context": "/tmp/fixture-context", "context_id": identity,
-                             "image": "localhost/project-os-mobile-ci@sha256:" + "a" * 64}}
+        data = {"demo": {"expo-test": {"context": "/tmp/fixture-context", "context_id": identity,
+                             "image": "localhost/project-os-mobile-ci@sha256:" + "a" * 64}}}
         config.write_text(json.dumps(data))
         with patch.object(PodmanContext, "identity", return_value=identity), \
              patch.object(PodmanContext, "require_import") as imported:
             backend = load_supervised_workspace_backend(policy)
             imported.assert_called()
+            self.assertEqual(backend.binding("expo-test", "demo")[1], identity)
+            with self.assertRaises(PermissionError):
+                backend.binding("expo-test", "other")
             policy.require(SUBJECT, "workspace_execute", "demo")
             jobs = Jobs(state, policy, workflows=("probe_check", "workspace_prepare", "workspace_execute"))
             app = build_http_app(verifier, jobs, workspace_candidate=True, workspace_backend=backend)
@@ -1316,6 +1319,7 @@ class AuthTests(unittest.TestCase):
                 config.write_text(json.dumps(data))
                 self.assertTrue(health()["workspace_execution_available"])
                 grants.write_text(json.dumps({"demo": [op for op in ops if op != "workspace_execute"]}))
+                self.assertFalse(health()["workspace_execution_available"])
                 with self.assertRaises(PermissionError):
                     policy.require(SUBJECT, "workspace_execute", "demo")
 

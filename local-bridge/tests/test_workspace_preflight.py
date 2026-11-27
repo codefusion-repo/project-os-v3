@@ -516,6 +516,31 @@ class WorkspacePreflightTests(unittest.TestCase):
         self.assertEqual(jobs.pending_effects(), [])
         self.assertEqual(jobs.get("operator", first)["state"], "BLOCKED")
 
+    def test_project_scoped_contexts_no_cross_project_fallback(self):
+        from project_os_bridge.workspace_podman import WorkspacePodman
+        from project_os_bridge.podman_context import PodmanContext
+        from unittest.mock import Mock
+        first, second = Mock(spec=PodmanContext), Mock(spec=PodmanContext)
+        first.identity.return_value = "c" * 64
+        second.identity.return_value = "d" * 64
+        images = {"demo:expo-test": "localhost/project-os-mobile-ci@sha256:" + "a" * 64,
+                  "other:expo-test": "localhost/project-os-mobile-ci@sha256:" + "b" * 64}
+        backend = WorkspacePodman({"demo:expo-test": first, "other:expo-test": second}, images)
+        self.assertEqual(backend.binding("expo-test", "demo"), ("sha256:" + "a" * 64, "c" * 64))
+        self.assertEqual(backend.binding("expo-test", "other"), ("sha256:" + "b" * 64, "d" * 64))
+        with self.assertRaises(PermissionError):
+            backend.binding("expo-test", "unregistered")
+        with self.assertRaises(PermissionError):
+            backend.binding("expo-test")
+        jobs = self.workspace_queue()
+        policy = Policy([*jobs.policy.grants, ("operator", "workspace_execute", "demo")])
+        jobs = Jobs(jobs.probe.root, policy, workflows=("workspace_execute",))
+        job = submit_workspace(jobs, "operator", "demo", self.sha, "expo-test", "scoped", backend=backend)
+        row = jobs.claim(workspace_contexts=backend.identities())
+        self.assertEqual(row["id"], job)
+        self.assertEqual(row["effect_context"], "c" * 64)
+        self.assertEqual(jobs.pending_effects()[0]["context_id"], "c" * 64)
+
     def test_podman_apk_output_and_empty_artifact(self):
         from project_os_bridge.workspace_podman import WorkspacePodman, apk_path
         from project_os_bridge.podman_context import PodmanContext

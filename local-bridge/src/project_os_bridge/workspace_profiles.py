@@ -1,4 +1,5 @@
 """Closed, internal profile descriptors; no runtime backend is enabled."""
+import re
 from dataclasses import dataclass
 from types import MappingProxyType
 
@@ -31,6 +32,15 @@ def profile_for(name):
     if not isinstance(name, str) or name not in PROFILES:
         raise ValueError("INVALID_WORKSPACE_PROFILE")
     return PROFILES[name]
+
+
+def execution_route(profile, project=None):
+    profile_for(profile)
+    if project is None:
+        return profile  # Existing dedicated CI candidate only.
+    if not isinstance(project, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,80}", project):
+        raise ValueError("INVALID_WORKSPACE_PROJECT")
+    return project + ":" + profile
 
 
 def artifact_identity(kind, name, data):

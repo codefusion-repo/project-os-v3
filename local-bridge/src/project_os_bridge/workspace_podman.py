@@ -9,7 +9,7 @@ from types import MappingProxyType
 
 from .isolated import IMAGE, ALPINE_BASELINE, ALPINE_FIXTURE_ONLY, container_name, container_absent
 from .podman_context import SAFE_PATH, PodmanContext
-from .workspace_profiles import profile_for, artifact_identity
+from .workspace_profiles import profile_for, artifact_identity, execution_route
 from .workos_auth import private_directory, private_file
 
 VALIDATION = MappingProxyType({
@@ -52,10 +52,22 @@ class WorkspacePodman:
     def __init__(self, context, images):
         if not isinstance(images, dict) or not images:
             raise ValueError("Explicit local candidate bindings required")
-        if any(profile not in VALIDATION or not isinstance(image, str) or not IMAGE.fullmatch(image)
-               or image.rsplit("@", 1)[-1] in {ALPINE_BASELINE, ALPINE_FIXTURE_ONLY}
-               for profile, image in images.items()):
-            raise ValueError("Invalid validation image binding")
+        if not all(isinstance(key, str) for key in images):
+            raise ValueError("Invalid validation route")
+        scoped = {":" in key for key in images}
+        if len(scoped) != 1:
+            raise ValueError("Mixed execution binding scopes")
+        self.project_scoped = scoped.pop()
+        for key, image in images.items():
+            if self.project_scoped:
+                project, profile = key.split(":", 1)
+                if execution_route(profile, project) != key:
+                    raise ValueError("Invalid validation route")
+            else:
+                profile = key
+            if (profile not in VALIDATION or not isinstance(image, str) or not IMAGE.fullmatch(image)
+                    or image.rsplit("@", 1)[-1] in {ALPINE_BASELINE, ALPINE_FIXTURE_ONLY}):
+                raise ValueError("Invalid validation image binding")
         contexts = ({profile: context for profile in images}
                     if isinstance(context, PodmanContext) else context)
         if (not isinstance(contexts, dict) or set(contexts) != set(images)
@@ -88,11 +100,18 @@ class WorkspacePodman:
             raise ValueError("Select a registered profile context")
         return next(iter(identities))
 
-    def binding(self, profile):
-        if profile not in self.images:
+    def route(self, profile, project=None):
+        if self.project_scoped and project is None:
+            raise PermissionError("PROJECT_BINDING_REQUIRED")
+        key = execution_route(profile, project if self.project_scoped else None)
+        if key not in self.images:
             raise PermissionError("PROFILE_UNAVAILABLE")
-        image, context = self.images[profile], self.contexts[profile]
-        identity = self.context_ids[profile]
+        return key
+
+    def binding(self, profile, project=None):
+        key = self.route(profile, project)
+        image, context = self.images[key], self.contexts[key]
+        identity = self.context_ids[key]
         if context.identity(identity) != identity:
             raise PermissionError("EXECUTION_CONTEXT_CHANGED")
         context.require_import(identity, image)
@@ -101,8 +120,9 @@ class WorkspacePodman:
     def execute(self, workspace, row, snapshot):
         request = row["workspace"]
         profile = request["profile"]
-        image_id, identity = self.binding(profile)
-        context = self.contexts[profile]
+        key = self.route(profile, request["project"])
+        image_id, identity = self.binding(profile, request["project"])
+        context = self.contexts[key]
         if (request.get("context_id") != identity or row.get("effect_context") != identity
                 or request["image_id"] != image_id or snapshot["head"] != request["expected_sha"]
                 or snapshot.get("workspace_materialized") is not True):
@@ -155,7 +175,7 @@ class WorkspacePodman:
                 "--pids-limit=512", "--memory=5g", "--cpus=2", "--userns=keep-id",
                 "--passwd=false", "--user", f"{os.getuid()}:{os.getgid()}",
                 "--volume", f"{workspace}:/source:ro", *output_args, "--workdir", "/fixture",
-                "--entrypoint", "/bin/sh", self.images[profile], "-c", setup, "profile", *argv]
+                "--entrypoint", "/bin/sh", self.images[key], "-c", setup, "profile", *argv]
         try:
             result = context.run(identity, *args, timeout=900, capture=False)
             # No automatic retry or cleanup on uncertain launch/timeout.

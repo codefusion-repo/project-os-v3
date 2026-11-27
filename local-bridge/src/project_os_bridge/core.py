@@ -243,7 +243,14 @@ class Jobs:
                     selected_context = workspace_context
                     if row["workflow"] == "workspace_execute":
                         if workspace_contexts is not None:
-                            selected_context = workspace_contexts.get(workspace["profile"])
+                            from .workspace_profiles import execution_route
+                            key = execution_route(workspace["profile"], workspace["project"])
+                            selected_context = workspace_contexts.get(key)
+                            # Profile-only bindings are limited to the dedicated
+                            # disposable candidate, never supervised workspace jobs.
+                            if (selected_context is None and row["resource"] == "disposable"
+                                    and all(":" not in item for item in workspace_contexts)):
+                                selected_context = workspace_contexts.get(workspace["profile"])
                             if selected_context is None:
                                 raise PermissionError("Workspace profile context unavailable")
                         if workspace.get("context_id") != selected_context:

@@ -13,7 +13,7 @@ from .core import Policy
 from .methodology import SHA
 from .workspace_preflight import (_binding, binding_digest, materialize_workspace,
                                   prepare_workspace, normalize_changes, describe_changes, read_workspace_context)
-from .workspace_profiles import PROFILES, profile_for
+from .workspace_profiles import PROFILES, profile_for, execution_route
 from .workos_auth import private_directory, private_file
 
 MARKER = "local-workspace-mode"
@@ -39,11 +39,22 @@ class SupervisedWorkspacePolicy(Policy):
         self.execution_binding = None
         self.backend = None
 
-    def execution_available(self):
+    def execution_available(self, project=None):
         if self.execution_binding is None or self.backend is None or not self.verifier.enabled():
             return False
         try:
-            return _private_bytes(self.root / SUPERVISED_EXECUTION, 65536) == self.execution_binding
+            if _private_bytes(self.root / SUPERVISED_EXECUTION, 65536) != self.execution_binding:
+                return False
+            current = self.current()
+            for alias, initial in self.initial.items():
+                if project is not None and alias != project:
+                    continue
+                ops = initial & current.get(alias, frozenset())
+                if {"workspace_prepare", "workspace_materialize", "workspace_execute"} <= ops:
+                    if any(execution_route(profile, alias) in self.backend.images
+                           for profile in PROFILES if profile in ops):
+                        return True
+            return False
         except (OSError, ValueError, TypeError):
             return False
 
@@ -88,7 +99,7 @@ class SupervisedWorkspacePolicy(Policy):
                     return
             elif (operation in WORKSPACE_OPS and operation in self.initial.get(resource, ())
                   and operation in current.get(resource, ())
-                  and (operation != "workspace_execute" or self.execution_available())):
+                  and (operation != "workspace_execute" or self.execution_available(resource))):
                 return
             raise PermissionError("DENIED")
         super().require(principal, operation, resource)
@@ -121,23 +132,28 @@ def load_supervised_workspace_backend(policy):
         return None
     raw = _private_bytes(path, 65536)
     data = json.loads(raw, object_pairs_hook=_unique_object)
-    if not isinstance(data, dict) or not data or not set(data) <= set(PROFILES):
+    if not isinstance(data, dict) or not data or not set(data) <= set(policy.initial):
         raise ValueError("Invalid workspace execution bindings")
-    contexts, images = {}, {}
-    for profile, entry in data.items():
-        if (not isinstance(entry, dict) or set(entry) != {"context", "context_id", "image"}
-                or not all(isinstance(value, str) for value in entry.values())
-                or not re.fullmatch(r"[0-9a-f]{64}", entry["context_id"])
-                or not any({"workspace_execute", profile} <= ops for ops in policy.initial.values())):
-            raise ValueError("Invalid workspace execution binding")
-        context = PodmanContext(Path(entry["context"]))
-        if context.identity(entry["context_id"]) != entry["context_id"]:
-            raise PermissionError("WORKSPACE_CONTEXT_CHANGED")
-        contexts[profile], images[profile] = context, entry["image"]
+    contexts, images, expected = {}, {}, {}
+    for project, profiles in data.items():
+        if not isinstance(profiles, dict) or not profiles or not set(profiles) <= set(PROFILES):
+            raise ValueError("Invalid workspace execution profiles")
+        for profile, entry in profiles.items():
+            if (not isinstance(entry, dict) or set(entry) != {"context", "context_id", "image"}
+                    or not all(isinstance(value, str) for value in entry.values())
+                    or not re.fullmatch(r"[0-9a-f]{64}", entry["context_id"])
+                    or not {"workspace_prepare", "workspace_materialize", "workspace_execute", profile}
+                           <= policy.initial[project]):
+                raise ValueError("Invalid workspace execution binding")
+            key = execution_route(profile, project)
+            context = PodmanContext(Path(entry["context"]))
+            if context.identity(entry["context_id"]) != entry["context_id"]:
+                raise PermissionError("WORKSPACE_CONTEXT_CHANGED")
+            contexts[key], images[key], expected[key] = context, entry["image"], entry["context_id"]
     backend = WorkspacePodman(contexts, images)
-    for profile, entry in data.items():
-        _, identity = backend.binding(profile)
-        if identity != entry["context_id"]:
+    for key, identity in expected.items():
+        project, profile = key.split(":", 1)
+        if backend.binding(profile, project)[1] != identity:
             raise PermissionError("WORKSPACE_CONTEXT_CHANGED")
     if _private_bytes(path, 65536) != raw:
         raise PermissionError("WORKSPACE_BINDING_CHANGED")
@@ -211,7 +227,7 @@ def submit_workspace(jobs, principal, project, expected_sha, profile, request_ke
         jobs.policy.require(principal, profile, project)
         if type(jobs.policy) is SupervisedWorkspacePolicy and jobs.policy.backend is not backend:
             raise PermissionError("DENIED")
-        image_id, context_id = backend.binding(profile)
+        image_id, context_id = backend.binding(profile, project)
     else:
         context_id = None
     args = (runtime, jobs.policy, principal, project, expected_sha, profile)
