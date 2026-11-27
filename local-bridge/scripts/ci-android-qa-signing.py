@@ -5,6 +5,7 @@ Only the Podman output is simulated; Android packaging, key generation,
 alignment, signing, inspection and verification use the installed SDK/JDK.
 """
 import hashlib
+import io
 import json
 import os
 from pathlib import Path
@@ -15,7 +16,7 @@ import tempfile
 import zipfile
 from unittest.mock import Mock
 
-from project_os_bridge.android_qa import QASignerBinding, verified_qa_delivery_input
+from project_os_bridge.android_qa import QASignerBinding, verified_qa_delivery_input, verify_qa_artifact_zip
 from project_os_bridge.core import Jobs, Policy
 from project_os_bridge.podman_context import PodmanContext
 from project_os_bridge.worker import run_pending
@@ -41,15 +42,16 @@ def copy_fixture_tools(source, destination):
 
 
 def main():
-    # The workflow creates a new owner-private directory under /opt in the
-    # disposable VM; runner HOME or toolcache ancestors can be writable by
-    # groups. Preserve the production admission policy unchanged.
+    # The workflow creates a new owner-private directory directly under /
+    # in the disposable VM. CI 46065127256 showed /opt is mode 0777;
+    # using a private child under it does not satisfy the ancestry check.
+    # Preserve the production admission policy unchanged.
     sdk = Path(os.environ["ANDROID_HOME"])
     ndk = Path(os.environ["ANDROID_NDK_HOME"]) / "toolchains/llvm/prebuilt/linux-x86_64/bin"
     fixture = WorkspacePreflightTests()
     fixture.setUp()
     try:
-        with tempfile.TemporaryDirectory(prefix="signing-", dir="/opt/project-os-qa-ci") as tmp:
+        with tempfile.TemporaryDirectory(prefix="signing-", dir="/project-os-qa-ci") as tmp:
             root = Path(tmp).resolve()
             java = root / "java"
             tools = root / "build-tools"
@@ -125,6 +127,11 @@ def main():
                 assert receipt["metadata"]["version_code"] == version
                 assert receipt["metadata"]["abis"] == ["arm64-v8a", "x86_64"]
                 assert receipt["signature_verified"] and not receipt["published"]
+                archive = io.BytesIO()
+                with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_DEFLATED) as zipped:
+                    zipped.writestr("app-qa.apk", raw)
+                identity = verify_qa_artifact_zip(archive.getvalue(), receipt)
+                assert identity["sha256"] == hashlib.sha256(archive.getvalue()).hexdigest()
                 return job, receipt
 
             first, one = finalize(41)

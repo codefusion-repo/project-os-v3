@@ -5,6 +5,8 @@ Project code stays in the existing isolated builder. No publisher credentials
 or signing material are passed to that builder.
 """
 import hashlib
+import io
+import zipfile
 import json
 import os
 import re
@@ -403,3 +405,47 @@ def verified_qa_delivery_input(jobs, principal, job_id, *, expected_project, exp
                 or jobs.evidence(principal, job_id) != evidence or jobs.pending_effects()):
             raise PermissionError("QA_DELIVERY_BINDING_CHANGED")
         return raw, receipt
+
+
+def verify_qa_artifact_zip(archive, receipt, *, expected_zip_sha256=None):
+    """Verify the downloaded Actions archive, never extract to a filesystem.
+
+    The upload action archives the single APK, not a locally created ZIP.
+    The caller binds GitHub artifact/run/repository/PR identity separately.
+    """
+    if not isinstance(archive, bytes) or not isinstance(receipt, dict):
+        raise ValueError("QA_ZIP_INVALID")
+    apk = receipt.get("artifact")
+    if (receipt.get("signature_verified") is not True or not isinstance(apk, dict)
+            or apk.get("kind") != "apk" or apk.get("artifact") != "app-qa.apk"
+            or type(apk.get("size")) is not int or not 0 < apk["size"] <= 256 * 1024 * 1024
+            or not isinstance(apk.get("sha256"), str) or not CERT.fullmatch(apk["sha256"])
+            or not 0 < len(archive) <= apk["size"] + 2 * 1024 * 1024):
+        raise ValueError("QA_ZIP_INVALID")
+    identity = artifact_identity("zip", "app-qa.zip", archive)
+    if expected_zip_sha256 is not None and identity["sha256"] != expected_zip_sha256:
+        raise ValueError("QA_ZIP_DIGEST_MISMATCH")
+    try:
+        with zipfile.ZipFile(io.BytesIO(archive)) as zipped:
+            members = zipped.infolist()
+            if len(members) != 1:
+                raise ValueError("QA_ZIP_LAYOUT_INVALID")
+            member = members[0]
+            if (member.filename != "app-qa.apk" or member.is_dir()
+                    or member.file_size != apk["size"] or member.flag_bits & 1
+                    or member.compress_type not in (zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED)
+                    or stat.S_IFMT(member.external_attr >> 16) not in (0, stat.S_IFREG)):
+                raise ValueError("QA_ZIP_LAYOUT_INVALID")
+            with zipped.open(member) as stream:
+                digest = hashlib.sha256()
+                size = 0
+                while chunk := stream.read(1024 * 1024):
+                    size += len(chunk)
+                    if size > apk["size"]:
+                        raise ValueError("QA_ZIP_SIZE_MISMATCH")
+                    digest.update(chunk)
+            if size != apk["size"] or digest.hexdigest() != apk["sha256"]:
+                raise ValueError("QA_ZIP_APK_MISMATCH")
+    except (zipfile.BadZipFile, NotImplementedError, RuntimeError, OSError) as exc:
+        raise ValueError("QA_ZIP_INVALID") from exc
+    return identity

@@ -745,6 +745,35 @@ class WorkspacePreflightTests(unittest.TestCase):
             finalize(third)
         tools.generate.assert_called_once()
 
+    def test_qa_zip_preserves_exact_signed_apk_identity(self):
+        import io
+        import zipfile
+        from project_os_bridge.android_qa import verify_qa_artifact_zip
+        from project_os_bridge.workspace_profiles import artifact_identity
+        raw = b"synthetic signed apk"
+        receipt = {"signature_verified": True,
+                   "artifact": artifact_identity("apk", "app-qa.apk", raw)}
+        def archive(entries):
+            buffer = io.BytesIO()
+            with zipfile.ZipFile(buffer, "w", compression=zipfile.ZIP_DEFLATED) as out:
+                for name, data in entries:
+                    out.writestr(name, data)
+            return buffer.getvalue()
+        good = archive([("app-qa.apk", raw)])
+        identity = artifact_identity("zip", "app-qa.zip", good)
+        self.assertEqual(verify_qa_artifact_zip(good, receipt,
+            expected_zip_sha256=identity["sha256"]), identity)
+        for bad in (archive([("app-qa.apk", b"x" * len(raw))]),
+                    archive([("../app-qa.apk", raw)]),
+                    archive([("app-qa.apk", raw), ("extra.txt", b"extra")]),
+                    archive([("app-qa.apk", raw[:-1])]), b"invalid archive"):
+            with self.assertRaises(ValueError):
+                verify_qa_artifact_zip(bad, receipt)
+        with self.assertRaises(ValueError):
+            verify_qa_artifact_zip(good, receipt, expected_zip_sha256="0" * 64)
+        with self.assertRaises(ValueError):
+            verify_qa_artifact_zip(good, {**receipt, "signature_verified": False})
+
     def test_worker_automatically_finalizes_bound_qa_build(self):
         from unittest.mock import Mock
         from subprocess import CompletedProcess

@@ -64,8 +64,8 @@ jobs:
           PYTHONPATH: local-bridge/tests
         run: |
           # Fresh disposable GitHub-hosted VM only, never the PM host.
-          test ! -e /opt/project-os-qa-ci && test ! -L /opt/project-os-qa-ci
-          sudo install -d -m 0700 -o "$(id -u)" -g "$(id -g)" /opt/project-os-qa-ci
+          test ! -e /project-os-qa-ci && test ! -L /project-os-qa-ci
+          sudo install -d -m 0700 -o "$(id -u)" -g "$(id -g)" /project-os-qa-ci
           local-bridge/.venv/bin/python local-bridge/scripts/ci-android-qa-signing.py
       - name: Record verified wheel receipt for maintenance preflight
         id: wheel-receipt
