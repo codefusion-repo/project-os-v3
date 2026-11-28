@@ -65,6 +65,8 @@ class CodexProviderTests(unittest.TestCase):
              patch("project_os_bridge.codex_provider.execute_turn") as turn:
             result = run_codex(Path("/fixture"), {"PATH": "/fixture"}, self.request, enabled=lambda: True)
             self.assertEqual(result["executor"], "blocked")
+            self.assertTrue(result["cleanup_verified"])
+            self.assertFalse(result["effects_reconciled"])
             turn.assert_not_called()
         with patch("project_os_bridge.codex_provider.require_checkout", return_value=self.before), \
              patch("project_os_bridge.codex_provider.shutil.which", return_value="/fixture/codex"), \

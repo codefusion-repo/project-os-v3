@@ -1448,6 +1448,8 @@ else:
             denied(**direct_args)
             approved = {**direct_args, "operation_sha256": preview["operation_sha256"]}
             denied(**{**approved, "request_key": "changed-key"})
+            denied(**{**approved, "expected_sha": "0" * 40})
+            denied(**{**approved, "profile": "expo-typecheck"})
             denied(**{**approved, "operation_sha256": "0" * 64})
             with jobs.transaction() as conn:
                 self.assertEqual(conn.execute("SELECT count(*) FROM jobs").fetchone()[0], before_count)

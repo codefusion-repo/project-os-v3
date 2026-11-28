@@ -421,7 +421,8 @@ def run_codex(root, env, request, *, enabled):
         if observed != before:
             raise ValueError("CODEX_CHECKOUT_CHANGED")
     except (OSError, ValueError):
-        return {**result, "executor": "blocked", "reason": "CODEX_CHECKOUT_CHANGED"}
+        return {**result, "executor": "blocked", "effects_reconciled": False,
+                "reason": "CODEX_CHECKOUT_CHANGED"}
     if not enabled():
         return {**result, "executor": "blocked", "reason": "CODEX_AUTHORIZATION_REVOKED"}
     if selected != "codex":

@@ -202,6 +202,8 @@ def direct_operation(policy, principal, request, request_key):
     return {"operation_sha256": digest, "project": project, "expected_sha": request["expected_sha"],
             "profile": profile, "request_key": request_key, "commands": commands,
             "configuration_bound": plan is not None, "saved_changes": "changes" in request,
+            "changes_sha256": hashlib.sha256(json.dumps(request["changes"], sort_keys=True,
+                separators=(",", ":")).encode()).hexdigest() if "changes" in request else None,
             "delivery_pr": request.get("delivery_target", {}).get("pr"),
             "impact": "Registered tools run against a committed Job snapshot; may write generated files and caches."
                       + (" Includes signing and configured delivery." if request.get("delivery_target") else ""),
@@ -255,6 +257,8 @@ def authorize_request(policy, principal, request, *, execute=False, request_key=
                 or not isinstance(target["binding_sha256"], str)
                 or not re.fullmatch(r"[0-9a-f]{64}", target["binding_sha256"])):
             raise ValueError("QA_DELIVERY_TARGET_INVALID")
+        if require_operation:
+            policy.require(principal, "workspace_delivery", project)
     if "changes" in request:
         policy.require(principal, "workspace_change", project)
         if normalize_changes(request["changes"]) != request["changes"]:
