@@ -419,237 +419,110 @@ class WorkspacePreflightTests(unittest.TestCase):
         self.assertFalse((jobs.probe.root / ("workspace-" + job)).exists())
 
     def test_execution_requires_explicit_grant_and_backend(self):
+        from project_os_bridge.execution import WorkspaceWSL
         jobs = self.workspace_queue()
-        image = "sha256:" + "a" * 64
+        backend = WorkspaceWSL({"demo:expo-test": {"PATH": "/usr/bin:/bin"}})
         with self.assertRaises(PermissionError):
-            submit_workspace(jobs, "operator", "demo", self.sha, "expo-test", "no-grant",
-                             image_id=image)
+            submit_workspace(jobs, "operator", "demo", self.sha, "expo-test", "no-grant", backend=backend)
         policy = Policy([*jobs.policy.grants, ("operator", "workspace_execute", "demo")])
         jobs = Jobs(jobs.probe.root, policy, workflows=("workspace_execute",))
-        job = submit_workspace(jobs, "operator", "demo", self.sha, "expo-test", "execute",
-                               image_id=image)
+        job = submit_workspace(jobs, "operator", "demo", self.sha, "expo-test", "execute", backend=backend)
         run_pending(jobs)
         self.assertEqual(jobs.get("operator", job)["state"], "BLOCKED")
         self.assertFalse((jobs.probe.root / ("workspace-" + job)).exists())
-        self.assertEqual(job, submit_workspace(jobs, "operator", "demo", self.sha, "expo-test",
-                                               "execute", image_id=image))
+        self.assertEqual(job, submit_workspace(jobs, "operator", "demo", self.sha,
+                                               "expo-test", "execute", backend=backend))
+        different = WorkspaceWSL({"demo:expo-test": {"PATH": "/bin"}})
         with self.assertRaises(ValueError):
-            submit_workspace(jobs, "operator", "demo", self.sha, "expo-test", "execute",
-                             image_id="sha256:" + "b" * 64)
+            submit_workspace(jobs, "operator", "demo", self.sha, "expo-test", "execute", backend=different)
 
     def test_execution_result_is_durable_and_no_replay(self):
+        from project_os_bridge.execution import WorkspaceWSL
         jobs = self.workspace_queue()
         policy = Policy([*jobs.policy.grants, ("operator", "workspace_execute", "demo")])
         jobs = Jobs(jobs.probe.root, policy, workflows=("workspace_execute",))
-        image = "sha256:" + "a" * 64
-        job = submit_workspace(jobs, "operator", "demo", self.sha, "expo-test", "execute",
-                               image_id=image)
-        def executor(workspace, row, snapshot):
-            self.assertEqual(row["workspace"]["image_id"], image)
-            self.assertEqual((workspace / "pubspec.yaml").read_text(), "name: demo\n")
-            return {"exit_code": 7, "image_id": image}
-        with patch("builtins.print"):
-            run_pending(jobs, workspace_executor=executor)
-        result = Jobs(jobs.probe.root, policy, workflows=("workspace_execute",)).evidence("operator", job)
+        backend = WorkspaceWSL({"demo:expo-test": {"PATH": "/usr/bin:/bin"}})
+        job = submit_workspace(jobs, "operator", "demo", self.sha, "expo-test", "execute", backend=backend)
+        with patch("project_os_bridge.execution._command", return_value=(7, True)) as command:
+            run_pending(jobs, workspace_backend=backend)
+            command.assert_called_once()
+        reopened = Jobs(jobs.probe.root, policy, workflows=("workspace_execute",))
+        result = reopened.evidence("operator", job)
         self.assertEqual(result["state"], "FAILED")
         self.assertEqual(result["result"]["execution"]["exit_code"], 7)
-        self.assertEqual(result["result"]["operation"], "execute")
-        with patch("builtins.print") as unused:
-            run_pending(jobs, workspace_executor=lambda *args: self.fail("must not replay"))
-            unused.assert_not_called()
-        from project_os_bridge.core import QueueLimitError
-        with self.assertRaises(QueueLimitError):
-            submit_workspace(jobs, "operator", "demo", self.sha, "expo-test", "new", image_id=image)
+        self.assertEqual(reopened.pending_effects(), [])
+        with patch("project_os_bridge.execution._command") as command:
+            run_pending(reopened, workspace_backend=backend)
+            command.assert_not_called()
 
-    def test_podman_candidate_fence_and_reconciliation(self):
-        from project_os_bridge.workspace_podman import WorkspacePodman
-        from project_os_bridge.podman_context import PodmanContext
-        from project_os_bridge.reconcile import reconcile
-        from unittest.mock import Mock
-        from subprocess import CompletedProcess, TimeoutExpired
+    def test_direct_uncertain_effect_fences_other_profiles_and_no_replay(self):
+        from project_os_bridge.execution import WorkspaceWSL
         jobs = self.workspace_queue()
         policy = Policy([*jobs.policy.grants, ("operator", "workspace_execute", "demo")])
-        jobs = Jobs(jobs.probe.root, policy, workflows=("workspace_execute", "workspace_prepare"))
-        context = Mock(spec=PodmanContext)
-        identity = "c" * 64
-        context.identity.return_value = identity
-        image = "localhost/project-os-alpine-ci@sha256:" + "a" * 64
-        backend = WorkspacePodman(context, {"expo-test": image})
-        launched = []
-        def run(expected, *args, **kwargs):
-            self.assertEqual(expected, identity)
-            if args[0] == "container":
-                return CompletedProcess(args, 1)
-            if args[0] == "ps":
-                return CompletedProcess(args, 0, stdout=b"")
-            self.assertEqual(args[0], "run")
-            self.assertEqual(len(jobs.pending_effects()), 1)
-            self.assertIn("--network=none", args)
-            self.assertIn("--pull=never", args)
-            self.assertIn("--cap-drop=ALL", args)
-            self.assertEqual(args[args.index("--volume") + 1].split(":")[-1], "ro")
-            launched.append(args)
-            raise TimeoutExpired(args, 900)
-        context.run.side_effect = run
-        first = submit_workspace(jobs, "operator", "demo", self.sha, "expo-test", "one", backend=backend)
-        other = submit_workspace(jobs, "operator", "demo", self.sha, "expo-test", "two", backend=backend)
-        run_pending(jobs, workspace_backend=backend)
-        self.assertEqual(jobs.get("operator", first)["state"], "BLOCKED")
-        self.assertEqual(jobs.get("operator", other)["state"], "QUEUED")
-        self.assertEqual(len(launched), 1)
-        effects = jobs.pending_effects()
-        self.assertEqual(effects[0]["job_id"], first)
-        self.assertEqual(effects[0]["context_id"], identity)
-        self.assertIn("io.project-os.fixture=" + effects[0]["token"], launched[0])
-        reopened = Jobs(jobs.probe.root, policy, workflows=("workspace_execute", "workspace_prepare"))
-        run_pending(reopened, workspace_backend=backend)
-        self.assertEqual(len(launched), 1)
-        # Local reconciliation refuses uncertain absence, then clears only the
-        # exact effect. The test double stands in for operator-proven quiescence.
-        with patch("project_os_bridge.reconcile.container_absent", return_value=False):
-            with self.assertRaises(PermissionError):
-                reconcile(reopened, first, context)
-        self.assertEqual(reopened.pending_effects(), effects)
-        reconcile(reopened, first, context)
-        self.assertEqual(reopened.pending_effects(), [])
-        self.assertEqual(reopened.get("operator", first)["state"], "BLOCKED")
-        self.assertEqual(first, submit_workspace(reopened, "operator", "demo", self.sha,
-                         "expo-test", "one", backend=backend))
-        def success(expected, *args, **kwargs):
-            if args[0] == "run":
-                self.assertEqual(len(reopened.pending_effects()), 1)
-                return CompletedProcess(args, 0)
-            return run(expected, *args, **kwargs)
-        context.run.side_effect = success
-        run_pending(reopened, workspace_backend=backend)
-        self.assertEqual(reopened.get("operator", other)["state"], "SUCCEEDED")
-        self.assertEqual(reopened.pending_effects(), [])
-
-    def test_multiple_pinned_contexts_share_queue_and_effect_fence(self):
-        from project_os_bridge.workspace_podman import WorkspacePodman
-        from project_os_bridge.podman_context import PodmanContext
-        from project_os_bridge.reconcile import reconcile
-        from unittest.mock import Mock
-        from subprocess import CompletedProcess, TimeoutExpired
-        jobs = self.workspace_queue()
-        policy = Policy([*jobs.policy.grants, ("operator", "workspace_execute", "demo")])
-        jobs = Jobs(jobs.probe.root, policy, workflows=("workspace_execute", "workspace_prepare"))
-        first_context, second_context = Mock(spec=PodmanContext), Mock(spec=PodmanContext)
-        first_id, second_id = "c" * 64, "d" * 64
-        first_context.identity.return_value = first_id
-        second_context.identity.return_value = second_id
-        images = {"expo-test": "localhost/project-os-mobile-ci@sha256:" + "a" * 64,
-                  "flutter-test": "localhost/project-os-mobile-ci@sha256:" + "b" * 64}
-        with self.assertRaises(ValueError):
-            WorkspacePodman(first_context, images)
-        backend = WorkspacePodman({"expo-test": first_context, "flutter-test": second_context}, images)
-        self.assertEqual(backend.identities(), {"expo-test": first_id, "flutter-test": second_id})
-        launches = []
-        def execute(identity, *, timeout=False):
-            def run(expected, *args, **kwargs):
-                self.assertEqual(expected, identity)
-                if args[0] == "container":
-                    return CompletedProcess(args, 1)
-                if args[0] == "ps":
-                    return CompletedProcess(args, 0, stdout=b"")
-                self.assertEqual(args[0], "run")
-                self.assertEqual(jobs.pending_effects()[0]["context_id"], identity)
-                launches.append(identity)
-                if timeout:
-                    raise TimeoutExpired(args, 900)
-                return CompletedProcess(args, 0)
-            return run
-        first_context.run.side_effect = execute(first_id, timeout=True)
-        second_context.run.side_effect = execute(second_id)
+        jobs = Jobs(jobs.probe.root, policy, workflows=("workspace_execute",))
+        backend = WorkspaceWSL({key: {"PATH": "/usr/bin:/bin"}
+                                for key in ("demo:expo-test", "demo:flutter-test")})
         first = submit_workspace(jobs, "operator", "demo", self.sha, "expo-test", "first", backend=backend)
-        second = submit_workspace(jobs, "operator", "demo", self.sha, "flutter-test", "second", backend=backend)
-        run_pending(jobs, workspace_backend=backend)
-        self.assertEqual(launches, [first_id])
-        self.assertEqual(jobs.get("operator", first)["state"], "BLOCKED")
-        self.assertEqual(jobs.get("operator", second)["state"], "QUEUED")
-        with patch.object(second_context, "host", side_effect=PermissionError("wrong context")):
-            with self.assertRaises(PermissionError):
-                reconcile(jobs, first, second_context)
-        self.assertEqual(jobs.pending_effects()[0]["context_id"], first_id)
-        reconcile(jobs, first, first_context)
-        run_pending(jobs, workspace_backend=backend)
-        self.assertEqual(launches, [first_id, second_id])
-        self.assertEqual(jobs.get("operator", second)["state"], "SUCCEEDED")
-        self.assertEqual(jobs.pending_effects(), [])
-        self.assertEqual(jobs.get("operator", first)["state"], "BLOCKED")
+        other = submit_workspace(jobs, "operator", "demo", self.sha, "flutter-test", "other", backend=backend)
+        with patch("project_os_bridge.execution._command", return_value=(124, False)) as command:
+            run_pending(jobs, workspace_backend=backend)
+            command.assert_called_once()
+            reopened = Jobs(jobs.probe.root, policy, workflows=("workspace_execute",))
+            run_pending(reopened, workspace_backend=backend)
+            command.assert_called_once()
+        self.assertEqual(reopened.get("operator", first)["state"], "BLOCKED")
+        self.assertEqual(reopened.get("operator", other)["state"], "QUEUED")
+        effect, = reopened.pending_effects()
+        self.assertEqual(effect["job_id"], first)
+        self.assertEqual(effect["context_id"], backend.identities()["demo:expo-test"])
+        # The persistence primitive is called only after local quiescence is verified.
+        reopened.resolve_effect(first, effect["token"], effect["context_id"])
+        with patch("project_os_bridge.execution._command", return_value=(0, True)):
+            run_pending(reopened, workspace_backend=backend)
+        self.assertEqual(reopened.get("operator", other)["state"], "SUCCEEDED")
+        self.assertEqual(reopened.get("operator", first)["state"], "BLOCKED")
+        self.assertEqual(reopened.pending_effects(), [])
 
-    def test_project_scoped_contexts_no_cross_project_fallback(self):
-        from project_os_bridge.workspace_podman import WorkspacePodman
-        from project_os_bridge.podman_context import PodmanContext
-        from unittest.mock import Mock
-        first, second = Mock(spec=PodmanContext), Mock(spec=PodmanContext)
-        first.identity.return_value = "c" * 64
-        second.identity.return_value = "d" * 64
-        images = {"demo:expo-test": "localhost/project-os-mobile-ci@sha256:" + "a" * 64,
-                  "other:expo-test": "localhost/project-os-mobile-ci@sha256:" + "b" * 64}
-        backend = WorkspacePodman({"demo:expo-test": first, "other:expo-test": second}, images)
-        self.assertEqual(backend.binding("expo-test", "demo"), ("sha256:" + "a" * 64, "c" * 64))
-        self.assertEqual(backend.binding("expo-test", "other"), ("sha256:" + "b" * 64, "d" * 64))
+    def test_project_scoped_bindings_no_cross_project_fallback(self):
+        from project_os_bridge.execution import WorkspaceWSL
+        backend = WorkspaceWSL({key: {"PATH": "/usr/bin:/bin"}
+                                for key in ("demo:expo-test", "other:expo-test")})
+        self.assertNotEqual(backend.binding("expo-test", "demo"), backend.binding("expo-test", "other"))
         with self.assertRaises(PermissionError):
             backend.binding("expo-test", "unregistered")
         with self.assertRaises(PermissionError):
             backend.binding("expo-test")
-        jobs = self.workspace_queue()
-        policy = Policy([*jobs.policy.grants, ("operator", "workspace_execute", "demo")])
-        jobs = Jobs(jobs.probe.root, policy, workflows=("workspace_execute",))
-        job = submit_workspace(jobs, "operator", "demo", self.sha, "expo-test", "scoped", backend=backend)
-        row = jobs.claim(workspace_contexts=backend.identities())
-        self.assertEqual(row["id"], job)
-        self.assertEqual(row["effect_context"], "c" * 64)
-        self.assertEqual(jobs.pending_effects()[0]["context_id"], "c" * 64)
 
-    def test_podman_apk_output_and_empty_artifact(self):
-        from project_os_bridge.workspace_podman import WorkspacePodman, apk_path
-        from project_os_bridge.podman_context import PodmanContext
-        from unittest.mock import Mock
-        from subprocess import CompletedProcess
+    def test_direct_apk_output_and_empty_artifact(self):
+        from project_os_bridge.execution import WorkspaceWSL
         jobs = self.workspace_queue()
         policy = Policy([*jobs.policy.grants, ("operator", "workspace_execute", "demo")])
         jobs = Jobs(jobs.probe.root, policy, workflows=("workspace_execute",))
-        context = Mock(spec=PodmanContext)
-        context.identity.return_value = "c" * 64
-        image = "localhost/project-os-mobile-ci@sha256:" + "a" * 64
-        backend = WorkspacePodman(context, {"flutter-apk-debug": image})
+        backend = WorkspaceWSL({"demo:flutter-apk-debug": {"PATH": "/usr/bin:/bin"}})
         first = submit_workspace(jobs, "operator", "demo", self.sha, "flutter-apk-debug", "apk", backend=backend)
         second = submit_workspace(jobs, "operator", "demo", self.sha, "flutter-apk-debug", "empty", backend=backend)
-        def run(expected, *args, **kwargs):
-            if args[0] == "container":
-                return CompletedProcess(args, 1)
-            if args[0] == "ps":
-                return CompletedProcess(args, 0, stdout=b"")
-            self.assertEqual(args[0], "run")
-            effect = jobs.pending_effects()[0]
-            path = apk_path(jobs.probe.root, effect["job_id"])
-            self.assertIn(str(path) + ":/output.apk:rw", args)
-            self.assertIn("--network=none", args)
-            self.assertIn("--ulimit=fsize=536870912:536870912", args)
-            self.assertEqual(path.stat().st_size, 0)
-            if effect["job_id"] == first:
-                path.write_bytes(b"synthetic apk bytes")
-            return CompletedProcess(args, 0)
-        context.run.side_effect = run
-        run_pending(jobs, workspace_backend=backend)
+        def command(argv, cwd, env, deadline):
+            if argv[1] == "build":
+                path = cwd / "build/app/outputs/flutter-apk/app-debug.apk"
+                path.parent.mkdir(parents=True)
+                path.write_bytes(b"synthetic apk bytes" if jobs.pending_effects()[0]["job_id"] == first else b"")
+            return 0, True
+        with patch("project_os_bridge.execution._command", side_effect=command):
+            run_pending(jobs, workspace_backend=backend)
         result = jobs.evidence("operator", first)
         self.assertEqual(result["state"], "SUCCEEDED")
         self.assertEqual(result["result"]["execution"]["artifact"],
                          artifact_identity("apk", "app-debug.apk", b"synthetic apk bytes"))
-        failed = jobs.evidence("operator", second)
-        self.assertEqual(failed["state"], "FAILED")
-        self.assertEqual(failed["result"]["execution"]["artifact_error"], "APK_IDENTITY_INVALID")
+        result = jobs.evidence("operator", second)
+        self.assertEqual(result["state"], "FAILED")
+        self.assertEqual(result["result"]["execution"]["artifact_error"], "APK_IDENTITY_INVALID")
         self.assertEqual(jobs.pending_effects(), [])
 
     def test_qa_release_plan_and_unfinalized_build_identity(self):
         from project_os_bridge.workspace_profiles import qa_plan
         from project_os_bridge.workspace_jobs import verified_qa_build_input
-        from project_os_bridge.workspace_podman import WorkspacePodman, apk_path
-        from project_os_bridge.podman_context import PodmanContext
-        from unittest.mock import Mock
-        from subprocess import CompletedProcess
+        from project_os_bridge.execution import WorkspaceWSL
+        from project_os_bridge.workspace_profiles import apk_path
         flutter = qa_plan("flutter-apk-qa", {"dart_defines": {"QA": "true"}, "build_number": 42})
         self.assertIn("--release", flutter.argv)
         self.assertIn("--build-number=42", flutter.argv)
@@ -666,27 +539,22 @@ class WorkspacePreflightTests(unittest.TestCase):
         jobs = self.workspace_queue()
         policy = Policy([*jobs.policy.grants, ("operator", "workspace_execute", "demo")])
         jobs = Jobs(jobs.probe.root, policy, workflows=("workspace_execute",))
-        context = Mock(spec=PodmanContext)
-        context.identity.return_value = "c" * 64
         route = "demo:expo-apk-qa"
-        image = "localhost/project-os-mobile-ci@sha256:" + "a" * 64
+        toolchain = {route: {"PATH": "/usr/bin:/bin"}}
+        # The fixture has native Android source; use the native plan here.
         with self.assertRaises(ValueError):
-            WorkspacePodman({route: context}, {route: image})
-        backend = WorkspacePodman({route: context}, {route: image}, qa_plans={route: expo})
+            WorkspaceWSL(toolchain)
+        backend = WorkspaceWSL(toolchain, qa_plans={route: {"public_env": {"EXPO_PUBLIC_QA": "true"}}})
         job = submit_workspace(jobs, "operator", "demo", self.sha, "expo-apk-qa", "qa", backend=backend)
-        def run(expected, *args, **kwargs):
-            if args[0] == "container":
-                return CompletedProcess(args, 1)
-            if args[0] == "ps":
-                return CompletedProcess(args, 0, stdout=b"")
-            self.assertIn("--network=none", args)
-            self.assertIn("--env=EXPO_PUBLIC_QA=true", args)
-            self.assertIn(":app:assembleRelease", args)
-            self.assertTrue(any("npm run prebuild -- --platform android --no-install" in value for value in args))
-            apk_path(jobs.probe.root, job).write_bytes(b"unfinalized synthetic bytes")
-            return CompletedProcess(args, 0)
-        context.run.side_effect = run
-        run_pending(jobs, workspace_backend=backend)
+        def command(argv, cwd, env, deadline):
+            self.assertEqual(env["EXPO_PUBLIC_QA"], "true")
+            if ":app:assembleRelease" in argv:
+                path = cwd / "app/build/outputs/apk/release/app-release.apk"
+                path.parent.mkdir(parents=True)
+                path.write_bytes(b"unfinalized synthetic bytes")
+            return 0, True
+        with patch("project_os_bridge.execution._command", side_effect=command):
+            run_pending(jobs, workspace_backend=backend)
         result = jobs.evidence("operator", job)["result"]["execution"]
         self.assertFalse(result["qa_delivery_ready"])
         raw, identity = verified_qa_build_input(jobs, "operator", job,
@@ -702,29 +570,23 @@ class WorkspacePreflightTests(unittest.TestCase):
     def test_qa_finalizer_persists_identity_and_rejects_tampering(self):
         import os
         from unittest.mock import Mock
-        from subprocess import CompletedProcess
         from project_os_bridge.android_qa import AndroidQATools, finalize_qa_build
-        from project_os_bridge.workspace_podman import WorkspacePodman, apk_path
-        from project_os_bridge.podman_context import PodmanContext
+        from project_os_bridge.execution import WorkspaceWSL
         jobs = self.workspace_queue()
         policy = Policy([*jobs.policy.grants, ("operator", "workspace_execute", "demo")])
         jobs = Jobs(jobs.probe.root, policy, workflows=("workspace_execute",))
-        context = Mock(spec=PodmanContext)
-        context.identity.return_value = "c" * 64
         route = "demo:expo-apk-qa"
-        image = "localhost/project-os-mobile-ci@sha256:" + "a" * 64
-        backend = WorkspacePodman({route: context}, {route: image}, qa_plans={route: {}})
+        backend = WorkspaceWSL({route: {"PATH": "/usr/bin:/bin"}}, qa_plans={route: {}})
         def build(key):
             job = submit_workspace(jobs, "operator", "demo", self.sha, "expo-apk-qa", key, backend=backend)
-            def run(expected, *args, **kwargs):
-                if args[0] == "container":
-                    return CompletedProcess(args, 1)
-                if args[0] == "ps":
-                    return CompletedProcess(args, 0, stdout=b"")
-                apk_path(jobs.probe.root, job).write_bytes(b"unfinalized synthetic bytes")
-                return CompletedProcess(args, 0)
-            context.run.side_effect = run
-            run_pending(jobs, workspace_backend=backend)
+            def command(argv, cwd, env, deadline):
+                if ":app:assembleRelease" in argv:
+                    path = cwd / "app/build/outputs/apk/release/app-release.apk"
+                    path.parent.mkdir(parents=True)
+                    path.write_bytes(b"unfinalized synthetic bytes")
+                return 0, True
+            with patch("project_os_bridge.execution._command", side_effect=command):
+                run_pending(jobs, workspace_backend=backend)
             return job
         tools = Mock(spec=AndroidQATools)
         metadata = {"package": "example.demo.qa", "version_code": 42,
@@ -805,62 +667,50 @@ class WorkspacePreflightTests(unittest.TestCase):
 
     def test_worker_automatically_finalizes_bound_qa_build(self):
         from unittest.mock import Mock
-        from subprocess import CompletedProcess
         from project_os_bridge.android_qa import QASignerBinding
-        from project_os_bridge.workspace_podman import WorkspacePodman, apk_path
-        from project_os_bridge.podman_context import PodmanContext
+        from project_os_bridge.execution import WorkspaceWSL
         jobs = self.workspace_queue()
         policy = Policy([*jobs.policy.grants, ("operator", "workspace_execute", "demo")])
         jobs = Jobs(jobs.probe.root, policy, workflows=("workspace_execute",))
-        ctx = Mock(spec=PodmanContext)
-        ctx.identity.return_value = "c" * 64
         signer = Mock(spec=QASignerBinding)
         signer.digest = "d" * 64
         route = "demo:expo-apk-qa"
-        image = "localhost/project-os-mobile-ci@sha256:" + "a" * 64
-        backend = WorkspacePodman({route: ctx}, {route: image}, qa_plans={route: {}},
-                                  qa_signers={route: signer})
+        backend = WorkspaceWSL({route: {"PATH": "/usr/bin:/bin"}}, qa_plans={route: {}},
+                               qa_signers={route: signer})
         job = submit_workspace(jobs, "operator", "demo", self.sha, "expo-apk-qa", "auto-qa", backend=backend)
-        def run(expected, *args, **kwargs):
-            if args[0] == "container":
-                return CompletedProcess(args, 1)
-            if args[0] == "ps":
-                return CompletedProcess(args, 0, stdout=b"")
-            apk_path(jobs.probe.root, job).write_bytes(b"synthetic")
-            return CompletedProcess(args, 0)
-        ctx.run.side_effect = run
+        def command(argv, cwd, env, deadline):
+            if ":app:assembleRelease" in argv:
+                path = cwd / "app/build/outputs/apk/release/app-release.apk"
+                path.parent.mkdir(parents=True)
+                path.write_bytes(b"synthetic")
+            return 0, True
         def finalize(jobs_arg, principal, job_id, request):
             self.assertEqual(jobs_arg.pending_effects(), [])
             self.assertEqual(jobs_arg.evidence(principal, job_id)["state"], "SUCCEEDED")
             self.assertEqual(request["qa_signer_sha256"], signer.digest)
             return {"signature_verified": True, "published": False}
         signer.finalize_locked.side_effect = finalize
-        run_pending(jobs, workspace_backend=backend)
+        with patch("project_os_bridge.execution._command", side_effect=command):
+            run_pending(jobs, workspace_backend=backend)
         self.assertEqual(jobs.evidence("operator", job)["result"]["qa_finalization"],
                          {"state": "SUCCEEDED", "receipt": {"signature_verified": True, "published": False}})
         reopened = Jobs(jobs.probe.root, policy, workflows=("workspace_execute",))
         run_pending(reopened, workspace_backend=backend)
         signer.finalize_locked.assert_called_once()
 
-    def test_context_bound_execution_cannot_use_ci_executor(self):
-        from project_os_bridge.workspace_podman import WorkspacePodman
-        from project_os_bridge.podman_context import PodmanContext
+    def test_context_bound_execution_cannot_use_unregistered_executor(self):
+        from project_os_bridge.execution import WorkspaceWSL
         from unittest.mock import Mock
         jobs = self.workspace_queue()
         policy = Policy([*jobs.policy.grants, ("operator", "workspace_execute", "demo")])
         jobs = Jobs(jobs.probe.root, policy, workflows=("workspace_execute",))
-        context = Mock(spec=PodmanContext)
-        context.identity.return_value = "c" * 64
-        backend = WorkspacePodman(context, {"flutter-test":
-                                  "localhost/project-os-alpine-ci@sha256:" + "a" * 64})
+        backend = WorkspaceWSL({"demo:flutter-test": {"PATH": "/usr/bin:/bin"}})
         job = submit_workspace(jobs, "operator", "demo", self.sha, "flutter-test", "one", backend=backend)
         executor = Mock()
         run_pending(jobs, workspace_executor=executor)
         executor.assert_not_called()
         self.assertEqual(jobs.get("operator", job)["state"], "BLOCKED")
         self.assertEqual(jobs.pending_effects(), [])
-
-
 
     def test_direct_wsl_profile_uses_durable_jobs_and_real_subprocess(self):
         from project_os_bridge.execution import WorkspaceWSL

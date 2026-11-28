@@ -1,7 +1,6 @@
 """Durable preparation jobs for the dedicated disposable workspace profile.
 
-Not registered by the authenticated service. A trusted internal CI caller may
-supply a fixed executor for a single disposable execution job.
+Registered workspace preparation and direct WSL execution use the same durable queue.
 """
 import os
 import re
@@ -176,9 +175,7 @@ def local_runtime(root, policy=None):
 def authorize_request(policy, principal, request, *, execute=False):
     fields = {"project", "profile", "expected_sha", "binding"}
     if execute:
-        fields.add("execution_id" if isinstance(request, dict) and "execution_id" in request else "image_id")
-        if isinstance(request, dict) and "context_id" in request:
-            fields.add("context_id")
+        fields.update(("execution_id", "context_id"))
         if isinstance(request, dict) and request.get("profile") in QA_PROFILES:
             fields.add("qa_plan_sha256")
             if "qa_signer_sha256" in request or type(policy) is SupervisedWorkspacePolicy:
@@ -199,12 +196,9 @@ def authorize_request(policy, principal, request, *, execute=False):
         if normalize_changes(request["changes"]) != request["changes"]:
             raise ValueError("INVALID_WORKSPACE_CHANGES")
     if execute:
-        if "execution_id" in request:
-            if (not re.fullmatch(r"[0-9a-f]{64}", request["execution_id"])
-                    or request.get("context_id") != request["execution_id"]):
-                raise ValueError("INVALID_EXECUTION_BINDING")
-        elif type(policy) is SupervisedWorkspacePolicy or not re.fullmatch(r"sha256:[0-9a-f]{64}", request["image_id"]):
-            raise ValueError("INVALID_LEGACY_EXECUTION")
+        if (not re.fullmatch(r"[0-9a-f]{64}", request["execution_id"])
+                or request["context_id"] != request["execution_id"]):
+            raise ValueError("INVALID_EXECUTION_BINDING")
         if "context_id" in request and not re.fullmatch(r"[0-9a-f]{64}", request["context_id"]):
             raise ValueError("INVALID_EXECUTION_CONTEXT")
         if request["profile"] in QA_PROFILES and (not re.fullmatch(r"[0-9a-f]{64}", request["qa_plan_sha256"])
@@ -217,24 +211,20 @@ def authorize_request(policy, principal, request, *, execute=False):
         policy.require(principal, op, project)
 
 
-def submit_workspace(jobs, principal, project, expected_sha, profile, request_key, *, image_id=None,
-                     authorize=lambda: None, backend=None, changes=None):
+def submit_workspace(jobs, principal, project, expected_sha, profile, request_key, *, authorize=lambda: None, backend=None, changes=None):
     runtime = local_runtime(jobs.probe.root, jobs.policy)
     jobs.policy.require(principal, "submit", workspace_resource(jobs.policy))
     jobs.policy.require(principal, "workspace_materialize", project)
     execution_id = None
     if backend is not None:
-        if image_id is not None:
-            raise ValueError("Use backend-selected image only")
         jobs.policy.require(principal, "workspace_execute", project)
         jobs.policy.require(principal, profile, project)
         if type(jobs.policy) is SupervisedWorkspacePolicy and jobs.policy.backend is not backend:
             raise PermissionError("DENIED")
         from .execution import WorkspaceWSL
-        if type(backend) is WorkspaceWSL:
-            execution_id, context_id = backend.binding(profile, project)
-        else:
-            image_id, context_id = backend.binding(profile, project)
+        if type(backend) is not WorkspaceWSL:
+            raise ValueError("DIRECT_WSL_BACKEND_REQUIRED")
+        execution_id, context_id = backend.binding(profile, project)
     else:
         context_id = None
     args = (runtime, jobs.policy, principal, project, expected_sha, profile)
@@ -244,14 +234,10 @@ def submit_workspace(jobs, principal, project, expected_sha, profile, request_ke
     if changes is not None:
         jobs.policy.require(principal, "workspace_change", project)
         request["changes"] = normalize_changes(changes)
-    execute = execution_id is not None or image_id is not None
+    execute = execution_id is not None
     if execute:
-        if execution_id is not None:
-            request["execution_id"] = execution_id
-        else:
-            request["image_id"] = image_id
-        if context_id is not None:
-            request["context_id"] = context_id
+        request["execution_id"] = execution_id
+        request["context_id"] = context_id
         if profile in QA_PROFILES:
             if backend is None:
                 raise ValueError("QA_BACKEND_REQUIRED")
@@ -324,7 +310,7 @@ def verified_qa_build_input(jobs, principal, job_id, *, expected_project, expect
     if (evidence["state"] != "SUCCEEDED" or result.get("operation") != "execute"
             or result.get("head") != expected_sha or result.get("workspace_materialized") is not True
             or execution.get("cleanup_verified") is not True or execution.get("exit_code") != 0
-            or execution.get("execution_id", execution.get("image_id")) != request.get("execution_id", request.get("image_id"))
+            or execution.get("execution_id") != request.get("execution_id")
             or execution.get("workspace_sha256") != result.get("workspace_sha256")
             or execution.get("qa_plan_sha256") != request["qa_plan_sha256"]
             or execution.get("artifact_stage") != "unfinalized"
@@ -374,7 +360,7 @@ def run_workspace(jobs, row, *, executor=None):
         # Only the registered backend (or the pre-existing disposable CI test executor).
         execution = executor(jobs.probe.root / ("workspace-" + row["id"]), row, snapshot)
         if "context_id" in request and (execution.get("cleanup_verified") is not True
-                or execution.get("execution_id", execution.get("image_id")) != request.get("execution_id", request.get("image_id"))):
+                or execution.get("execution_id") != request.get("execution_id")):
             return "BLOCKED", {**result, **snapshot, "operation": "execute",
                                "reason": "CLEANUP_OR_EXECUTION_UNVERIFIED"}
         if type(execution.get("exit_code")) is not int:

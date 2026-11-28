@@ -72,10 +72,9 @@ def build_server(verifier, jobs, fixture_reader=None, *, fixture_image=None, dia
     if workspace_candidate and not supervised_workspace:
         from .workspace_jobs import local_runtime
         from .execution import WorkspaceWSL
-        from .workspace_podman import WorkspacePodman
         workflows = {"workspace_prepare"}
         if workspace_backend is not None:
-            if type(workspace_backend) not in (WorkspaceWSL, WorkspacePodman):
+            if type(workspace_backend) is not WorkspaceWSL:
                 raise ValueError("Registered backend required")
             workflows.add("workspace_execute")
             workspace_backend.identities()
@@ -638,13 +637,12 @@ def serve_with_worker(server, jobs, verifier, fixture_image, *, readiness=None, 
     """Stop HTTP on infrastructure failure; preserve in-flight cleanup on shutdown."""
     if workspace_backend is not None:
         from .execution import WorkspaceWSL
-        from .workspace_podman import WorkspacePodman
         from .workspace_jobs import local_runtime, SupervisedWorkspacePolicy
         supervised = type(jobs.policy) is SupervisedWorkspacePolicy
         expected = {"workspace_prepare", "workspace_execute"}
         if supervised:
             expected.add("probe_check")
-        if (type(workspace_backend) not in ((WorkspaceWSL,) if supervised else (WorkspaceWSL, WorkspacePodman)) or readiness is None
+        if (type(workspace_backend) is not WorkspaceWSL or readiness is None
                 or fixture_image is not None or podman_context is not None or context_id is not None
                 or jobs.workflows != frozenset(expected)
                 or (supervised and (jobs.probe.root != verifier.state_dir

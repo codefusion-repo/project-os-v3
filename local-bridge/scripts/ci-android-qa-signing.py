@@ -1,7 +1,7 @@
 """Real Android signing tools, synthetic APK, existing Jobs/worker.
 
 No private project, device, production credential or application compilation.
-Only the Podman output is simulated; Android packaging, key generation,
+Only the application build output is simulated; Android packaging, key generation,
 alignment, signing, inspection and verification use the installed SDK/JDK.
 """
 import hashlib
@@ -14,14 +14,13 @@ import stat
 import subprocess
 import tempfile
 import zipfile
-from unittest.mock import Mock
+from unittest.mock import patch
 
 from project_os_bridge.android_qa import QASignerBinding, verified_qa_delivery_input, verify_qa_artifact_zip
 from project_os_bridge.core import Jobs, Policy
-from project_os_bridge.podman_context import PodmanContext
 from project_os_bridge.worker import run_pending
 from project_os_bridge.workspace_jobs import submit_workspace
-from project_os_bridge.workspace_podman import WorkspacePodman, apk_path
+from project_os_bridge.execution import WorkspaceWSL
 from test_workspace_preflight import WorkspacePreflightTests
 
 
@@ -97,28 +96,24 @@ def main():
             jobs = fixture.workspace_queue()
             policy = Policy([*jobs.policy.grants, ("operator", "workspace_execute", "demo")])
             jobs = Jobs(jobs.probe.root, policy, workflows=("workspace_execute",))
-            ctx = Mock(spec=PodmanContext)
-            ctx.identity.return_value = "c" * 64
             route = "demo:expo-apk-qa"
             signer = QASignerBinding({"package": "example.demo.qa", "java_home": str(java),
                                       "build_tools": str(tools)})
-            image = "localhost/project-os-mobile-ci@sha256:" + "a" * 64
-            backend = WorkspacePodman({route: ctx}, {route: image}, qa_plans={route: {}},
-                                      qa_signers={route: signer})
+            backend = WorkspaceWSL({route: {"PATH": "/usr/bin:/bin"}}, qa_plans={route: {}},
+                                   qa_signers={route: signer})
 
             def finalize(version):
                 data = apk(version)
                 job = submit_workspace(jobs, "operator", "demo", fixture.sha,
                                        "expo-apk-qa", "signing-" + str(version), backend=backend)
-                def run(expected, *args, **kwargs):
-                    if args[0] == "container":
-                        return subprocess.CompletedProcess(args, 1)
-                    if args[0] == "ps":
-                        return subprocess.CompletedProcess(args, 0, stdout=b"")
-                    apk_path(jobs.probe.root, job).write_bytes(data)
-                    return subprocess.CompletedProcess(args, 0)
-                ctx.run.side_effect = run
-                run_pending(jobs, workspace_backend=backend)
+                def build_command(argv, cwd, env, deadline):
+                    if ":app:assembleRelease" in argv:
+                        path = cwd / "app/build/outputs/apk/release/app-release.apk"
+                        path.parent.mkdir(parents=True)
+                        path.write_bytes(data)
+                    return 0, True
+                with patch("project_os_bridge.execution._command", side_effect=build_command):
+                    run_pending(jobs, workspace_backend=backend)
                 result = jobs.evidence("operator", job)["result"]["qa_finalization"]
                 assert result["state"] == "SUCCEEDED", result
                 raw, receipt = verified_qa_delivery_input(jobs, "operator", job,
