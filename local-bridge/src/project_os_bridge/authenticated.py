@@ -33,25 +33,13 @@ from .github_fixture import SyntheticGitHubReader
 from .github_context import GitHubContext
 from .github_operational import MultiProjectContext, load_operational_provider
 from .methodology import installed_context, installed_receipt
-from .vertical import OPERATIONS, bind_image, bound_context
-from .isolated import IMAGE
-from .podman_context import PodmanContext
 from .workos_auth import private_file, private_directory
 from .readiness import read_metadata, verify_metadata
 from .diagnostics import Diagnostics, Section
 from .maintenance import Maintenance
 
 
-def fixture_enabled(verifier, image, context_id=None):
-    if not image or context_id is None or not verifier.enabled():
-        return False
-    try:
-        return bound_context(verifier.state_dir, image) == context_id
-    except (OSError, ValueError):
-        return False
-
-
-def build_server(verifier, jobs, fixture_reader=None, *, fixture_image=None, diagnostics=None, context_id=None, github_provider=None, maintenance=None, workspace_candidate=False, workspace_backend=None):
+def build_server(verifier, jobs, fixture_reader=None, *, diagnostics=None, github_provider=None, maintenance=None, workspace_candidate=False, workspace_backend=None):
     from .workspace_jobs import SupervisedWorkspacePolicy
     supervised_workspace = type(jobs.policy) is SupervisedWorkspacePolicy
     if supervised_workspace:
@@ -64,7 +52,7 @@ def build_server(verifier, jobs, fixture_reader=None, *, fixture_image=None, dia
         if (not workspace_candidate or jobs.policy.verifier is not verifier
                 or jobs.probe.root != verifier.state_dir
                 or jobs.workflows != frozenset(workflows)
-                or fixture_reader is not None or fixture_image is not None
+                or fixture_reader is not None
                 or jobs.policy.backend is not workspace_backend):
             raise ValueError("Supervised workspace profile required")
     if workspace_backend is not None and not workspace_candidate:
@@ -79,11 +67,11 @@ def build_server(verifier, jobs, fixture_reader=None, *, fixture_image=None, dia
             workflows.add("workspace_execute")
             workspace_backend.identities()
         if (jobs.workflows != frozenset(workflows) or jobs.probe.root == verifier.state_dir
-                or fixture_reader is not None or fixture_image is not None or github_provider is not None
+                or fixture_reader is not None or github_provider is not None
                 or maintenance is not None or diagnostics is not None):
             raise ValueError("Dedicated workspace candidate required")
         local_runtime(jobs.probe.root)
-    if github_provider is not None and (type(github_provider) not in (GitHubContext, MultiProjectContext) or fixture_image is not None or fixture_reader is not None):
+    if github_provider is not None and (type(github_provider) not in (GitHubContext, MultiProjectContext) or fixture_reader is not None):
         raise ValueError("Invalid GitHub context configuration")
     delivery = None
     if supervised_workspace and workspace_backend is not None and type(github_provider) is MultiProjectContext:
@@ -112,10 +100,9 @@ def build_server(verifier, jobs, fixture_reader=None, *, fixture_image=None, dia
         """Report authenticated service status and local capability admission."""
         def collect():
             actor = principal()
-            result = {"status":"ready","caller_identity_verified":True,"repository_access":False,"mode":"authenticated-disposable",
-                      "git_fixture_available":fixture_enabled(verifier, fixture_image, context_id)}
+            result = {"status":"ready","caller_identity_verified":True,"repository_access":False,"mode":"authenticated-disposable"}
             result["installation"] = {"status": "unavailable"}
-            if fixture_image is None and (fixture_reader is None or diagnostics is not None):
+            if fixture_reader is None or diagnostics is not None:
                 try:
                     result["installation"] = {"status": "receipt_observed", **installed_receipt()}
                 except (OSError, ValueError, TypeError, RecursionError):
@@ -163,7 +150,7 @@ def build_server(verifier, jobs, fixture_reader=None, *, fixture_image=None, dia
 
         return await asyncio.to_thread(collect)
 
-    if diagnostics is not None and fixture_image is None:
+    if diagnostics is not None:
         @mcp.tool(annotations=read)
         async def operational_diagnostics(section: Section) -> dict:
             """Read a fixed sanitized operational section; no paths, commands or URLs."""
@@ -178,7 +165,7 @@ def build_server(verifier, jobs, fixture_reader=None, *, fixture_image=None, dia
             jobs.policy.require(actor, "diagnostics_read", "host")
             return evidence
 
-    if maintenance is not None and fixture_image is None:
+    if maintenance is not None:
         def maintenance_authorized():
             actor = principal()
             jobs.policy.require(actor, "maintenance", "installation")
@@ -221,15 +208,6 @@ def build_server(verifier, jobs, fixture_reader=None, *, fixture_image=None, dia
     def submit_probe_job(request_key: str) -> dict:
         """Submit the fixed read-only probe_check job; no user commands or paths."""
         return {"job_id":jobs.submit(principal(),"disposable","probe_check",request_key)}
-
-    if fixture_image is not None:
-        @mcp.tool(annotations=write)
-        def submit_git_fixture(request_key: str) -> dict:
-            """Run only the registered disposable Git/Podman fixture; no paths, code or image arguments."""
-            actor = principal()
-            if not fixture_enabled(verifier, fixture_image, context_id):
-                raise PermissionError("DENIED")
-            return {"job_id":jobs.submit(actor,"disposable","git_fixture_check",request_key)}
 
     if workspace_candidate:
         from .workspace_jobs import (submit_workspace, require_workspace_job,
@@ -558,9 +536,9 @@ class LocalAuthorizationMiddleware:
         await self.app(scope, receive, send)
 
 
-def build_http_app(verifier, jobs, fixture_reader=None, *, audit=None, limit=120, fixture_image=None, diagnostics=None, context_id=None, github_provider=None, maintenance=None, workspace_candidate=False, workspace_backend=None):
+def build_http_app(verifier, jobs, fixture_reader=None, *, audit=None, limit=120, diagnostics=None, github_provider=None, maintenance=None, workspace_candidate=False, workspace_backend=None):
     """Use the same authenticated ASGI stack in production and HTTP tests."""
-    server = build_server(verifier, jobs, fixture_reader, fixture_image=fixture_image, diagnostics=diagnostics, context_id=context_id, github_provider=github_provider, maintenance=maintenance, workspace_candidate=workspace_candidate, workspace_backend=workspace_backend)
+    server = build_server(verifier, jobs, fixture_reader, diagnostics=diagnostics, github_provider=github_provider, maintenance=maintenance, workspace_candidate=workspace_candidate, workspace_backend=workspace_backend)
     app = server.streamable_http_app(
         stateless_http=True, json_response=True, max_request_body_size=65536,
         host="127.0.0.1",
@@ -632,8 +610,7 @@ def exclusive_http_service(root):
         os.close(fd)
 
 
-def serve_with_worker(server, jobs, verifier, fixture_image, *, readiness=None, podman_context=None,
-                      context_id=None, workspace_backend=None, github_provider=None):
+def serve_with_worker(server, jobs, verifier, *, readiness=None, workspace_backend=None, github_provider=None):
     """Stop HTTP on infrastructure failure; preserve in-flight cleanup on shutdown."""
     if workspace_backend is not None:
         from .execution import WorkspaceWSL
@@ -643,7 +620,6 @@ def serve_with_worker(server, jobs, verifier, fixture_image, *, readiness=None, 
         if supervised:
             expected.add("probe_check")
         if (type(workspace_backend) is not WorkspaceWSL or readiness is None
-                or fixture_image is not None or podman_context is not None or context_id is not None
                 or jobs.workflows != frozenset(expected)
                 or (supervised and (jobs.probe.root != verifier.state_dir
                     or jobs.policy.verifier is not verifier or jobs.policy.backend is not workspace_backend))
@@ -687,10 +663,7 @@ def serve_with_worker(server, jobs, verifier, fixture_image, *, readiness=None, 
             while not stopping():
                 try:
                     if verifier.enabled():
-                        run_pending(jobs, fixture_image=fixture_image, podman_context=podman_context,
-                                    context_id=context_id,
-                                    enabled=lambda: verifier.enabled() and not stopping(),
-                                    fixture_allowed=lambda: fixture_enabled(verifier, fixture_image, context_id),
+                        run_pending(jobs, enabled=lambda: verifier.enabled() and not stopping(),
                                     workspace_backend=workspace_backend)
                         if delivery_worker is not None:
                             process_one(jobs, delivery_worker,
@@ -726,8 +699,6 @@ def main():
     parser.add_argument("--config",required=True,type=Path)
     parser.add_argument("--state-dir",required=True,type=Path)
     parser.add_argument("--port",type=int,default=8765)
-    parser.add_argument("--podman-context", type=Path, help="Explicit private Podman context for a locally approved fixture")
-    parser.add_argument("--fixture-image",help="Explicit local opt-in for fixed disposable fixture, approved digest only")
     parser.add_argument("--tls-cert", type=Path, help="Private local PEM certificate")
     parser.add_argument("--tls-key", type=Path, help="Private local PEM key")
     parser.add_argument("--supervised-ca", type=Path, help="Require verified loopback TLS metadata before worker dispatch")
@@ -750,7 +721,7 @@ def main():
         context.load_verify_locations(cafile=str(args.supervised_ca))
         readiness = lambda: verify_metadata(read_metadata(context, args.port), verifier)
         root = args.config.parent
-        if (args.fixture_image is None and args.port == 8765
+        if (args.port == 8765
                 and args.config == root / "oauth.json" and args.state_dir == root / "state"
                 and args.supervised_ca == root / "service" / "ca.pem"
                 and args.tls_cert == root / "service" / "server.pem"
@@ -758,25 +729,9 @@ def main():
             diagnostics = Diagnostics(verifier, root, tls_context=context)
     if os.getuid()==0 or os.path.lexists(args.state_dir/"local-fixture-mode"):
         parser.error("Unprivileged dedicated HTTP state required")
-    if args.fixture_image is not None and not IMAGE.fullmatch(args.fixture_image):
-        parser.error("Digest-pinned image required")
-    if (args.fixture_image is None) != (args.podman_context is None):
-        parser.error("Fixture image and Podman context must be supplied together")
-    podman_context = context_id = None
-    if args.podman_context is not None:
-        try:
-            podman_context = PodmanContext(args.podman_context)
-            if args.supervised_ca is not None:
-                context_id = bound_context(args.state_dir, args.fixture_image)
-                podman_context.identity(context_id)
-            else:
-                context_id = podman_context.identity()
-            podman_context.require_import(context_id, args.fixture_image)
-        except (OSError, ValueError, subprocess.SubprocessError):
-            parser.error("Verified private Podman context required")
     with exclusive_http_service(args.state_dir):
-        operations = OPERATIONS if args.fixture_image else ("submit","read","cancel")
-        workflows = ("probe_check","git_fixture_check") if args.fixture_image else ("probe_check",)
+        operations = ("submit","read","cancel")
+        workflows = ("probe_check",)
         grants = [(verifier.subject, op, "disposable") for op in operations]
         maintenance = None
         if diagnostics is not None:
@@ -790,7 +745,7 @@ def main():
         from .workspace_jobs import load_supervised_workspace_policy, load_supervised_workspace_backend
         try:
             workspace_policy = load_supervised_workspace_policy(
-                verifier, grants, supervised=diagnostics is not None and args.fixture_image is None,
+                verifier, grants, supervised=diagnostics is not None,
                 multi=args.github_projects)
             workspace_backend = load_supervised_workspace_backend(workspace_policy)
         except (OSError, ValueError, TypeError, subprocess.SubprocessError):
@@ -802,23 +757,20 @@ def main():
         jobs = Jobs(args.state_dir, workspace_policy or Policy(grants), workflows=workflows)
         if jobs.pending_effects():
             parser.error("RECONCILIATION_REQUIRED; stop and use local reconciliation")
-        if args.fixture_image and args.supervised_ca is None:
-            bind_image(jobs, args.fixture_image, context_id)
         try:
-            github_provider = load_operational_provider(verifier, supervised=diagnostics is not None and args.fixture_image is None,
+            github_provider = load_operational_provider(verifier, supervised=diagnostics is not None,
                                                         project_config=args.project_config, multi=args.github_projects)
         except (OSError, ValueError, TypeError):
             parser.error("Invalid or active private GitHub context configuration")
         fixture = (None if github_provider is not None else
                    SyntheticGitHubReader(Policy([(verifier.subject,"github_read","disposable")]),args.state_dir))
-        app = build_http_app(verifier,jobs,fixture,fixture_image=args.fixture_image,diagnostics=diagnostics,
-                             context_id=context_id,github_provider=github_provider,maintenance=maintenance,
+        app = build_http_app(verifier,jobs,fixture,diagnostics=diagnostics,
+                             github_provider=github_provider,maintenance=maintenance,
                              workspace_candidate=workspace_policy is not None, workspace_backend=workspace_backend)
         import uvicorn
         server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=args.port,
                                               access_log=False, **tls))
-        serve_with_worker(server, jobs, verifier, args.fixture_image, readiness=readiness,
-                          podman_context=podman_context, context_id=context_id,
+        serve_with_worker(server, jobs, verifier, readiness=readiness,
                           workspace_backend=workspace_backend, github_provider=github_provider)
 
 

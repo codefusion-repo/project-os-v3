@@ -121,8 +121,6 @@ def run_package(jobs, row):
 
 
 def package_cli(args, parser):
-    if args.image is not None or args.podman_context is not None:
-        parser.error("Package fixture does not use a container image")
     if args.initialize:
         if args.expected_sha is not None:
             parser.error("Initialization does not accept a SHA")

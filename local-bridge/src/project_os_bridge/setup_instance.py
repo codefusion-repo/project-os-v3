@@ -43,11 +43,7 @@ def main():
     actions.add_argument("--github-repository", help="Resolve exact repository ID using the dedicated credential")
     actions.add_argument("--github-project", type=Path, help="Enroll the explicitly selected private project configuration")
     actions.add_argument("--github-revoke", help="Revoke one locally enrolled project")
-    parser.add_argument("--no-fixture", action="store_true",
-                        help="Disable fixture binding during service preparation")
     args=parser.parse_args()
-    if args.no_fixture and not args.prepare_service:
-        parser.error("--no-fixture requires --prepare-service")
     os.umask(0o077)
     if args.github_repository is not None or args.github_project is not None or args.github_revoke is not None:
         from .project_enrollment import repository_identity, update_runtime
@@ -72,7 +68,7 @@ def main():
             raise SystemExit(1)
     if args.prepare_service:
         from .service_setup import interactive_prepare
-        interactive_prepare(args.root, allow_fixture=not args.no_fixture)
+        interactive_prepare(args.root)
         return
     initialize(args.root,input("Exact AuthKit issuer: ").strip(),
                input("Exact MCP resource: ").strip(),input("WorkOS subject: ").strip())
