@@ -4,7 +4,7 @@ Aplica [PROJECT_OS.md](../PROJECT_OS.md) como autoridad metodológica. En ejecuc
 
 ## Capacidades de la superficie
 
-Si la sesión lo permite, inspecciona y edita el checkout, ejecuta comandos y consulta GitHub mediante Git/gh. Comprueba identidad del checkout, rama, git status y worktrees antes de escribir; en ciclo PR usa work/*, no main. Respeta el sandbox y conserva cambios ajenos. Registra comandos, exit codes y resultados observados; distingue ejecución local de publicación remota. Para publicación usa guardas SHA y verifica refs remotas según [trazabilidad](../PROJECT_OS.md#trazabilidad-github-obligatoria).
+Si la sesión lo permite, inspecciona y edita el checkout, ejecuta comandos y consulta GitHub mediante Git/gh. Comprueba identidad del checkout, rama, git status y worktrees antes de escribir; en ciclo PR usa work/* en el checkout existente, no main; no crees copias, clones ni worktrees adicionales. Aplica la regla central de reutilización de recursos. Respeta el sandbox y conserva cambios ajenos. Registra comandos, exit codes y resultados observados; distingue ejecución local de publicación remota. Para publicación usa guardas SHA y verifica refs remotas según [trazabilidad](../PROJECT_OS.md#trazabilidad-github-obligatoria).
 
 ## Referencias operativas
 

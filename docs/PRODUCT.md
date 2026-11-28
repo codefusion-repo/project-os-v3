@@ -2,7 +2,7 @@
 
 ## Decisión vigente — ejecución exclusivamente en WSL local
 
-[Decisión ratificada del PM, 28-11-2026](https://github.com/codefusion-repo/project-os-v3/issues/8#issuecomment-7233893145). AgentsUbuntu (WSL dedicado del operador) es el entorno de confianza y la única vía de ejecución local de Project OS. Browser y Codex son ejecutores complementarios; GitHub Connector conserva las operaciones remotas y Local Bridge las capacidades locales autenticadas y tipadas. Reutilizar terminal, SDK, dependencias y Jobs existentes. Retirar OCI/Podman, fixtures de contenedor, imágenes, auditorías y certificaciones asociadas, sin backend alternativo ni nueva infraestructura de aislamiento. Los requisitos OCI anteriores de este documento y los runbooks quedan sustituidos; se conservan únicamente como historial durante la migración. No exigir certificación adicional del entorno WSL del operador; conservar OAuth/HTTPS y los controles propios de las operaciones (grants, SHA, exclusividad, evidencia, privacidad, firma y entrega). El presupuesto físico y Android Build v1 siguen vigentes. La migración de código aún está pendiente; no se afirma disponibilidad de ejecución local remota por esta decisión.
+[Decisión ratificada del PM, 28-11-2026](https://github.com/codefusion-repo/project-os-v3/issues/8#issuecomment-7233893145). AgentsUbuntu (WSL dedicado del operador) es el entorno de confianza y la única vía de ejecución local de Project OS. Browser y Codex son ejecutores complementarios; GitHub Connector conserva las operaciones remotas y Local Bridge las capacidades locales autenticadas y tipadas. Reutilizar terminal, SDK, dependencias y Jobs existentes. Retirar OCI/Podman, fixtures de contenedor, imágenes, auditorías y certificaciones asociadas, sin backend alternativo ni nueva infraestructura de aislamiento. Los requisitos OCI anteriores de este documento y los runbooks quedan sustituidos; se conservan únicamente como historial durante la migración. No exigir certificación adicional del entorno WSL del operador; conservar OAuth/HTTPS y los controles propios de las operaciones (grants, SHA, exclusividad, evidencia, privacidad, firma y entrega). Android Build v1 y la [reutilización de recursos](../PROJECT_OS.md#seguridad-transversal-y-límites) siguen vigentes. La migración de código aún está pendiente; no se afirma disponibilidad de ejecución local remota por esta decisión.
 
 
 Documento de producto para PM y desarrolladores del kit. La metodología obligatoria para cualquier agente es [PROJECT_OS.md](../PROJECT_OS.md); este documento no la sustituye. Los contratos técnicos viven junto al componente que gobiernan; GitHub conserva decisiones, estado vivo y evidencia. Base de consolidación: [75a392b63ed21a364fc8195ad5dbdd062532df2c](https://github.com/codefusion-repo/project-os-v3/commit/75a392b63ed21a364fc8195ad5dbdd062532df2c), issue [#21](https://github.com/codefusion-repo/project-os-v3/issues/21). Estado de referencia al consolidar, no un registro de ejecución paralelo.
@@ -253,7 +253,7 @@ Resultado esperado: software implementado, compilado, probado y entregado sin qu
 
 Preservar evidencia aplicable de LB-05 y verificar solo controles materiales de la capacidad solicitada.
 
-El mantenimiento detenido y protegido por fence conserva sus controles propios de integridad, revisión, CI, exclusividad, reconciliación y rollback. Las capacidades independientes usan evidencia aplicable sin depender de certificaciones de infraestructura. La decisión posterior [WSL único](https://github.com/codefusion-repo/project-os-v3/issues/8#issuecomment-7233893145) elimina los gates de ejecución OCI; el presupuesto físico y la evidencia funcional siguen vigentes.
+El mantenimiento detenido y protegido por fence conserva sus controles propios de integridad, revisión, CI, exclusividad, reconciliación y rollback. Las capacidades independientes usan evidencia aplicable sin depender de certificaciones de infraestructura. La decisión posterior [WSL único](https://github.com/codefusion-repo/project-os-v3/issues/8#issuecomment-7233893145) elimina los gates de ejecución OCI; la reutilización de recursos y la evidencia funcional siguen vigentes.
 
 Contratos: [MVP y arquitectura](../local-bridge/MVP.md), [operación](../local-bridge/README.md), [seguridad](../local-bridge/SECURITY.md), [WorkOS](../local-bridge/WORKOS.md), [validación WSL/HTTPS/systemd](../local-bridge/WSL-VALIDATION.md). Bridge conserva una identidad WorkOS, HTTPS, contexto agrupado GitHub/metodología, diagnóstico, Jobs de preparación/ejecución, status/evidence/cancel, mantenimiento tipado, firma QA y Drive privado según grants. GitHub Connector mantiene las operaciones remotas. Sin shell remoto libre, backend alternativo ni infraestructura compartida.
 
@@ -316,7 +316,7 @@ AgentsUbuntu es el único entorno local. Browser y Codex son complementarios; Gi
 
 ### Aceptación funcional LB-07
 
-Validar el recorrido funcional, autorización, reconciliación y presupuesto físico aplicables. Reutilizar evidencia vigente, sin certificaciones adicionales.
+Validar el recorrido funcional, autorización, reconciliación y reutilización de recursos aplicables. Reutilizar evidencia vigente, sin certificaciones adicionales.
 
 
 ### Android Build v1 — QA default and explicit Production

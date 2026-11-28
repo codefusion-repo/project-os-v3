@@ -46,10 +46,10 @@ Apply the [capability gate sequence](WSL-VALIDATION.md#capability-gate-sequence-
 | Stopped-unit maintenance | Reviewed host/toolchain, exact integrated SHA and CI wheel, private paths, all-principal jobs/effects reconciled, exclusive locks, effective persistent fence, absent opt-ins and recoverable prior runtime. A completed normal rollback can be archived intact under the same guards. Live listener, Windows/LAN reachability, OAuth are not admission gates to this stopped operation; they remain required for applicable activation. No auto-start, grant changes or deletion. |
 | Probe and operational diagnostics | Effective host/credential boundary and reviewed installation before startup; live process/HTTPS and authentication controls before opt-in; exact caller, fixed typed scope, revocation and audit. Diagnostics has its own grant and marker. No real data or fixture in the probe-only profile. |
 | LB-06 GitHub and methodology reads | Common controls above, including effective Windows/WSL boundary and the applicable network disposition in WSL-VALIDATION.md, plus independently reviewed non-fixture supervised read-only profile, explicit per-project grants, verified dedicated least-privilege GitHub credential and pinned repo identity, bounded typed input/output, provenance and integrity of methodology, untrusted-data handling, disclosure policy, privacy, audit and revocation. Verify preconditions before enabling the existing markers for bounded authorized live validation; require positive/negative resource, revocation and isolation-of-grants evidence before routine use and LB-06 acceptance. No repository-controlled code, arbitrary paths, shell, writes. |
-| LB-07 local execution | Trusted owned project, exact revision/lock, profile grant, existing WSL toolchains, bounded process lifecycle, physical budget and durable evidence. |
+| LB-07 local execution | Trusted owned project, exact revision/lock, profile grant, existing WSL toolchains, bounded process lifecycle, resource reuse and durable evidence. |
 
 
-Before and throughout heavy work verify actual Windows backing-volume free space, preserving 20 GiB plus stop margin; WSL virtual free space alone is insufficient. Use existing native observation, SDKs and caches; do not start when capacity cannot be observed. Execute heavy work sequentially and clean only reconciled job-owned regenerable resources. Reuse the scoped network disposition only under unchanged conditions; not LAN isolation PASS.
+Apply [resource reuse](../PROJECT_OS.md#seguridad-transversal-y-límites): existing checkout and branches, installed SDKs and caches; no extra copies, worktrees or unnecessary downloads. Reuse the scoped network disposition only under unchanged conditions; not LAN isolation PASS.
 
 1. Live OAuth and local revocation/restore (401 vs 403), including persistence across restart.
 2. Exact-subject denial and ownership checks; no real access in probe-only mode, and deny ungranted resources in an authorized read-only profile.
@@ -120,7 +120,7 @@ AgentsUbuntu is the sole local execution environment. Use the installed toolchai
 
 ### LB-07 bounded single-operator functional acceptance
 
-Before and throughout heavy work verify actual Windows backing-volume free space, preserving 20 GiB plus stop margin; WSL virtual free space alone is insufficient. Use existing native observation, SDKs and caches; do not start when capacity cannot be observed. Execute heavy work sequentially and clean only reconciled job-owned regenerable resources. An unresolved effect fences later jobs. Stop the existing service, verify the exact job's processes/effects are quiescent locally, then use the existing reconciliation command. No automatic replay or removal of unrelated resources.
+Apply [resource reuse](../PROJECT_OS.md#seguridad-transversal-y-límites): existing checkout and branches, installed SDKs and caches; no extra copies, worktrees or unnecessary downloads. An unresolved effect fences later jobs. Stop the existing service, verify the exact job's processes/effects are quiescent locally, then use the existing reconciliation command. No automatic replay or removal of unrelated resources.
 
 
 ### Android Build v1 — QA default and explicit Production
