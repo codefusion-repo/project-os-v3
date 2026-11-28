@@ -5,7 +5,7 @@ from pathlib import Path
 from unittest.mock import Mock
 
 from project_os_bridge.core import Jobs, Policy
-from project_os_bridge.observability import list_authorized, wait_for_job, measure_wait
+from project_os_bridge.observability import list_authorized, wait_for_job, measure_wait, WAIT_LIMIT_SECONDS, MEASUREMENT_SECONDS
 
 
 class ObservationTests(unittest.TestCase):
@@ -44,14 +44,33 @@ class ObservationTests(unittest.TestCase):
     def test_wait_no_mutation_and_terminal(self):
         ident = self.jobs.submit("alice", "disposable", "probe_check", "wait")
         read = lambda: self.jobs.get("alice", ident)
-        result = asyncio.run(wait_for_job(read, self.check, 0, max_seconds=0))
+        result = asyncio.run(wait_for_job(read, self.check, 0, max_seconds=WAIT_LIMIT_SECONDS))
         self.assertTrue(result["wait_expired"])
-        with self.assertRaises(ValueError):
-            asyncio.run(wait_for_job(read, self.check, 1, max_seconds=0))
+        self.assertEqual(WAIT_LIMIT_SECONDS, 30)
+        with self.assertRaisesRegex(ValueError, "WAIT_DURATION_UNAVAILABLE"):
+            asyncio.run(wait_for_job(read, self.check, 31, max_seconds=WAIT_LIMIT_SECONDS))
+        expired = asyncio.run(wait_for_job(read, self.check, 1, max_seconds=WAIT_LIMIT_SECONDS))
+        self.assertTrue(expired["wait_expired"])
+        self.assertEqual(expired["job"]["state"], "QUEUED")
+        self.assertEqual(read()["state"], "QUEUED")
         self.jobs.cancel("alice", ident)
-        result = asyncio.run(wait_for_job(read, self.check, 0, max_seconds=0))
+        result = asyncio.run(wait_for_job(read, self.check, 30, max_seconds=WAIT_LIMIT_SECONDS))
         self.assertTrue(result["terminal"])
         self.assertFalse(result["wait_expired"])
+
+    def test_extended_measurement_admission_without_sleep(self):
+        self.assertEqual(MEASUREMENT_SECONDS,
+                         (1, 5, 15, 30, 45, 60, 90, 120, 180, 240, 300, 450, 600))
+        for seconds in (90, 120, 180, 240, 300, 450, 600):
+            check = Mock(side_effect=PermissionError("DENIED"))
+            with self.assertRaises(PermissionError):
+                asyncio.run(measure_wait(seconds, check))
+            check.assert_called_once()
+        for seconds in (0, 61, 601, True):
+            check = Mock()
+            with self.assertRaisesRegex(ValueError, "INVALID_MEASUREMENT_DURATION"):
+                asyncio.run(measure_wait(seconds, check))
+            check.assert_not_called()
 
     def test_measurement_and_worker_progress(self):
         async def scenario():
@@ -61,7 +80,7 @@ class ObservationTests(unittest.TestCase):
                 await asyncio.to_thread(self.jobs.cancel, "alice", job)
             task = asyncio.create_task(finish())
             result = await wait_for_job(lambda: self.jobs.get("alice", job), self.check,
-                                        2, max_seconds=2)
+                                        2, max_seconds=WAIT_LIMIT_SECONDS)
             await task
             self.assertTrue(result["terminal"])
             observed = await measure_wait(1, self.check)
