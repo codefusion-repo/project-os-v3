@@ -170,3 +170,60 @@ class NotificationTests(unittest.TestCase):
         self.assertEqual([x["state"] for x in items if x["operation"] == "qa-delivery"],
                          ["FAILED", "SUCCEEDED"])
         self.assertEqual([x["state"] for x in items if x["operation"] == "qa-signing"], ["SUCCEEDED"])
+
+
+    def test_maintenance_sources_and_live_grant(self):
+        from project_os_bridge.maintenance import request, save, FLAG
+        # Use the real instance layout and schema; no maintenance is dispatched.
+        state = self.root / "state"
+        state.mkdir(mode=0o700)
+        directory = self.root / "service" / "maintenance"
+        directory.parent.mkdir(mode=0o700)
+        directory.mkdir(mode=0o700)
+        jobs = Jobs(state, Policy([("actor", "maintenance", "installation")]))
+        sender = NotificationSender(jobs, "actor", lambda: True)
+        (state / FLAG).touch(mode=0o600)
+        for i, (outcome, at) in enumerate((
+                ("SUCCEEDED", self.item["at"]),
+                ("BLOCKED", self.item["at"]),
+                ("LOCAL_RECOVERY_REQUIRED", self.item["at"]),
+                ("RUNNING", self.item["at"]),
+                ("SUCCEEDED", "2025-01-01T00:00:00+00:00"))):
+            ident = format(i+1, "064x")
+            req = request("update", "a"*40, "b"*40, "c"*64, 123, ident)
+            save(directory / ("active.json" if i == 2 else ident + ".json"),
+                 {"request": req, "state": outcome, "stage": "complete",
+                  "flags": [], "previous": {"sha": "a"*40, "wheel_sha256": "d"*64},
+                  "updated_at": at})
+        items = list(sender.events(self.cfg["enabled_since"]))
+        self.assertEqual({v["state"] for v in items}, {"SUCCEEDED", "BLOCKED", "LOCAL_RECOVERY_REQUIRED"})
+        self.assertEqual(len(items), 3)
+        self.assertTrue(all(sender.authorized(v) for v in items))
+        (state / FLAG).unlink()
+        self.assertFalse(sender.authorized(items[0]))
+        self.assertEqual(list(sender.events(self.cfg["enabled_since"])), [])
+
+    def test_fixed_https_transport_statuses(self):
+        from project_os_bridge.notifications import send
+        payload = email_body(self.item, self.cfg["from"], "operator@example.test")
+        with patch("project_os_bridge.notifications.http.client.HTTPSConnection") as https:
+            conn = https.return_value
+            response = conn.getresponse.return_value
+            for status, body, expected in (
+                (200, b'{"id":"12345678-1234-1234-1234-123456789abc"}', "ACCEPTED"),
+                (401, b'{}', "FAILED"),
+                (409, b'{"name":"invalid_idempotent_request"}', "UNCERTAIN"),
+                (409, b'{"name":"concurrent_idempotent_requests"}', "RETRY"),
+                (429, b'{}', "RATE_LIMITED"),
+                (503, b'{}', "RETRY"),
+                (200, b'{"unexpected":true}', "RETRY")):
+                response.status = status
+                response.read.return_value = body
+                response.getheader.return_value = "120"
+                self.assertEqual(send("re_fixture_only", "a"*64, payload)[0], expected)
+            https.assert_called_with("api.resend.com", timeout=3)
+            args = conn.request.call_args.args
+            self.assertEqual(args[:2], ("POST", "/emails"))
+            self.assertEqual(args[3]["Idempotency-Key"], "a"*64)
+            conn.getresponse.side_effect = TimeoutError()
+            self.assertEqual(send("re_fixture_only", "a"*64, payload)[0], "RETRY")

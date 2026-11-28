@@ -9,7 +9,6 @@ import http.client
 import json
 import logging
 import re
-import os
 from contextlib import closing
 import sqlite3
 import time
@@ -300,7 +299,7 @@ class NotificationSender:
 
     def run(self, ready, stop, stopping):
         # Same service lifetime, no independent daemon or queue. This task never
-        # owns the Job worker lock; slow SMTP/API cannot stall Job dispatch.
+        # owns the Job worker lock; slow HTTPS I/O cannot stall Job dispatch.
         while not stopping() and not ready.wait(0.25):
             pass
         while not stopping():

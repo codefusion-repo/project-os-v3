@@ -869,11 +869,13 @@ def exclusive_http_service(root):
         os.close(fd)
 
 
-def serve_with_worker(server, jobs, verifier, *, readiness=None, workspace_backend=None, github_provider=None):
+def serve_with_worker(server, jobs, verifier, *, readiness=None, workspace_backend=None, github_provider=None,
+                      maintenance=None):
     """Stop HTTP on infrastructure failure; preserve in-flight cleanup on shutdown."""
+    from .workspace_jobs import SupervisedWorkspacePolicy
     if workspace_backend is not None:
         from .execution import WorkspaceWSL
-        from .workspace_jobs import local_runtime, SupervisedWorkspacePolicy
+        from .workspace_jobs import local_runtime
         supervised = type(jobs.policy) is SupervisedWorkspacePolicy
         expected = {"workspace_prepare", "workspace_execute"}
         if supervised:
@@ -905,7 +907,7 @@ def serve_with_worker(server, jobs, verifier, *, readiness=None, workspace_backe
     def stopping():
         return stop.is_set() or server.should_exit
 
-    if workspace_backend is not None and type(jobs.policy) is SupervisedWorkspacePolicy:
+    if maintenance is not None or type(jobs.policy) is SupervisedWorkspacePolicy:
         from .notifications import NotificationSender
         notifications = NotificationSender(jobs, verifier.subject,
                                            lambda: verifier.enabled() and not stopping())
@@ -1046,7 +1048,8 @@ def main():
         server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=args.port,
                                               access_log=False, **tls))
         serve_with_worker(server, jobs, verifier, readiness=readiness,
-                          workspace_backend=workspace_backend, github_provider=github_provider)
+                          workspace_backend=workspace_backend, github_provider=github_provider,
+                          maintenance=maintenance)
 
 
 if __name__ == "__main__":
