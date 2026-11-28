@@ -37,6 +37,7 @@ from .workos_auth import private_file, private_directory
 from .readiness import read_metadata, verify_metadata
 from .diagnostics import Diagnostics, Section
 from .maintenance import Maintenance
+from .workspace_profiles import QA_PROFILES
 
 
 def build_server(verifier, jobs, fixture_reader=None, *, diagnostics=None, github_provider=None, maintenance=None, workspace_candidate=False, workspace_backend=None):
@@ -214,7 +215,7 @@ def build_server(verifier, jobs, fixture_reader=None, *, diagnostics=None, githu
                                       workspace_changes as read_workspace_changes,
                                       workspace_context as read_workspace_context)
 
-        async def submit_workspace_request(project, expected_sha, profile, request_key, *, execute, changes=None):
+        async def submit_workspace_request(project, expected_sha, profile, request_key, *, execute, changes=None, pr=None):
             actor = principal()
             token = get_access_token()
 
@@ -226,9 +227,17 @@ def build_server(verifier, jobs, fixture_reader=None, *, diagnostics=None, githu
             def submit():
                 try:
                     check()
+                    target = None
+                    if supervised_workspace and execute and profile in QA_PROFILES:
+                        if delivery is None or pr is None or changes is not None:
+                            raise ValueError("QA_DELIVERY_TARGET_REQUIRED")
+                        target = delivery.build_target(actor, project, expected_sha, pr, check_session=check)
+                    elif pr is not None:
+                        raise ValueError("QA_DELIVERY_TARGET_INVALID")
                     job = submit_workspace(jobs, actor, project, expected_sha, profile,
                                            request_key, authorize=check,
-                                           backend=workspace_backend if execute else None, changes=changes)
+                                           backend=workspace_backend if execute else None, changes=changes,
+                                           delivery_target=target)
                     require_workspace_job(jobs, actor, job, allow_execute=workspace_backend is not None)
                     check()
                     return {"job_id": job}
@@ -253,11 +262,12 @@ def build_server(verifier, jobs, fixture_reader=None, *, diagnostics=None, githu
             @mcp.tool(annotations=write)
             async def submit_workspace_execute(project: StrictStr, expected_sha: StrictStr,
                                                profile: StrictStr, request_key: StrictStr,
-                                               changes: list[dict[str, StrictStr | None]] | None = None) -> dict:
-                """Queue a registered offline profile with optional grant-bound relative text edits.
-                Image and context are selected locally; no host paths, commands or image input."""
+                                               changes: list[dict[str, StrictStr | None]] | None = None,
+                                               pr: StrictInt | None = None) -> dict:
+                """Queue a registered profile. Operational APK QA requires the producing private PR;
+                successful build and signature automatically queue Drive delivery. No arbitrary commands."""
                 return await submit_workspace_request(project, expected_sha, profile, request_key,
-                                                      execute=True, changes=changes)
+                                                      execute=True, changes=changes, pr=pr)
 
         @mcp.tool(annotations=read)
         async def workspace_changes(job_id: StrictStr) -> dict:

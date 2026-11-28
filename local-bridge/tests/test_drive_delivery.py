@@ -28,6 +28,11 @@ class DriveDeliveryTests(unittest.TestCase):
         self.shared = False
         self.tampered = False
         self.uploads = 0
+        self.folders = {}
+        self.folder_creates = 0
+        self.reserve_ids = ["remote"]
+        self.fail_folder_create = False
+        self.upload_parent = "folder"
 
     def handler(self, req):
         if req.url.host == "oauth2.googleapis.com":
@@ -38,11 +43,23 @@ class DriveDeliveryTests(unittest.TestCase):
                 perms.append({"id": "any", "type": "anyone", "role": "reader"})
             return httpx.Response(200, json={"permissions": perms})
         if req.url.path.endswith("/generateIds"):
-            return httpx.Response(200, json={"ids": ["remote"]})
+            return httpx.Response(200, json={"ids": [self.reserve_ids.pop(0)]})
         if req.url.path.endswith("/folder"):
             return httpx.Response(200, json={"id": "folder", "mimeType": "application/vnd.google-apps.folder",
                 "trashed": False, "ownedByMe": True, "capabilities": {"canAddChildren": True}})
+        if req.method == "POST" and req.url.path == "/drive/v3/files":
+            obj = json.loads(req.content)
+            self.folder_creates += 1
+            self.folders[obj["id"]] = {**obj, "trashed": False, "ownedByMe": True,
+                                        "capabilities": {"canAddChildren": True}}
+            if self.fail_folder_create:
+                raise httpx.ReadTimeout("fixture", request=req)
+            return httpx.Response(200, json={"id": obj["id"]})
+        if req.method == "GET" and req.url.path.endswith("/child"):
+            return (httpx.Response(200, json=self.folders["child"]) if "child" in self.folders
+                    else httpx.Response(404))
         if req.method == "POST":
+            self.assertEqual(json.loads(req.content)["parents"], [self.upload_parent])
             return httpx.Response(200, headers={"Location": "https://www.googleapis.com/upload/drive/v3/files?upload_id=fixture"})
         if req.method == "PUT":
             self.uploads += 1
@@ -52,7 +69,7 @@ class DriveDeliveryTests(unittest.TestCase):
         if req.url.params.get("alt") == "media":
             return httpx.Response(200, content=b"x" * len(self.raw) if self.tampered else self.raw)
         return httpx.Response(200, json={"id": "remote", "name": "qa-" + self.props["job_id"] + ".apk",
-            "mimeType": MIME, "parents": ["folder"], "trashed": False, "ownedByMe": True,
+            "mimeType": MIME, "parents": [self.upload_parent], "trashed": False, "ownedByMe": True,
             "appProperties": self.props, "size": str(len(self.raw)), "sha256Checksum": self.artifact["sha256"]})
 
     def publisher(self):
@@ -69,6 +86,40 @@ class DriveDeliveryTests(unittest.TestCase):
         self.tampered = True
         with self.assertRaises(DriveDeliveryError):
             p.verify("remote", self.artifact, self.props)
+
+    def test_project_folder_create_reuse_and_exact_parent(self):
+        self.reserve_ids = ["child", "remote"]
+        p = self.publisher()
+        p.select_project_folder("demo", 123)
+        self.assertEqual(p.folder, "child")
+        self.upload_parent = "child"
+        remote = p.reserve()
+        p.upload(remote, self.raw, self.props)
+        p.verify(remote, self.artifact, self.props)
+        again = self.publisher()
+        again.select_project_folder("demo", 123)
+        self.assertEqual(again.binding, p.binding)
+        self.assertEqual(self.folder_creates, 1)
+        self.assertEqual(self.reserve_ids, [])
+        self.shared = True
+        with self.assertRaises(PermissionError):
+            again.require_folder()
+        self.shared = False
+        self.folders["child"]["parents"] = ["wrong"]
+        with self.assertRaises(PermissionError):
+            again.require_folder()
+
+    def test_project_folder_uncertain_create_reuses_reserved_id(self):
+        self.reserve_ids = ["child"]
+        self.fail_folder_create = True
+        with self.assertRaises(DriveDeliveryError):
+            self.publisher().select_project_folder("demo", 123)
+        self.fail_folder_create = False
+        p = self.publisher()
+        p.select_project_folder("demo", 123)
+        self.assertEqual(p.folder, "child")
+        self.assertEqual(self.folder_creates, 1)
+        self.assertEqual(self.reserve_ids, [])
 
     def test_shared_folder_denied(self):
         self.shared = True

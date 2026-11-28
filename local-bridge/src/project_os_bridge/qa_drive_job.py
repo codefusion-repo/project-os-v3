@@ -25,7 +25,7 @@ def _store(jobs, job_id, previous, delivery):
 
 
 def deliver_qa(jobs, principal, job_id, *, project, head, repository_id, pr,
-               publisher, check_target, reconcile_only=False):
+               publisher, check_target, reconcile_only=False, project_folder=False):
     """Caller supplies a reviewed private publisher and live target guard.
 
     A reserved ID is committed before upload. After an ambiguous create, only
@@ -46,6 +46,10 @@ def deliver_qa(jobs, principal, job_id, *, project, head, repository_id, pr,
         properties = {"job_id": job_id, "repo_id": str(repository_id),
                       "head": head, "snapshot": receipt["workspace_sha256"],
                       "sha256": artifact["sha256"], "pr": str(pr)}
+        if project_folder:
+            guard()
+            publisher.select_project_folder(project, repository_id)
+            guard()
         base = {"binding": publisher.binding, "properties": properties, "artifact": artifact}
         current = jobs.evidence(principal, job_id)["result"].get("qa_delivery")
         if current is None:

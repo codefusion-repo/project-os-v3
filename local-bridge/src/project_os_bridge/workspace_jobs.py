@@ -182,15 +182,31 @@ def authorize_request(policy, principal, request, *, execute=False):
                 fields.add("qa_signer_sha256")
     if isinstance(request, dict) and "changes" in request:
         fields.add("changes")
+    if isinstance(request, dict) and "delivery_target" in request:
+        fields.add("delivery_target")
     if (not isinstance(request, dict)
             or set(request) != fields
-            or any(not isinstance(value, str) for key, value in request.items() if key != "changes")
+            or any(not isinstance(value, str) for key, value in request.items()
+                   if key not in {"changes", "delivery_target"})
             or not PROJECT.fullmatch(request["project"])
             or not SHA.fullmatch(request["expected_sha"])
             or not re.fullmatch(r"[0-9a-f]{64}", request["binding"])):
         raise ValueError("INVALID_WORKSPACE_REQUEST")
     profile_for(request["profile"])
     project = request["project"]
+    if "delivery_target" in request:
+        target = request["delivery_target"]
+        if (not execute or type(policy) is not SupervisedWorkspacePolicy
+                or request["profile"] not in QA_PROFILES or "changes" in request
+                or not isinstance(target, dict)
+                or set(target) != {"project", "head", "pr", "repository_id", "binding_sha256"}
+                or target["project"] != project or target["head"] != request["expected_sha"]
+                or type(target["pr"]) is not int or not 0 < target["pr"] <= 2147483647
+                or type(target["repository_id"]) is not int
+                or target["repository_id"] != policy.initial_entries.get(project, {}).get("repository_id")
+                or not isinstance(target["binding_sha256"], str)
+                or not re.fullmatch(r"[0-9a-f]{64}", target["binding_sha256"])):
+            raise ValueError("QA_DELIVERY_TARGET_INVALID")
     if "changes" in request:
         policy.require(principal, "workspace_change", project)
         if normalize_changes(request["changes"]) != request["changes"]:
@@ -211,7 +227,7 @@ def authorize_request(policy, principal, request, *, execute=False):
         policy.require(principal, op, project)
 
 
-def submit_workspace(jobs, principal, project, expected_sha, profile, request_key, *, authorize=lambda: None, backend=None, changes=None):
+def submit_workspace(jobs, principal, project, expected_sha, profile, request_key, *, authorize=lambda: None, backend=None, changes=None, delivery_target=None):
     runtime = local_runtime(jobs.probe.root, jobs.policy)
     jobs.policy.require(principal, "submit", workspace_resource(jobs.policy))
     jobs.policy.require(principal, "workspace_materialize", project)
@@ -245,6 +261,9 @@ def submit_workspace(jobs, principal, project, expected_sha, profile, request_ke
             signer = backend.qa_signers.get(backend.route(profile, project))
             if signer is not None:
                 request["qa_signer_sha256"] = signer.digest
+    if delivery_target is not None:
+        jobs.policy.require(principal, "workspace_delivery", project)
+        request["delivery_target"] = delivery_target
     authorize_request(jobs.policy, principal, request, execute=execute)
     # Admission checks the mapping and immutable commit before queueing.
     prepare_workspace(*args)

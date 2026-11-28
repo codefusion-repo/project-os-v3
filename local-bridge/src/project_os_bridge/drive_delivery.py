@@ -6,6 +6,7 @@ No generic Drive access, arbitrary destination URL or permission mutation.
 import hashlib
 import json
 import logging
+import os
 import re
 from urllib.parse import urlsplit
 
@@ -18,6 +19,7 @@ TOKEN = "https://oauth2.googleapis.com/token"
 API = "https://www.googleapis.com/drive/v3"
 UPLOAD = "https://www.googleapis.com/upload/drive/v3/files"
 MIME = "application/vnd.android.package-archive"
+FOLDER_MIME = "application/vnd.google-apps.folder"
 FIELDS = "id,name,mimeType,size,sha256Checksum,parents,trashed,ownedByMe,driveId,appProperties"
 ID = re.compile(r"[A-Za-z0-9_-]{1,200}")
 SHA = re.compile(r"[0-9a-f]{64}")
@@ -38,6 +40,8 @@ class DrivePublisher:
     def __init__(self, credential_path, folder_id, owner_permission_id, *, transport=None, check_access=lambda: None):
         self.check_access = check_access
         self.folder = drive_id(folder_id)
+        self.root_folder = self.folder
+        self.project_folder = None
         self.owner = drive_id(owner_permission_id)
         self.credential_path = credential_path
         self._credential = _private_bytes(credential_path, 16384)
@@ -125,13 +129,76 @@ class DrivePublisher:
                 or entries[0].get("role") != "owner" or entries[0].get("deleted", False)):
             raise PermissionError("DRIVE_NOT_OWNER_PRIVATE")
 
-    def require_folder(self):
-        obj = self._file(self.folder, "id,mimeType,trashed,ownedByMe,driveId,capabilities(canAddChildren)")
-        if (obj.get("id") != self.folder or obj.get("mimeType") != "application/vnd.google-apps.folder"
+    def _require_folder(self, file_id, project=None):
+        fields = "id,mimeType,trashed,ownedByMe,driveId,capabilities(canAddChildren)"
+        if project is not None:
+            fields += ",name,parents,appProperties"
+        obj = self._file(file_id, fields)
+        if (obj.get("id") != file_id or obj.get("mimeType") != FOLDER_MIME
                 or obj.get("trashed") is not False or obj.get("ownedByMe") is not True
                 or obj.get("driveId") or obj.get("capabilities", {}).get("canAddChildren") is not True):
             raise PermissionError("DRIVE_FOLDER_UNAVAILABLE")
-        self._private(self.folder)
+        if project is not None and (obj.get("name") != project["name"]
+                or obj.get("parents") != [self.root_folder]
+                or obj.get("appProperties") != {"repo_id": str(project["repository_id"])}):
+            raise PermissionError("DRIVE_FOLDER_UNAVAILABLE")
+        self._private(file_id)
+
+    def require_folder(self):
+        self._require_folder(self.root_folder)
+        if self.project_folder is not None:
+            self._require_folder(self.folder, self.project_folder)
+
+    def select_project_folder(self, project, repository_id):
+        """Reuse one reserved folder ID per authorized repository under the root.
+
+        Called by the exclusive delivery worker. Persist the ID before create,
+        as in root enrollment; retry only that ID after uncertain creation.
+        """
+        from .maintenance import save
+        if (self.project_folder is not None or not isinstance(project, str)
+                or not re.fullmatch(r"[A-Za-z0-9_-]{1,80}", project)
+                or type(repository_id) is not int or repository_id <= 0):
+            raise ValueError("DRIVE_FOLDER_UNAVAILABLE")
+        self.require_folder()
+        expected = {"root": self.root_folder, "name": project, "repository_id": repository_id}
+        path = self.credential_path.parent / ("project-folder-" + str(repository_id) + ".json")
+        if os.path.lexists(path):
+            plan = json.loads(_private_bytes(path, 16384), object_pairs_hook=_unique_object)
+            if (not isinstance(plan, dict) or set(plan) != {*expected, "folder_id", "state"}
+                    or any(plan[key] != value for key, value in expected.items())
+                    or plan["state"] not in {"RESERVED", "READY"}):
+                raise PermissionError("DRIVE_FOLDER_UNAVAILABLE")
+        else:
+            plan = {**expected, "folder_id": self.reserve(), "state": "RESERVED"}
+            save(path, plan)
+        folder_id = drive_id(plan["folder_id"])
+        if folder_id == self.root_folder:
+            raise PermissionError("DRIVE_FOLDER_UNAVAILABLE")
+        if plan["state"] == "RESERVED":
+            try:
+                self._require_folder(folder_id, expected)
+            except DriveDeliveryError as exc:
+                if str(exc) != "DRIVE_HTTP_404":
+                    raise
+                self.require_folder()
+                try:
+                    self._json("POST", API + "/files", params={"fields": "id"},
+                               json={"id": folder_id, "name": project, "mimeType": FOLDER_MIME,
+                                     "parents": [self.root_folder],
+                                     "appProperties": {"repo_id": str(repository_id)}})
+                except DriveDeliveryError as create_error:
+                    if str(create_error) != "DRIVE_HTTP_409":
+                        raise
+            self._require_folder(folder_id, expected)
+            save(path, {**plan, "state": "READY"})
+        else:
+            self._require_folder(folder_id, expected)
+        self.folder = folder_id
+        self.project_folder = expected
+        self.binding = hashlib.sha256(json.dumps([self.binding, folder_id, expected],
+                                                  sort_keys=True).encode()).hexdigest()
+        self.require_folder()
 
     def reserve(self):
         self.require_folder()

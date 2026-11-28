@@ -91,6 +91,15 @@ class SupervisedDriveDelivery:
         return {"repository_id": entry["repository_id"], "head": head, "pr": pr,
                 "private_pr_verified": True}
 
+    def build_target(self, actor, project, head, pr, *, check_session):
+        raw, _, _ = self._binding()
+        verified = self.preflight(actor, project, head, pr, check_session=check_session)
+        if self._binding()[0] != raw:
+            raise PermissionError("QA_DRIVE_BINDING_CHANGED")
+        return {"project": project, "head": head, "pr": pr,
+                "repository_id": verified["repository_id"],
+                "binding_sha256": hashlib.sha256(raw).hexdigest()}
+
     def _target(self, actor, job_id, project, head, pr, *, check_session):
         check_session()
         self.jobs.policy.require(actor, "workspace_delivery", project)
@@ -103,9 +112,12 @@ class SupervisedDriveDelivery:
         if entry is None:
             raise PermissionError("QA_REPOSITORY_UNAVAILABLE")
         raw, _, _ = self._binding()
-        return {"project": project, "head": head, "pr": pr,
-                "repository_id": entry["repository_id"],
-                "binding_sha256": hashlib.sha256(raw).hexdigest()}
+        target = {"project": project, "head": head, "pr": pr,
+                  "repository_id": entry["repository_id"],
+                  "binding_sha256": hashlib.sha256(raw).hexdigest()}
+        if "delivery_target" in request and request["delivery_target"] != target:
+            raise PermissionError("QA_DELIVERY_TARGET_CHANGED")
+        return target
 
     def submit(self, actor, job_id, project, head, pr, *, check_session, reconcile_only=False):
         from .qa_drive_queue import submit
@@ -180,7 +192,8 @@ class SupervisedDriveDelivery:
         try:
             result = deliver_qa(self.jobs, actor, job_id, project=project, head=head,
                 repository_id=repository_id, pr=pr, publisher=publisher,
-                check_target=target, reconcile_only=reconcile_only)
+                check_target=target, reconcile_only=reconcile_only,
+                project_folder="delivery_target" in request)
             check()
             return {"state": result["state"], "job_id": job_id, "head": head, "pr": pr,
                     "repository_id": repository_id, "artifact": result["artifact"],
