@@ -277,7 +277,7 @@ def workspace_git_status(jobs, principal, project, expected_sha, *, authorize=la
     """Observe the checkout and a bounded history while holding the worker fence."""
     from .worker import exclusive_worker
     from .codex_provider import checkout_state
-    from .methodology import git, commit
+    from .methodology import git
     with exclusive_worker(jobs):
         authorize()
         runtime = local_runtime(jobs.probe.root, jobs.policy)
@@ -290,11 +290,18 @@ def workspace_git_status(jobs, principal, project, expected_sha, *, authorize=la
             if conn.execute("SELECT 1 FROM fixture_effects WHERE resolved_at IS NULL LIMIT 1").fetchone():
                 raise ValueError("RECONCILIATION_REQUIRED")
             before = checkout_state(root)
-            try:
-                commit(root, expected_sha)
-                present = True
-            except ValueError:
+            # Batch mode reports a missing object on stdout with exit status zero;
+            # process failures must remain errors, not be mistaken for absence.
+            object_info = git(root, "cat-file", "--batch-check=%(objectname) %(objecttype)",
+                              input_data=(expected_sha + "\n").encode("ascii")).decode("ascii").strip()
+            if object_info == expected_sha + " missing":
                 present = False
+            elif object_info == expected_sha + " commit":
+                present = True
+            elif re.fullmatch(re.escape(expected_sha) + r" (?:tree|blob|tag)", object_info):
+                present = False
+            else:
+                raise ValueError("WORKSPACE_GIT_OBJECT_INVALID")
             history = git(root, "log", "--format=%H", "-n", "20", before["head"]).decode("ascii").splitlines()
             if any(not SHA.fullmatch(item) for item in history):
                 raise ValueError("WORKSPACE_GIT_HISTORY_INVALID")

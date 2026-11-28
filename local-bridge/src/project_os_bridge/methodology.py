@@ -17,13 +17,13 @@ MAX_DOCUMENT = 64 * 1024
 MAX_RESPONSE = 384 * 1024
 
 
-def git(root, *args):
+def git(root, *args, input_data=None):
     env = {"PATH": "/usr/bin:/bin", "HOME": str(root), "GIT_CONFIG_NOSYSTEM": "1",
            "GIT_CONFIG_GLOBAL": "/dev/null", "GIT_NO_REPLACE_OBJECTS": "1",
            "GIT_NO_LAZY_FETCH": "1", "GIT_TERMINAL_PROMPT": "0", "GIT_OPTIONAL_LOCKS": "0"}
     try:
         result = subprocess.run(["git", "-C", str(root), "-c", "core.fsmonitor=false", *args],
-                                stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                input=input_data, stdin=subprocess.DEVNULL if input_data is None else None, stdout=subprocess.PIPE,
                                 stderr=subprocess.DEVNULL, env=env, timeout=5, check=False)
     except (OSError, subprocess.TimeoutExpired):
         raise ValueError("METHODOLOGY_UNAVAILABLE") from None

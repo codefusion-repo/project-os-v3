@@ -283,6 +283,15 @@ class WorkspacePreflightTests(unittest.TestCase):
         self.assertEqual(result["head"], self.sha)
         self.assertEqual(result["history"][0], self.sha)
         self.assertFalse(workspace_git_status(jobs, "operator", "demo", "0" * 40)["sha_present"])
+        from project_os_bridge import methodology
+        real_git = methodology.git
+        def failing_git(root, *args, **kwargs):
+            if args[:2] == ("cat-file", "--batch-check=%(objectname) %(objecttype)"):
+                raise ValueError("METHODOLOGY_UNAVAILABLE")
+            return real_git(root, *args, **kwargs)
+        with patch("project_os_bridge.methodology.git", side_effect=failing_git):
+            with self.assertRaises(ValueError):
+                workspace_git_status(jobs, "operator", "demo", self.sha)
         self.assertEqual(self.git("status", "--porcelain"), before)
         self.git("remote", "set-url", "origin", "https://github.com/example/other.git")
         with self.assertRaises(ValueError):
