@@ -337,6 +337,25 @@ def build_server(verifier, jobs, fixture_reader=None, *, diagnostics=None, githu
                     raise ValueError("WORKSPACE_GIT_UNAVAILABLE") from None
             return await asyncio.to_thread(collect)
 
+        @mcp.tool(annotations=ToolAnnotations(read_only_hint=False, destructive_hint=False,
+                                             idempotent_hint=False, open_world_hint=True))
+        async def workspace_git_fetch(project: StrictStr, expected_sha: StrictStr) -> dict:
+            """Fetch the validated origin and verify the requested commit under the worker fence."""
+            from .workspace_jobs import workspace_git_fetch as fetch_git
+            actor = principal()
+            token = get_access_token()
+            def check():
+                if principal() != actor or token.expires_at is None or token.expires_at <= time.time():
+                    raise PermissionError("DENIED")
+            def fetch():
+                try:
+                    return fetch_git(jobs, actor, project, expected_sha, authorize=check)
+                except PermissionError:
+                    raise PermissionError("DENIED") from None
+                except (OSError, ValueError, TypeError, KeyError, TimeoutError, subprocess.SubprocessError):
+                    raise ValueError("WORKSPACE_FETCH_UNAVAILABLE_RECONCILE_IF_PENDING") from None
+            return await asyncio.to_thread(fetch)
+
         @mcp.tool(annotations=read)
         async def workspace_changes(job_id: StrictStr) -> dict:
             """Read a bounded historical diff of a caller's applied edits, not live files."""

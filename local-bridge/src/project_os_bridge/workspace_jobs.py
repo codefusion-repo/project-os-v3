@@ -5,6 +5,8 @@ Registered workspace preparation and direct WSL execution use the same durable q
 import os
 import re
 import json
+import subprocess
+import uuid
 
 from .github_context import PROJECT
 from .github_operational import _private_bytes, _unique_object, registry_entries
@@ -22,7 +24,7 @@ RUNTIME = "workspace-runtime.json"
 SUPERVISED_GRANTS = "workspace-grants.json"
 SUPERVISED_EXECUTION = "workspace-execution.json"
 PREPARATION_OPS = frozenset({"workspace_prepare", "workspace_materialize",
-                             "workspace_change", "workspace_context", "workspace_dirty_context", "workspace_git_read", *PROFILES, CODEX_PROFILE})
+                             "workspace_change", "workspace_context", "workspace_dirty_context", "workspace_git_read", "workspace_git_fetch", *PROFILES, CODEX_PROFILE})
 WORKSPACE_OPS = PREPARATION_OPS | {"workspace_execute", "workspace_delivery"}
 
 
@@ -314,6 +316,82 @@ def workspace_git_status(jobs, principal, project, expected_sha, *, authorize=la
             authorize()
             return {**before, "requested_sha": expected_sha, "sha_present": present,
                     "history": history, "repository_id": entry["repository_id"]}
+
+
+def _run_git_network(*args, **kwargs):
+    return subprocess.run(*args, **kwargs)
+
+
+def workspace_git_fetch(jobs, principal, project, expected_sha, *, authorize=lambda: None):
+    """Fetch origin once under the worker fence; retain uncertain effects for reconciliation."""
+    from .worker import exclusive_worker
+    from .codex_provider import checkout_state
+    from .methodology import git
+    from .core import now
+    with exclusive_worker(jobs):
+        authorize()
+        runtime = local_runtime(jobs.probe.root, jobs.policy)
+        jobs.policy.require(principal, "workspace_git_fetch", project)
+        entry, root = project_checkout(runtime, jobs.policy, principal, project, expected_sha)
+        binding = binding_digest(entry, root)
+        before = checkout_state(root)
+        def present():
+            value = git(root, "cat-file", "--batch-check=%(objectname) %(objecttype)",
+                        input_data=(expected_sha + "\n").encode("ascii")).decode("ascii").strip()
+            if value == expected_sha + " commit":
+                return True
+            if value == expected_sha + " missing" or re.fullmatch(re.escape(expected_sha) + r" (?:tree|blob|tag)", value):
+                return False
+            raise ValueError("WORKSPACE_GIT_OBJECT_INVALID")
+        # Resolve Git URL rewrites before allowing the named remote to be contacted.
+        env = dict(os.environ, GIT_TERMINAL_PROMPT="0", GIT_NO_LAZY_FETCH="1", GIT_NO_REPLACE_OBJECTS="1")
+        resolved_result = _run_git_network(["git", "-C", str(root), "remote", "get-url", "--all", "origin"],
+                                         stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                         stderr=subprocess.DEVNULL, env=env, timeout=5, check=True)
+        resolved = resolved_result.stdout.decode("utf-8").splitlines()
+        repository = entry["repository"]
+        allowed = {("https://github.com/" + repository).casefold(),
+                   ("https://github.com/" + repository + ".git").casefold(),
+                   ("git@github.com:" + repository).casefold(),
+                   ("git@github.com:" + repository + ".git").casefold()}
+        if len(resolved) != 1 or resolved[0].casefold() not in allowed:
+            raise ValueError("WORKSPACE_ORIGIN_INVALID")
+        already_present = present()
+        effect_id, token = uuid.uuid4().hex, uuid.uuid4().hex
+        with jobs.transaction() as conn:
+            if conn.execute("SELECT 1 FROM jobs WHERE state IN ('QUEUED','RUNNING') LIMIT 1").fetchone():
+                raise ValueError("ACTIVE_JOB")
+            if conn.execute("SELECT 1 FROM fixture_effects WHERE resolved_at IS NULL LIMIT 1").fetchone():
+                raise ValueError("RECONCILIATION_REQUIRED")
+            authorize()
+            jobs.policy.require(principal, "workspace_git_fetch", project)
+            if binding_digest(*project_checkout(runtime, jobs.policy, principal, project, expected_sha)) != binding:
+                raise PermissionError("WORKSPACE_BINDING_CHANGED")
+            stamp = now()
+            conn.execute("INSERT INTO jobs(id,principal,resource,workflow,request_key,state,created,updated) VALUES(?,?,?,?,?,?,?,?)",
+                         (effect_id, principal, workspace_resource(jobs.policy), "workspace_git_fetch", effect_id, "RUNNING", stamp, stamp))
+            conn.execute("INSERT INTO fixture_effects(job_id,token,context_id) VALUES(?,?,?)", (effect_id, token, binding))
+        # Never replay after an interruption or error: the durable effect remains pending.
+        result = _run_git_network(["git", "-C", str(root), "-c", "core.fsmonitor=false", "-c", "remote.origin.uploadpack=git-upload-pack",
+                                 "fetch", "--no-tags", "--no-write-fetch-head", "--no-recurse-submodules",
+                                 "--no-auto-maintenance", "--no-write-commit-graph", "origin",
+                                 "+refs/heads/*:refs/remotes/origin/*"],
+                                stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                stderr=subprocess.DEVNULL, env=env, timeout=120, check=False)
+        if result.returncode:
+            raise ValueError("WORKSPACE_FETCH_UNCERTAIN")
+        after_present = present()
+        if checkout_state(root) != before:
+            raise ValueError("WORKSPACE_CHECKOUT_CHANGED")
+        if binding_digest(*project_checkout(runtime, jobs.policy, principal, project, expected_sha)) != binding:
+            raise PermissionError("WORKSPACE_BINDING_CHANGED")
+        jobs.policy.require(principal, "workspace_git_fetch", project)
+        authorize()
+        with jobs.transaction() as conn:
+            conn.execute("UPDATE fixture_effects SET resolved_at=? WHERE job_id=? AND token=? AND resolved_at IS NULL", (now(), effect_id, token))
+            conn.execute("UPDATE jobs SET state='SUCCEEDED',updated=? WHERE id=?", (now(), effect_id))
+        return {**before, "requested_sha": expected_sha, "sha_present_before": already_present,
+                "sha_present": after_present, "repository_id": entry["repository_id"]}
 
 
 def submit_workspace(jobs, principal, project, expected_sha, profile, request_key, *, authorize=lambda: None, backend=None, changes=None, delivery_target=None, codex_task=None):

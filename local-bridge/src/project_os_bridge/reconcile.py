@@ -21,9 +21,11 @@ def reconcile(jobs, job_id, *, quiescent=False):
         effect = pending[0]
         with jobs.transaction() as conn:
             row = conn.execute("SELECT workflow FROM jobs WHERE id=?", (job_id,)).fetchone()
-            if row is None or row["workflow"] != "workspace_execute":
+            if row is None or row["workflow"] not in {"workspace_execute", "workspace_git_fetch"}:
                 raise PermissionError("HISTORICAL_EFFECT_REQUIRES_LOCAL_REVIEW")
         jobs.resolve_effect(job_id, effect["token"], effect["context_id"])
+        with jobs.transaction() as conn:
+            conn.execute("UPDATE jobs SET state='FAILED' WHERE id=? AND workflow='workspace_git_fetch' AND state='RUNNING'", (job_id,))
 
 
 def main():

@@ -308,6 +308,34 @@ class WorkspacePreflightTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             workspace_git_status(jobs, "operator", "demo", self.sha)
 
+    def test_git_fetch_grant_preservation_and_uncertain_effect(self):
+        from types import SimpleNamespace
+        from project_os_bridge.workspace_jobs import workspace_git_fetch
+        from project_os_bridge.reconcile import reconcile
+        jobs = self.workspace_queue()
+        with self.assertRaises(PermissionError):
+            workspace_git_fetch(jobs, "operator", "demo", self.sha)
+        jobs.policy = Policy([*jobs.policy.grants, ("operator", "workspace_git_fetch", "demo")])
+        (self.project / "pubspec.yaml").write_text("staged\n")
+        self.git("add", "pubspec.yaml")
+        (self.project / "package.json").write_text("unstaged\n")
+        before = self.git("status", "--porcelain")
+        with patch("project_os_bridge.workspace_jobs._run_git_network", side_effect=[SimpleNamespace(stdout=b"https://github.com/example/demo.git\n"), SimpleNamespace(returncode=0)]) as fetch:
+            result = workspace_git_fetch(jobs, "operator", "demo", self.sha)
+        self.assertTrue(result["sha_present_before"])
+        self.assertTrue(result["sha_present"])
+        self.assertEqual(fetch.call_count, 2)
+        self.assertEqual(self.git("status", "--porcelain"), before)
+        self.assertEqual(self.git("rev-parse", "HEAD"), self.sha)
+        with patch("project_os_bridge.workspace_jobs._run_git_network", side_effect=[SimpleNamespace(stdout=b"https://github.com/example/demo.git\n"), SimpleNamespace(returncode=1)]):
+            with self.assertRaises(ValueError):
+                workspace_git_fetch(jobs, "operator", "demo", self.sha)
+        effect = jobs.pending_effects()[0]
+        with self.assertRaises(ValueError):
+            workspace_git_fetch(jobs, "operator", "demo", self.sha)
+        reconcile(jobs, effect["job_id"], quiescent=True)
+        self.assertFalse(jobs.pending_effects())
+
     def test_durable_job_materializes_both_profiles(self):
         jobs = self.workspace_queue()
         ids = []
