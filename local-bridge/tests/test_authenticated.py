@@ -1455,9 +1455,14 @@ else:
                 self.assertEqual(conn.execute("SELECT count(*) FROM jobs").fetchone()[0], before_count)
             direct_job = payload("submit_workspace_execute", **approved)
             self.assertEqual(direct_job, payload("submit_workspace_execute", **approved))
+            page = payload("list_jobs", project="demo", state="QUEUED")
+            self.assertEqual([row["id"] for row in page["jobs"]], [direct_job["job_id"]])
+            self.assertNotIn("request_key", page["jobs"][0])
+            self.assertTrue(payload("wait_job", job_id=direct_job["job_id"])["wait_expired"])
             run_pending(jobs, workspace_backend=backend, enabled=verifier.enabled)
             direct_evidence = payload("get_job_evidence", job_id=direct_job["job_id"])
             self.assertEqual(direct_evidence["state"], "SUCCEEDED")
+            self.assertTrue(payload("wait_job", job_id=direct_job["job_id"])["terminal"])
             self.assertEqual(direct_evidence["result"]["operation_sha256"], preview["operation_sha256"])
             revoked_args = {**direct_args, "request_key": "revoked-direct"}
             revoked_plan = payload("preview_workspace_execute", **revoked_args)
@@ -1540,7 +1545,8 @@ else:
             listing=call(client,"tools/list",{})
             self.assertEqual(listing.status_code,200)
             self.assertEqual({x["name"] for x in listing.json()["result"]["tools"]},
-                             {"health","submit_probe_job","get_job_status","get_job_evidence","cancel_job","github_fixture_context"})
+                             {"health","submit_probe_job","get_job_status","get_job_evidence","cancel_job","github_fixture_context",
+                              "list_jobs","measure_mcp_wait","wait_job"})
             health=call(client,"tools/call",args)
             self.assertEqual(health.status_code,200)
             self.assertFalse(health.json()["result"].get("isError",False))

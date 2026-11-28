@@ -4,6 +4,7 @@ No second daemon or queue database. A running request interrupted by restart is
 not replayed; an explicit reconciliation request reads the reserved remote ID.
 """
 import json
+from .core import now
 
 from .worker import exclusive_worker
 
@@ -56,6 +57,8 @@ def recover(jobs):
                     "json_extract(result,'$.qa_delivery_request.state')='RUNNING'").fetchall():
                 result = json.loads(row["result"])
                 result["qa_delivery_request"]["state"] = "INTERRUPTED"
+                from .notifications import record_delivery_event
+                record_delivery_event(result, "INTERRUPTED", now())
                 _write(conn, row["id"], result)
 
 
@@ -100,6 +103,8 @@ def process_one(jobs, delivery, *, enabled):
         if result.get("qa_delivery_request") != request:
             raise RuntimeError("QA_DELIVERY_REQUEST_CONFLICT")
         result["qa_delivery_request"]["state"] = state
+        from .notifications import record_delivery_event
+        record_delivery_event(result, state, now())
         if error_code is not None:
             result["qa_delivery_request"]["error_code"] = error_code
         _write(conn, row["id"], result)
