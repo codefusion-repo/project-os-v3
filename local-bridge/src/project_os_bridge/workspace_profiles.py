@@ -1,9 +1,12 @@
 """Closed, internal profile descriptors; no runtime backend is enabled."""
 import re
+import os
 import hashlib
 import json
 from dataclasses import dataclass
 from types import MappingProxyType
+
+from .workos_auth import private_file
 
 
 @dataclass(frozen=True)
@@ -104,3 +107,38 @@ def artifact_identity(kind, name, data):
         raise ValueError("INVALID_ARTIFACT")
     return {"kind": kind, "artifact": name, "sha256": hashlib.sha256(data).hexdigest(),
             "size": len(data)}
+
+
+MAX_APK = 256 * 1024 * 1024
+
+
+def apk_path(state, job_id):
+    return state / ("apk-" + job_id + ".apk")
+
+
+def read_apk_bytes(path, original):
+    info = private_file(path)
+    if (info.st_dev, info.st_ino) != original or not 0 < info.st_size <= MAX_APK:
+        raise ValueError("APK_IDENTITY_INVALID")
+    with os.fdopen(os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK), "rb") as stream:
+        opened = os.fstat(stream.fileno())
+        if (opened.st_dev, opened.st_ino) != original or opened.st_size != info.st_size:
+            raise ValueError("APK_IDENTITY_INVALID")
+        raw = stream.read(MAX_APK + 1)
+        after = os.fstat(stream.fileno())
+        current = private_file(path)
+        def observed(st):
+            return st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns, st.st_ctime_ns
+        if len(raw) != info.st_size or observed(info) != observed(after) or observed(after) != observed(current):
+            raise ValueError("APK_IDENTITY_INVALID")
+        os.fsync(stream.fileno())
+    fd = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+    return raw
+
+
+def read_apk(path, original, *, name="app-debug.apk"):
+    return artifact_identity("apk", name, read_apk_bytes(path, original))

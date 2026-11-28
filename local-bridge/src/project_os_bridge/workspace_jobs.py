@@ -317,7 +317,7 @@ def workspace_changes(jobs, principal, job_id, *, allow_execute=False):
 
 def verified_qa_build_input(jobs, principal, job_id, *, expected_project, expected_sha):
     """Local finalizer input only: unfinalized bytes of an authorized successful build."""
-    from .workspace_podman import apk_path, read_apk_bytes
+    from .workspace_profiles import apk_path, read_apk_bytes
     request = require_workspace_job(jobs, principal, job_id, allow_execute=True)
     if (request["project"] != expected_project or request["expected_sha"] != expected_sha
             or request["profile"] not in QA_PROFILES or "qa_plan_sha256" not in request):
