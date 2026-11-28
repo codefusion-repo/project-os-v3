@@ -1,11 +1,14 @@
 import unittest
 import subprocess
 import tempfile
+import os
+import sys
+import time
 from unittest.mock import patch
 from pathlib import Path
 
 from project_os_bridge.codex_provider import (
-    capacity_from_response, select_executor, validate_task, run_codex, require_checkout, _summary, provider_catalog, selection_valid,
+    capacity_from_response, select_executor, validate_task, run_codex, require_checkout, _summary, provider_catalog, selection_valid, _Child,
 )
 
 
@@ -160,14 +163,73 @@ class CodexProviderTests(unittest.TestCase):
         task = {**self.task, "model": "not-authorized"}
         with patch("project_os_bridge.codex_provider.require_checkout", return_value=self.before), \
              patch("project_os_bridge.codex_provider.shutil.which", return_value="codex"), \
-             patch("project_os_bridge.codex_provider.probe_capacity", return_value=("available", True)), \
-             patch("project_os_bridge.codex_provider.provider_catalog", return_value=({"models": [], "capacity": "available"}, True)), \
+             patch("project_os_bridge.codex_provider.probe_capacity") as probe, \
+             patch("project_os_bridge.codex_provider.provider_catalog", return_value=({"models": [], "capacity": "available"}, True)) as catalog, \
              patch("project_os_bridge.codex_provider.execute_turn") as turn:
             result = run_codex(Path("/fixture"), {"PATH": "/fixture"}, {**self.request, "codex_task": task}, enabled=lambda: True)
             self.assertEqual(result["reason"], "CODEX_SELECTION_UNAVAILABLE")
+            probe.assert_not_called()
+            catalog.assert_called_once()
             turn.assert_not_called()
 
     def test_message_sanitization(self):
         self.assertEqual(_summary("Updated the contract; tests passed."), "Updated the contract; tests passed.")
         for value in ("Bearer synthetic-value", "/home/operator/private", "x" * 4097):
             self.assertEqual(_summary(value), "[OMITTED: PRIVATE_OR_UNBOUNDED]")
+
+    @unittest.skipUnless(sys.platform == "linux", "Linux process ownership")
+    def test_detached_descendant_is_reaped_without_touching_unrelated_process(self):
+        with tempfile.TemporaryDirectory() as folder:
+            unrelated = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+            child = None
+            try:
+                child = _Child([sys.executable, "-c",
+                    "import os,sys,json,time; pid=os.fork(); "
+                    "exec('if pid == 0:\\n os.setsid()\\n time.sleep(30)\\n os._exit(0)'); "
+                    "print(json.dumps({'pid':pid}),flush=True)"], folder, dict(os.environ))
+                event = child.event(time.monotonic() + 5, lambda: True)
+                self.assertGreater(event["pid"], 0)
+                self.assertTrue(child.stop())
+                child = None
+                self.assertFalse(Path("/proc", str(event["pid"])).exists())
+                self.assertIsNone(unrelated.poll())
+            finally:
+                if child is not None:
+                    child.stop()
+                unrelated.terminate()
+                unrelated.wait(timeout=5)
+
+    def test_explicit_target_base_after_divergence(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            def git(*args):
+                return subprocess.check_output(["git", "-C", folder, *args],
+                    stderr=subprocess.DEVNULL).decode().strip()
+            git("init", "-q")
+            git("config", "user.name", "Fixture")
+            git("config", "user.email", "fixture@example.invalid")
+            git("checkout", "-qb", "main")
+            git("commit", "--allow-empty", "-qm", "base")
+            git("switch", "-qc", "work/entry")
+            git("commit", "--allow-empty", "-qm", "entry")
+            entry = git("rev-parse", "HEAD")
+            git("switch", "-q", "main")
+            git("commit", "--allow-empty", "-qm", "integrated")
+            base = git("rev-parse", "HEAD")
+            git("switch", "-q", "work/entry")
+            task = {**self.task, "branch": "work/entry", "target_branch": "work/next",
+                    "target_base_sha": base}
+            def execute(executable, root, env, task, sha, enabled):
+                self.assertEqual(task["branch"], "work/next")
+                self.assertEqual(sha, base)
+                self.assertEqual(git("rev-parse", "HEAD"), base)
+                return {"started": True, "exit_code": 0, "cleanup_verified": True}
+            with patch("project_os_bridge.codex_provider.shutil.which", return_value="codex"), \
+                 patch("project_os_bridge.codex_provider.probe_capacity", return_value=("available", True)), \
+                 patch("project_os_bridge.codex_provider.execute_turn", side_effect=execute) as turn:
+                result = run_codex(root, {"PATH": "/bin"}, {**self.request,
+                    "expected_sha": entry, "codex_task": task}, enabled=lambda: True)
+                turn.assert_called_once()
+            self.assertTrue(result["checkout_verified"])
+            self.assertEqual(result["after"]["head"], base)
+            self.assertEqual(git("rev-parse", "work/entry"), entry)
