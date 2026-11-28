@@ -91,3 +91,33 @@ class CoreTests(unittest.TestCase):
             self.submit("overflow")
         self.assertTrue(self.jobs.cancel("local-test",first))
         self.submit("new")
+
+    def test_workspace_history_does_not_exhaust_active_admission(self):
+        from project_os_bridge.core import QueueLimitError
+        policy = Policy([*self.policy.grants,
+                         *(("local-test", op, "demo") for op in
+                           ("workspace_prepare", "workspace_materialize", "flutter-test"))])
+        jobs = Jobs(self.root, policy, workflows=("workspace_prepare",))
+        request = {"project": "demo", "profile": "flutter-test",
+                   "expected_sha": "a" * 40, "binding": "b" * 64}
+        def submit(key):
+            return jobs.submit("local-test", "disposable", "workspace_prepare", key,
+                               workspace=request)
+        historical = []
+        for n in range(9):
+            job = submit(f"history-{n}")
+            self.assertTrue(jobs.cancel("local-test", job))
+            historical.append(job)
+        active = [submit(f"active-{n}") for n in range(8)]
+        with self.assertRaisesRegex(QueueLimitError, "WORKSPACE_ACTIVE_LIMIT"):
+            submit("overflow")
+        self.assertEqual(submit("active-0"), active[0])
+        self.assertEqual(submit("history-0"), historical[0])
+        self.assertEqual(jobs.evidence("local-test", historical[0])["state"], "CANCELLED")
+        self.assertTrue(jobs.cancel("local-test", active[0]))
+        self.assertEqual(jobs.get("local-test", submit("overflow"))["state"], "QUEUED")
+        with jobs.transaction() as conn:
+            self.assertEqual(conn.execute("SELECT count(*) FROM jobs").fetchone()[0], 18)
+            conn.execute("INSERT INTO fixture_effects(job_id) VALUES(?)", (historical[0],))
+        with self.assertRaisesRegex(QueueLimitError, "RECONCILIATION_REQUIRED"):
+            submit("uncertain")
