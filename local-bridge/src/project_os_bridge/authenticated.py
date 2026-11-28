@@ -270,12 +270,75 @@ def build_server(verifier, jobs, fixture_reader=None, *, diagnostics=None, githu
                                                       execute=True, changes=changes, pr=pr)
 
         if supervised_workspace and workspace_backend is not None:
+            @mcp.tool(annotations=read)
+            async def codex_capabilities(project: StrictStr, expected_sha: StrictStr) -> dict:
+                """Read the authorized local Codex catalog and observable quota windows."""
+                from .workspace_jobs import local_runtime, project_checkout, binding_digest
+                from .worker import exclusive_worker
+                from .codex_provider import provider_catalog
+                import shutil
+                import uuid
+                from .core import now
+                from .workspace_jobs import workspace_resource
+                actor = principal()
+                token = get_access_token()
+                def check():
+                    if principal() != actor or token.expires_at is None or token.expires_at <= time.time():
+                        raise PermissionError("DENIED")
+                    jobs.policy.require(actor, "workspace_execute", project)
+                    jobs.policy.require(actor, CODEX_PROFILE, project)
+                def collect():
+                    with exclusive_worker(jobs):
+                        check()
+                        runtime = local_runtime(jobs.probe.root, jobs.policy)
+                        entry, root = project_checkout(runtime, jobs.policy, actor, project, expected_sha)
+                        binding = binding_digest(entry, root)
+                        with jobs.transaction() as conn:
+                            if conn.execute("SELECT 1 FROM jobs WHERE state IN ('QUEUED','RUNNING') LIMIT 1").fetchone() or conn.execute("SELECT 1 FROM fixture_effects WHERE resolved_at IS NULL LIMIT 1").fetchone():
+                                raise ValueError("WORKSPACE_BUSY")
+                        key = workspace_backend.route(CODEX_PROFILE, project)
+                        env = dict(workspace_backend.toolchains[key])
+                        executable = shutil.which("codex", path=env["PATH"])
+                        if executable is None:
+                            return {"capacity": "unavailable", "models": None, "windows": None, "model_windows": None}
+                        def enabled():
+                            try:
+                                check()
+                                return True
+                            except PermissionError:
+                                return False
+                        effect_id, effect_token = uuid.uuid4().hex, uuid.uuid4().hex
+                        with jobs.transaction() as conn:
+                            stamp = now()
+                            conn.execute("INSERT INTO jobs(id,principal,resource,workflow,request_key,state,created,updated) VALUES(?,?,?,?,?,?,?,?)",
+                                         (effect_id, actor, workspace_resource(jobs.policy), "codex_capabilities", effect_id, "RUNNING", stamp, stamp))
+                            conn.execute("INSERT INTO fixture_effects(job_id,token,context_id) VALUES(?,?,?)", (effect_id, effect_token, binding))
+                        result, clean = provider_catalog(executable, root, env, enabled)
+                        if not clean:
+                            raise ValueError("CODEX_PROBE_UNCERTAIN")
+                        current, current_root = project_checkout(runtime, jobs.policy, actor, project, expected_sha)
+                        if binding_digest(current, current_root) != binding:
+                            raise PermissionError("DENIED")
+                        check()
+                        with jobs.transaction() as conn:
+                            conn.execute("UPDATE fixture_effects SET resolved_at=? WHERE job_id=? AND token=? AND resolved_at IS NULL", (now(), effect_id, effect_token))
+                            conn.execute("UPDATE jobs SET state='SUCCEEDED',updated=? WHERE id=?", (now(), effect_id))
+                        return result
+                try:
+                    return await asyncio.to_thread(collect)
+                except PermissionError:
+                    raise PermissionError("DENIED") from None
+                except (OSError, ValueError, TypeError):
+                    raise ValueError("CODEX_CAPABILITIES_UNAVAILABLE") from None
+
             @mcp.tool(annotations=write)
             async def submit_codex_job(project: StrictStr, expected_sha: StrictStr,
                                        branch: StrictStr, issue: StrictInt, prompt: StrictStr,
                                        request_key: StrictStr, mode: StrictStr = "auto",
                                        pr: StrictInt | None = None,
-                                       target_branch: StrictStr | None = None) -> dict:
+                                       target_branch: StrictStr | None = None,
+                                       model: StrictStr | None = None,
+                                       reasoning_effort: StrictStr | None = None) -> dict:
                 """Route an authorized implementation task to Codex on its existing checkout.
                 Browser mode does not queue anything. No caller executable, environment or shell."""
                 from .codex_provider import validate_task, MODES
@@ -290,7 +353,9 @@ def build_server(verifier, jobs, fixture_reader=None, *, diagnostics=None, githu
                 check()
                 task = validate_task({"mode": "codex" if mode == "browser" else mode,
                                       "issue": issue, "pr": pr, "branch": branch, "prompt": prompt,
-                                      **({"target_branch": target_branch} if target_branch is not None else {})})
+                                      **({"target_branch": target_branch} if target_branch is not None else {}),
+                                      **({"model": model} if model is not None else {}),
+                                      **({"reasoning_effort": reasoning_effort} if reasoning_effort is not None else {})})
                 from .workspace_jobs import browser_route
                 def submit():
                     check()

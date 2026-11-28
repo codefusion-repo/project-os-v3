@@ -5,7 +5,7 @@ from unittest.mock import patch
 from pathlib import Path
 
 from project_os_bridge.codex_provider import (
-    capacity_from_response, select_executor, validate_task, run_codex, require_checkout, _summary,
+    capacity_from_response, select_executor, validate_task, run_codex, require_checkout, _summary, provider_catalog, selection_valid,
 )
 
 
@@ -129,6 +129,41 @@ class CodexProviderTests(unittest.TestCase):
                 wrong = run_codex(root, {"PATH": "/bin"}, {**request, "codex_task": {**task, "branch": "work/authorized", "target_branch": "work/other"}}, enabled=lambda: True)
             self.assertFalse(wrong["cleanup_verified"])
             self.assertEqual(wrong["reason"], "CODEX_CHECKOUT_UNCERTAIN")
+
+    def test_catalog_allowlist_and_selection(self):
+        responses = [{}, {"ordinaryUsageAllowed": True, "accountId": "private",
+            "rateLimits": {"primary": {"usedPercent": 25, "windowDurationMins": 300, "resetsAt": 123}, "planType": "private"}},
+            {"data": [{"model": "model-a", "hidden": False, "isDefault": True,
+                       "supportedReasoningEfforts": [{"reasoningEffort": "high", "description": "private"}]}], "nextCursor": None}]
+        class Child:
+            def __init__(self, *args): pass
+            def send(self, value): pass
+            def response(self, *args): return responses.pop(0)
+            def stop(self): return True
+        with patch("project_os_bridge.codex_provider._Child", Child):
+            result, clean = provider_catalog("codex", "/fixture", {}, lambda: True)
+        self.assertTrue(clean)
+        self.assertEqual(result, {"capacity": "available", "windows": {"primary": {
+            "used_percent": 25, "window_minutes": 300, "resets_at": 123}},
+            "models": [{"model": "model-a", "reasoning_efforts": ["high"], "default": True}], "model_windows": None})
+        self.assertTrue(selection_valid({"model": "model-a", "reasoning_effort": "high"}, result["models"]))
+        self.assertFalse(selection_valid({"reasoning_effort": "high"}, result["models"]))
+        self.assertFalse(selection_valid({"model": "other"}, result["models"]))
+        self.assertFalse(selection_valid({"model": "model-a", "reasoning_effort": "low"}, result["models"]))
+        self.assertFalse(selection_valid({"model": "model-a"}, None))
+        with self.assertRaises(ValueError):
+            validate_task({**self.task, "model": "--bad"})
+
+    def test_invalid_selection_never_dispatches(self):
+        task = {**self.task, "model": "not-authorized"}
+        with patch("project_os_bridge.codex_provider.require_checkout", return_value=self.before), \
+             patch("project_os_bridge.codex_provider.shutil.which", return_value="codex"), \
+             patch("project_os_bridge.codex_provider.probe_capacity", return_value=("available", True)), \
+             patch("project_os_bridge.codex_provider.provider_catalog", return_value=({"models": [], "capacity": "available"}, True)), \
+             patch("project_os_bridge.codex_provider.execute_turn") as turn:
+            result = run_codex(Path("/fixture"), {"PATH": "/fixture"}, {**self.request, "codex_task": task}, enabled=lambda: True)
+            self.assertEqual(result["reason"], "CODEX_SELECTION_UNAVAILABLE")
+            turn.assert_not_called()
 
     def test_message_sanitization(self):
         self.assertEqual(_summary("Updated the contract; tests passed."), "Updated the contract; tests passed.")

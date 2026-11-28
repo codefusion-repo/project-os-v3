@@ -1389,7 +1389,11 @@ if sys.argv[1:] == ["app-server"]:
             emit({"id": data["id"], "result": {}})
         elif data.get("method") == "account/rateLimits/read":
             emit({"id": data["id"], "result": {"ordinaryUsageAllowed": True}})
-elif sys.argv[1:] == ["--ask-for-approval", "never", "exec", "--json", "-"]:
+        elif data.get("method") == "model/list":
+            emit({"id": data["id"], "result": {"data": [{"model": "fixture-model", "hidden": False,
+                "isDefault": True, "supportedReasoningEfforts": [{"reasoningEffort": "high"}]}], "nextCursor": None}})
+elif sys.argv[1:] in (["--ask-for-approval", "never", "exec", "--json", "-"],
+                     ["--ask-for-approval", "never", "exec", "--json", "--model", "fixture-model", "--config", 'model_reasoning_effort="high"', "-"]):
     prompt = sys.stdin.read()
     assert "Fixture implementation" in prompt
     if "work/authorized" in prompt:
@@ -1425,6 +1429,9 @@ else:
                 return json.loads(result["content"][0]["text"])
             args = {"project": "demo", "expected_sha": sha, "branch": "work/18-codex",
                     "issue": 18, "prompt": "Fixture implementation", "request_key": "codex-first"}
+            capabilities = payload("codex_capabilities", project="demo", expected_sha=sha)
+            self.assertEqual(capabilities["models"][0]["model"], "fixture-model")
+            self.assertEqual(capabilities["capacity"], "available")
             direct = payload("submit_codex_job", **args, mode="browser")
             self.assertEqual(direct["executor"], "browser")
             self.assertFalse(direct["lease_held"])
@@ -1448,10 +1455,12 @@ else:
                                      mode="browser")["executor"], "browser")
             (repo / "untracked.txt").write_text("keep\n")
             second = payload("submit_codex_job", **{**args, "request_key": "continuation"},
-                             target_branch="work/authorized")
+                             target_branch="work/authorized", model="fixture-model", reasoning_effort="high")
             run_pending(jobs, workspace_backend=backend, enabled=verifier.enabled)
             continued = payload("get_job_evidence", job_id=second["job_id"])
             self.assertEqual(continued["state"], "SUCCEEDED")
+            self.assertEqual(continued["result"]["execution"]["requested_model"], "fixture-model")
+            self.assertIsNone(continued["result"]["execution"]["effective_model"])
             self.assertTrue(continued["result"]["execution"]["before"]["dirty"])
             self.assertEqual(continued["result"]["execution"]["after"]["branch"], "work/authorized")
             self.assertEqual((repo / "untracked.txt").read_text(), "keep\n")
