@@ -29,7 +29,7 @@ Apply the current WSL-only decision and capability-specific checks.
 
 1. Before startup: reuse applicable host/credential, reviewed installation, private state, grants and prior-effect evidence; verify material changes only. Preserve the existing unprivileged service, scoped credentials and exact TLS/OAuth setup. Probe-only startup does not enroll execution or real resources.
 2. Verify current loopback HTTPS metadata, anonymous 401, authenticated health, no alternate plaintext endpoint and applicable network disposition. Reuse prior replay/revocation evidence unless relevant behavior changed. Do not activate a capability whose material controls are unresolved.
-3. Verify registered local execution, exact snapshot, lockfile, evidence and physical budget.
+3. Verify registered local execution, exact snapshot, lockfile, evidence and resource reuse.
 4. Verify bounded grouped GitHub and methodology reads under their existing grants.
 
 5. Maintain the existing installation using the reviewed main SHA, applicable CI and exact wheel digest, preserving rollback.
@@ -206,4 +206,4 @@ AgentsUbuntu is the sole local execution environment. Use the installed toolchai
 
 ### LB-07 bounded single-operator functional acceptance
 
-Before and throughout heavy work observe actual Windows backing-volume free space, preserving 20 GiB plus stop margin, not WSL virtual capacity. Use existing native observation and sequential jobs. If capacity cannot be observed, do not enroll or launch heavy profiles. If the margin is threatened revoke the execution binding or stop the service, verify process quiescence, preserve evidence and clean only job-owned regenerable outputs. No new monitor. Verify bounded functional evidence and actual QA delivery when authorized.
+Apply [resource reuse](../PROJECT_OS.md#simplicidad-y-proporcionalidad--evitar-sobreingeniería). Reuse existing SDKs, caches and sequential Jobs; do not create extra copies, worktrees or unnecessary downloads. Preserve evidence and reconcile before cleaning job-owned regenerable outputs. Verify bounded functional evidence and actual QA delivery when authorized.
