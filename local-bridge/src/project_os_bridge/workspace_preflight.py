@@ -27,8 +27,16 @@ def _binding(runtime, policy, principal, project, expected_sha, profile):
     if (not isinstance(project, str) or not PROJECT.fullmatch(project)
             or not isinstance(expected_sha, str) or not SHA.fullmatch(expected_sha)):
         raise ValueError("INVALID_WORKSPACE_REQUEST")
-    policy.require(principal, "workspace_prepare", project)
     policy.require(principal, profile, project)
+    entry, root = project_checkout(runtime, policy, principal, project, expected_sha)
+    return descriptor, entry, root
+
+
+def project_checkout(runtime, policy, principal, project, expected_sha):
+    if (not isinstance(project, str) or not PROJECT.fullmatch(project)
+            or not isinstance(expected_sha, str) or not SHA.fullmatch(expected_sha)):
+        raise ValueError("INVALID_WORKSPACE_REQUEST")
+    policy.require(principal, "workspace_prepare", project)
     entry = registry_entries(runtime).get(project)
     if entry is None:
         raise PermissionError("DENIED")
@@ -37,7 +45,7 @@ def _binding(runtime, policy, principal, project, expected_sha, profile):
         raise PermissionError("DENIED")
     root = config.parent.parent
     checkout(root, entry["repository"])
-    return descriptor, entry, root
+    return entry, root
 
 
 def binding_digest(entry, root):

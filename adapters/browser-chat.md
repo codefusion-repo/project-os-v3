@@ -29,3 +29,8 @@ Aplica obligatoriamente la [selección de templates](../PROJECT_OS.md#selección
 Si la superficie interrumpe la ejecución, aplica [Respuesta y continuidad](../PROJECT_OS.md#respuesta-y-continuidad); distingue límite técnico de decisión del PM y no presentes un checkpoint como resultado final.
 
 Cuando una interrupción técnica obligue a devolver el control, ofrece un botón de continuación si la interfaz lo permite; al finalizar, ofrece un botón de siguiente operación recomendada cuando aporte valor. El botón envía un prompt contextualizado según el contrato central de continuidad: conserva fuente, alcance y restricciones vigentes, sin inventar exclusiones ni solicitar renovación; al pulsarlo, el PM solicita y autoriza la operación indicada, conforme a PROJECT_OS.md; el agente ejecuta sus pasos sin otra confirmación. Si no hay botones, entrega el prompt breve listo para usar. No esperes clics en checkpoints internos.
+
+
+## Codex local — LB-09 candidato
+
+Con perfil `codex-implement` explícitamente enrolado y handler disponible, usa `submit_codex_job` para una tarea de implementación con proyecto, issue/PR, rama y SHA completos, clave estable y estrategia. Browser mantiene orquestación y review; no envíes secretos ni comandos de shell como parámetros de ejecución. Browser directo no depende de Codex. Consulta el Job y sus efectos antes de decidir fallback; nunca reintentes un efecto incierto. Reutiliza la revisión remota y la evidencia existente; el mensaje del agente no es prueba de tests ni autorización adicional. La activación real no se presume por este contrato.

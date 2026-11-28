@@ -37,7 +37,7 @@ from .workos_auth import private_file, private_directory
 from .readiness import read_metadata, verify_metadata
 from .diagnostics import Diagnostics, Section
 from .maintenance import Maintenance
-from .workspace_profiles import QA_PROFILES
+from .workspace_profiles import QA_PROFILES, CODEX_PROFILE
 
 
 def build_server(verifier, jobs, fixture_reader=None, *, diagnostics=None, github_provider=None, maintenance=None, workspace_candidate=False, workspace_backend=None):
@@ -268,6 +268,54 @@ def build_server(verifier, jobs, fixture_reader=None, *, diagnostics=None, githu
                 successful build and signature automatically queue Drive delivery. No arbitrary commands."""
                 return await submit_workspace_request(project, expected_sha, profile, request_key,
                                                       execute=True, changes=changes, pr=pr)
+
+        if supervised_workspace and workspace_backend is not None:
+            @mcp.tool(annotations=write)
+            async def submit_codex_job(project: StrictStr, expected_sha: StrictStr,
+                                       branch: StrictStr, issue: StrictInt, prompt: StrictStr,
+                                       request_key: StrictStr, mode: StrictStr = "auto",
+                                       pr: StrictInt | None = None) -> dict:
+                """Route an authorized implementation task to Codex on its existing checkout.
+                Browser mode does not queue anything. No caller executable, environment or shell."""
+                from .codex_provider import validate_task, MODES
+                actor = principal()
+                token = get_access_token()
+                def check():
+                    if (principal() != actor or token.expires_at is None
+                            or token.expires_at <= time.time()):
+                        raise PermissionError("DENIED")
+                if mode not in MODES:
+                    raise ValueError("INVALID_CODEX_ROUTE")
+                check()
+                task = validate_task({"mode": "codex" if mode == "browser" else mode,
+                                      "issue": issue, "pr": pr, "branch": branch, "prompt": prompt})
+                from .workspace_jobs import browser_route
+                def submit():
+                    check()
+                    if mode == "browser":
+                        return browser_route(jobs, actor, project, expected_sha, task, request_key,
+                                             authorize=check)
+                    try:
+                        jobs.policy.require(actor, "workspace_execute", project)
+                        jobs.policy.require(actor, CODEX_PROFILE, project)
+                        workspace_backend.route(CODEX_PROFILE, project)
+                    except PermissionError:
+                        # A revoked previously enrolled profile is not absence.
+                        if mode == "auto" and CODEX_PROFILE not in jobs.policy.initial.get(project, ()):
+                            return browser_route(jobs, actor, project, expected_sha, task, request_key,
+                                                 authorize=check)
+                        return {"executor": "blocked", "reason": "CODEX_GRANT_OR_BINDING_UNAVAILABLE",
+                                "handoff_verified": False}
+                    try:
+                        job = submit_workspace(jobs, actor, project, expected_sha, CODEX_PROFILE,
+                                               request_key, authorize=check, backend=workspace_backend,
+                                               codex_task=task)
+                        require_workspace_job(jobs, actor, job, allow_execute=True)
+                        check()
+                        return {"job_id": job, "executor": "pending"}
+                    except (OSError, ValueError, TypeError):
+                        raise ValueError("CODEX_SUBMISSION_FAILED") from None
+                return await asyncio.to_thread(submit)
 
         @mcp.tool(annotations=read)
         async def workspace_changes(job_id: StrictStr) -> dict:

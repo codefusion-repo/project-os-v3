@@ -1326,6 +1326,117 @@ class AuthTests(unittest.TestCase):
             with self.assertRaises(PermissionError):
                 policy.require(SUBJECT, "workspace_execute", "demo")
 
+    def test_codex_http_queue_worker_and_cli_protocol(self):
+        from project_os_bridge.workspace_jobs import (SUPERVISED_GRANTS, SUPERVISED_EXECUTION,
+            load_supervised_workspace_policy, load_supervised_workspace_backend)
+        from project_os_bridge.worker import run_pending, exclusive_worker
+        import sys
+        root = self.root / "codex-fixture"
+        root.mkdir(mode=0o700)
+        state, service, repo, bin_dir = (root / name for name in ("state", "service", "repo", "bin"))
+        for path in (state, service, repo, bin_dir):
+            path.mkdir(mode=0o700)
+        (state / "allow-authenticated-probe").touch(mode=0o600)
+        def git(*args):
+            return subprocess.check_output(["git", "-C", str(repo), *args]).decode().strip()
+        git("init", "-q")
+        git("config", "user.name", "Fixture")
+        git("config", "user.email", "fixture@example.invalid")
+        git("remote", "add", "origin", "https://github.com/example/demo.git")
+        git("checkout", "-qb", "work/18-codex")
+        (repo / "AGENTS.md").write_text("Fixture instructions\n")
+        (repo / ".gitignore").write_text(".project-os/\n")
+        git("add", ".")
+        git("commit", "-qm", "fixture")
+        sha = git("rev-parse", "HEAD")
+        project = repo / ".project-os"
+        project.mkdir(mode=0o700)
+        config = project / "config.json"
+        config.touch(mode=0o600)
+        config.write_text(json.dumps({"version": 2, "repositories": ["example/demo"],
+            "github_context": {"project": "demo", "repository": "example/demo", "repository_id": 123}}))
+        runtime = service / "runtime.json"
+        runtime.touch(mode=0o600)
+        runtime.write_text(json.dumps({"tunnel": "fixture", "tunnel_id": "fixture", "image": None,
+            "github_projects": {"demo": {"config": str(config),
+                                         "repository": "example/demo", "repository_id": 123}}}))
+        grants = state / SUPERVISED_GRANTS
+        grants.touch(mode=0o600)
+        ops = ["workspace_prepare", "workspace_materialize", "workspace_execute", "codex-implement"]
+        grants.write_text(json.dumps({"demo": ops}))
+        binding = state / SUPERVISED_EXECUTION
+        binding.touch(mode=0o600)
+        binding.write_text(json.dumps({"demo": {"codex-implement": {
+            "toolchain": {"PATH": str(bin_dir) + ":/usr/bin:/bin"}}}}))
+        # Synthetic CLI exercises the actual JSONL process boundary, not account access.
+        executable = bin_dir / "codex"
+        executable.write_text("#!" + sys.executable + "\n" + r'''
+import json, sys
+from pathlib import Path
+def emit(value):
+    print(json.dumps(value), flush=True)
+if sys.argv[1:] == ["app-server"]:
+    for line in sys.stdin:
+        data = json.loads(line)
+        if data.get("method") == "initialize":
+            emit({"id": data["id"], "result": {}})
+        elif data.get("method") == "account/rateLimits/read":
+            emit({"id": data["id"], "result": {"ordinaryUsageAllowed": True}})
+elif sys.argv[1:] == ["--ask-for-approval", "never", "exec", "--json", "-"]:
+    assert "Fixture implementation" in sys.stdin.read()
+    Path("AGENTS.md").write_text("Fixture implementation complete\n")
+    emit({"type": "item.completed", "item": {"type": "agent_message", "text": "Fixture changed."}})
+    emit({"type": "turn.completed", "usage": {}})
+else:
+    sys.exit(2)
+''')
+        executable.chmod(0o700)
+        verifier = Verifier(ISSUER, RESOURCE, SUBJECT, state, jwks=self.jwks)
+        base = [(SUBJECT, op, "disposable") for op in ("submit", "read", "cancel")]
+        policy = load_supervised_workspace_policy(verifier, base, supervised=True, multi=True)
+        backend = load_supervised_workspace_backend(policy)
+        jobs = Jobs(state, policy, workflows=("probe_check", "workspace_prepare", "workspace_execute"))
+        app = build_http_app(verifier, jobs, workspace_candidate=True, workspace_backend=backend)
+        headers = {"Accept": "application/json, text/event-stream", "Authorization": "Bearer " + self.token()}
+        with TestClient(app, base_url="http://127.0.0.1:8765") as client:
+            def call(method, params):
+                response = client.post("/mcp", headers=headers,
+                    json={"jsonrpc": "2.0", "id": 1, "method": method, "params": params})
+                self.assertEqual(response.status_code, 200)
+                return response.json()["result"]
+            init = call("initialize", {"protocolVersion": "2025-11-25", "capabilities": {},
+                "clientInfo": {"name": "test", "version": "1"}})
+            headers["MCP-Protocol-Version"] = init["protocolVersion"]
+            def payload(name, **arguments):
+                result = call("tools/call", {"name": name, "arguments": arguments})
+                self.assertFalse(result.get("isError", False), result)
+                return json.loads(result["content"][0]["text"])
+            args = {"project": "demo", "expected_sha": sha, "branch": "work/18-codex",
+                    "issue": 18, "prompt": "Fixture implementation", "request_key": "codex-first"}
+            direct = payload("submit_codex_job", **args, mode="browser")
+            self.assertEqual(direct["executor"], "browser")
+            self.assertFalse(direct["lease_held"])
+            with exclusive_worker(jobs):
+                self.assertEqual(payload("submit_codex_job", **args, mode="browser")["executor"], "blocked")
+            first = payload("submit_codex_job", **args)
+            self.assertEqual(first, payload("submit_codex_job", **args))
+            self.assertEqual(payload("submit_codex_job", **args, mode="browser")["executor"], "blocked")
+            self.assertEqual(payload("get_job_status", job_id=first["job_id"])["state"], "QUEUED")
+            run_pending(jobs, workspace_backend=backend, enabled=verifier.enabled)
+            evidence = payload("get_job_evidence", job_id=first["job_id"])
+            self.assertEqual(evidence["state"], "SUCCEEDED")
+            self.assertEqual([e["state"] for e in evidence["events"]], ["QUEUED", "RUNNING", "SUCCEEDED"])
+            self.assertTrue(evidence["result"]["execution"]["after"]["dirty"])
+            self.assertFalse(evidence["result"]["workspace_materialized"])
+            self.assertEqual(evidence["result"]["execution"]["agent_message"], "Fixture changed.")
+            self.assertEqual(jobs.pending_effects(), [])
+            self.assertEqual(git("rev-parse", "HEAD"), sha)
+            self.assertEqual(payload("submit_codex_job", **args, mode="browser")["executor"], "blocked")
+            self.assertEqual(payload("submit_codex_job", **{**args, "request_key": "dirty"},
+                                     mode="browser")["executor"], "blocked")
+            grants.write_text(json.dumps({"demo": [op for op in ops if op != "codex-implement"]}))
+            self.assertEqual(payload("submit_codex_job", **args)["executor"], "blocked")
+
     def test_workspace_candidate_cannot_register_on_active_state_or_execution_queue(self):
         jobs = Jobs(self.root, Policy([]), workflows=("workspace_prepare",))
         with self.assertRaises(ValueError):

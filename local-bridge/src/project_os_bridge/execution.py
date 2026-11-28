@@ -28,7 +28,7 @@ import time
 from types import MappingProxyType
 
 from .workspace_profiles import (PROFILES, QA_PROFILES, profile_for, execution_route,
-                                 qa_plan, apk_path, read_apk, MAX_APK)
+                                 qa_plan, apk_path, read_apk, MAX_APK, CODEX_PROFILE)
 from .workos_auth import private_directory
 
 _TOOLCHAIN = frozenset({"PATH", "JAVA_HOME", "ANDROID_HOME", "ANDROID_SDK_ROOT",
@@ -194,6 +194,13 @@ class WorkspaceWSL:
         identity, context = self.binding(profile, request["project"])
         plan = self.qa_plans.get(key)
         signer = self.qa_signers.get(key)
+        if profile == CODEX_PROFILE:
+            if (request.get("execution_id") != identity or request.get("context_id") != context
+                    or row.get("effect_context") != context or snapshot["head"] != request["expected_sha"]
+                    or snapshot.get("workspace_materialized") is not False):
+                raise PermissionError("EXECUTION_BINDING_CHANGED")
+            from .codex_provider import run_codex
+            return run_codex(workspace, dict(self.toolchains[key]), request, enabled=enabled)
         if (request.get("execution_id") != identity or request.get("context_id") != context
                 or row.get("effect_context") != context
                 or request.get("qa_plan_sha256") != (plan.digest() if plan else None)

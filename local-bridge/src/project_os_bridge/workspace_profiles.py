@@ -37,6 +37,8 @@ PROFILES = MappingProxyType({
         ":app:lintVitalRelease", "-PreactNativeArchitectures=arm64-v8a,x86_64",
         "--no-daemon", "--max-workers=2"), "apk"),
 })
+CODEX_PROFILE = "codex-implement"
+CODEX_DESCRIPTOR = Profile(("AGENTS.md",), ())
 QA_PROFILES = frozenset({"flutter-apk-qa", "expo-apk-qa"})
 
 
@@ -86,6 +88,8 @@ def qa_plan(profile, data):
 
 
 def profile_for(name):
+    if name == CODEX_PROFILE:
+        return CODEX_DESCRIPTOR
     if not isinstance(name, str) or name not in PROFILES:
         raise ValueError("INVALID_WORKSPACE_PROFILE")
     return PROFILES[name]
