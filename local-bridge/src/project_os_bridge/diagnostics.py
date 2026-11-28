@@ -221,13 +221,13 @@ class Diagnostics:
             conn.execute("BEGIN")
             unknown = 0
             actor = self.verifier.subject
-            for state, count in conn.execute("SELECT state,count(*) FROM jobs WHERE principal=? AND resource='disposable' GROUP BY state", (actor,)):
+            for state, count in conn.execute("SELECT state,count(*) FROM jobs WHERE principal=? AND resource IN ('disposable','workspace') GROUP BY state", (actor,)):
                 if state in counts:
                     counts[state] = count
                 else:
                     unknown += count
             unresolved = conn.execute(
-                "SELECT count(*) FROM fixture_effects e JOIN jobs j ON e.job_id=j.id WHERE e.resolved_at IS NULL AND j.principal=? AND j.resource='disposable'",
+                "SELECT count(*) FROM fixture_effects e JOIN jobs j ON e.job_id=j.id WHERE e.resolved_at IS NULL AND j.principal=? AND j.resource IN ('disposable','workspace')",
                 (actor,)).fetchone()[0]
         return {"database": "observed", "counts": counts, "unknown_states": unknown,
                 "unresolved_effects": unresolved, "scope": "current_instance_caller_only"}

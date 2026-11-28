@@ -106,6 +106,26 @@ class DiagnosticsTests(unittest.TestCase):
         jobs.db.symlink_to(self.root / "missing")
         self.assertEqual(self.diagnostics.collect("jobs")["status"], "unavailable")
 
+    def test_jobs_include_workspace_without_other_caller_data(self):
+        jobs = Jobs(self.state, Policy([("user_fixture", "submit", "disposable")]))
+        own = jobs.submit("user_fixture", "disposable", "probe_check", "probe")
+        with jobs.transaction() as conn:
+            for job_id, actor, resource in (("workspace-own", "user_fixture", "workspace"),
+                                            ("workspace-other", "user_other", "workspace")):
+                conn.execute("INSERT INTO jobs VALUES(?,?,?,?,?,?,?,?,?)",
+                             (job_id, actor, resource, "workspace_execute", job_id,
+                              "RUNNING", None, "stamp", "stamp"))
+                conn.execute("INSERT INTO fixture_effects(job_id,token,context_id) VALUES(?,?,?)",
+                             (job_id, "token", "context"))
+        before = jobs.db.read_bytes()
+        result = self.diagnostics.jobs()
+        self.assertEqual(result["counts"]["QUEUED"], 1)
+        self.assertEqual(result["counts"]["RUNNING"], 1)
+        self.assertEqual(result["unresolved_effects"], 1)
+        self.assertEqual(jobs.db.read_bytes(), before)
+        for private in (own, "workspace-own", "workspace-other", "user_fixture", "user_other"):
+            self.assertNotIn(private, json.dumps(result))
+
     def test_audit_aggregates_without_raw_records(self):
         path = self.state / "security-audit.jsonl"
         self.assertEqual(self.diagnostics.audit(), {"audit": "not_created"})

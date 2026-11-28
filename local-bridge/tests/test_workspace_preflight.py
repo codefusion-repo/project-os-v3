@@ -455,6 +455,36 @@ class WorkspacePreflightTests(unittest.TestCase):
             run_pending(reopened, workspace_backend=backend)
             command.assert_not_called()
 
+    def test_admit_workspace_while_running_but_fence_dispatch_and_uncertain_effect(self):
+        from project_os_bridge.core import QueueLimitError
+        from project_os_bridge.execution import WorkspaceWSL
+        jobs = self.workspace_queue()
+        policy = Policy([*jobs.policy.grants, ("operator", "workspace_execute", "demo")])
+        jobs = Jobs(jobs.probe.root, policy, workflows=("workspace_execute",))
+        backend = WorkspaceWSL({key: {"PATH": "/usr/bin:/bin"}
+                                for key in ("demo:expo-test", "demo:flutter-test")})
+        def submit(profile, key):
+            return submit_workspace(jobs, "operator", "demo", self.sha, profile, key, backend=backend)
+        first = submit("expo-test", "first")
+        with exclusive_worker(jobs):
+            claimed = jobs.claim(workspace_contexts=backend.identities())
+            self.assertEqual(claimed["id"], first)
+            second = submit("flutter-test", "second")
+            self.assertEqual(second, submit("flutter-test", "second"))
+            self.assertEqual(jobs.get("operator", second)["state"], "QUEUED")
+            self.assertIsNone(jobs.claim(workspace_contexts=backend.identities()))
+            jobs.finish(first, "FAILED", {"reason": "uncertain"}, fixture_absent=False,
+                        fixture_context=claimed["effect_context"])
+            with self.assertRaisesRegex(QueueLimitError, "RECONCILIATION_REQUIRED"):
+                submit("flutter-test", "third")
+            self.assertIsNone(jobs.claim(workspace_contexts=backend.identities()))
+            # Only the test simulates verified cleanup under the worker lock.
+            jobs.resolve_effect(first, claimed["effect_token"], claimed["effect_context"])
+        with patch("project_os_bridge.execution._command", return_value=(0, True)):
+            run_pending(jobs, workspace_backend=backend)
+        self.assertEqual(jobs.get("operator", second)["state"], "SUCCEEDED")
+        self.assertEqual(jobs.pending_effects(), [])
+
     def test_direct_uncertain_effect_fences_other_profiles_and_no_replay(self):
         from project_os_bridge.execution import WorkspaceWSL
         jobs = self.workspace_queue()

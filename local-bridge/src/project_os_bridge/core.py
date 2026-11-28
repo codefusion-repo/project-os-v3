@@ -144,7 +144,19 @@ class Jobs:
                     if not parameters or parameters["request"] != workspace:
                         raise ValueError("Idempotency conflict")
                 return row["id"]
-            if c.execute("SELECT 1 FROM fixture_effects WHERE resolved_at IS NULL LIMIT 1").fetchone():
+            # An active workspace execution owns a journaled effect until cleanup.
+            # Admit other workspace jobs to the queue only; claim still fences all
+            # unresolved effects and the exclusive worker remains unchanged.
+            if workflow in {"workspace_prepare", "workspace_execute"}:
+                unresolved = c.execute(
+                    "SELECT 1 FROM fixture_effects e WHERE e.resolved_at IS NULL "
+                    "AND NOT EXISTS (SELECT 1 FROM jobs j WHERE j.id=e.job_id "
+                    "AND j.state='RUNNING' AND j.workflow='workspace_execute' "
+                    "AND e.token IS NOT NULL AND e.context_id IS NOT NULL) LIMIT 1"
+                ).fetchone()
+            else:
+                unresolved = c.execute("SELECT 1 FROM fixture_effects WHERE resolved_at IS NULL LIMIT 1").fetchone()
+            if unresolved:
                 raise QueueLimitError("RECONCILIATION_REQUIRED")
             # Bound total retained rows and active work; no implicit deletion.
             if c.execute("SELECT count(*) FROM jobs").fetchone()[0] >= 10000:
