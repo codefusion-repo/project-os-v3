@@ -336,6 +336,17 @@ def workspace_context(jobs, principal, project, expected_sha, profile, paths, *,
                                   expected_sha, profile, paths, include_dirty=include_dirty)
 
 
+
+
+_WORKSPACE_ERROR_CODE = frozenset(["DENIED","EXECUTION_BINDING_CHANGED","EXECUTION_EVIDENCE_INVALID","INVALID_WORKSPACE_CHANGE","INVALID_WORKSPACE_CHANGES","INVALID_WORKSPACE_CONTEXT","INVALID_WORKSPACE_PROFILE","INVALID_WORKSPACE_REQUEST","LOCKFILE_UNAVAILABLE","PRIVATE_WORKSPACE_PATH","PROFILE_UNAVAILABLE","UNSUPPORTED_PROJECT_LAYOUT","UNSUPPORTED_WORKSPACE_PATH","WORKSPACE_BINDING_CHANGED","WORKSPACE_CHANGES_UNAVAILABLE","WORKSPACE_CHANGE_CONFLICT","WORKSPACE_CHANGE_LIMIT","WORKSPACE_CHANGE_NOOP","WORKSPACE_CHANGE_NOT_TEXT","WORKSPACE_CONTEXT_CHANGED","WORKSPACE_CONTEXT_HEAD_CHANGED","WORKSPACE_CONTEXT_LIMIT","WORKSPACE_CONTEXT_NOT_REGULAR","WORKSPACE_CONTEXT_NOT_TEXT","WORKSPACE_CONTEXT_UNAVAILABLE","WORKSPACE_DIFF_LIMIT","WORKSPACE_DIFF_LIMIT_OR_IDENTITY","WORKSPACE_GRANTS_UNAVAILABLE","WORKSPACE_INTEGRITY","WORKSPACE_LIMIT","WORKSPACE_MUST_BE_SEPARATE","WORKSPACE_PATH_COLLISION","WORKSPACE_TREE_UNAVAILABLE"])
+
+
+def workspace_error_code(exc, fallback):
+    # Only known fixed literals, never arbitrary exception text.
+    value = exc.args[0] if len(exc.args) == 1 else None
+    return value if type(value) is str and value in _WORKSPACE_ERROR_CODE else fallback
+
+
 def run_workspace(jobs, row, *, executor=None):
     request = row["workspace"]
     result = {"operation": "prepare", "profile": request["profile"],
@@ -370,13 +381,15 @@ def run_workspace(jobs, row, *, executor=None):
         return ("SUCCEEDED" if execution["exit_code"] == 0 else "FAILED",
                 {**result, **snapshot, "operation": "execute", "execution_available": True,
                  "reason": None, "execution": execution})
-    except (PermissionError, ValueError, FileExistsError, FileNotFoundError):
+    except (PermissionError, ValueError, FileExistsError, FileNotFoundError) as exc:
         if not dispatched and row.get("effect_context") is not None:
             result["execution"] = {"cleanup_verified": True, "execution_id": request["execution_id"],
                                    "started": False}
-        return "BLOCKED", {**result, "reason": "WORKSPACE_PREFLIGHT_BLOCKED"}
-    except (OSError, RuntimeError):
+        return "BLOCKED", {**result, "reason": "WORKSPACE_PREFLIGHT_BLOCKED",
+                           "error_code": workspace_error_code(exc, "WORKSPACE_PREFLIGHT_BLOCKED")}
+    except (OSError, RuntimeError) as exc:
         if not dispatched and row.get("effect_context") is not None:
             result["execution"] = {"cleanup_verified": True, "execution_id": request["execution_id"],
                                    "started": False}
-        return "FAILED", {**result, "reason": "WORKSPACE_PREPARATION_FAILED"}
+        return "FAILED", {**result, "reason": "WORKSPACE_PREPARATION_FAILED",
+                          "error_code": workspace_error_code(exc, "WORKSPACE_PREPARATION_FAILED")}

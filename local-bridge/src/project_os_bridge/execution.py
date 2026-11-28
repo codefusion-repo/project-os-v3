@@ -230,6 +230,7 @@ class WorkspaceWSL:
                   "lock_sha256": before, "cleanup_verified": True}
         deadline = time.monotonic() + 900
         for index, (command, cwd) in enumerate(steps):
+            result["step"] = "dependencies" if index == 0 else "native_generation" if index < len(steps) - 1 else "profile"
             if index == 1 and plan is not None and plan.native.startswith("managed-") and (workspace / "android").exists():
                 return {**result, "exit_code": 125, "reason": "MANAGED_LAYOUT_CHANGED"}
             if not cwd.is_dir():
@@ -247,7 +248,9 @@ class WorkspaceWSL:
             if not unchanged:
                 return {**result, "exit_code": 125, "reason": "LOCKFILE_CHANGED"}
             if code != 0:
-                return {**result, "exit_code": code, **({"reason": "EXECUTION_STOPPED"} if code == 130 else {})}
+                return {**result, "exit_code": code, "reason": {130: "EXECUTION_STOPPED",
+                        124: "EXECUTION_TIMEOUT_OR_EXIT_124", 127: "EXECUTABLE_UNAVAILABLE_OR_EXIT_127",
+                        125: "PROCESS_GROUP_REMAINED_OR_EXIT_125"}.get(code, "COMMAND_FAILED")}
         if not enabled():
             return {**result, "exit_code": 130, "reason": "EXECUTION_STOPPED"}
         result["exit_code"] = 0

@@ -11,6 +11,7 @@ import fcntl
 import hashlib
 import http.client
 import json
+import logging
 import os
 from pathlib import Path
 import re
@@ -40,6 +41,64 @@ TERMINAL = {"SUCCEEDED", "BLOCKED"}
 STAGES = {"accepted", "preflight", "quiescing", "stopped", "fenced",
           "installing", "restoring", "starting", "complete"}
 STATES = {"ACCEPTED", "RUNNING", "SUCCEEDED", "BLOCKED", "LOCAL_RECOVERY_REQUIRED"}
+DIAGNOSTIC_STEPS = frozenset(["admission","lifecycle","idle_jobs","checkout","install_guard","runtime_profile","github_run","github_rules","github_checks","wheel_evidence","github_main","git_fetch","git_ancestry","rollback_identity","opt_ins","final_admission","accepted","preflight","quiescing","stopped","fenced","installing","restoring","starting","complete"])
+DIAGNOSTIC_CODES = frozenset(["INSTANCE_INSIDE_GIT", "CHECK_FAILED","PERMISSION_DENIED","COMMAND_FAILED","COMMAND_TIMEOUT","COMMAND_UNAVAILABLE","GITHUB_HTTP_ERROR","GITHUB_EVIDENCE_INVALID","GITHUB_TRANSPORT_FAILED","INTERNAL_ERROR","IO_ERROR","INVALID_DATA"])
+LOG = logging.getLogger("project_os.maintenance")
+
+
+class CommandFailure(RuntimeError):
+    def __init__(self, code, exit_code=None):
+        super().__init__(code)
+        self.code = code
+        self.exit_code = exit_code
+
+
+class DiagnosticFailure(ValueError):
+    def __init__(self, diagnostic):
+        super().__init__(diagnostic["code"])
+        self.diagnostic = diagnostic
+
+
+def valid_diagnostic(value):
+    return (isinstance(value, dict)
+            and set(value) == {"step", "code", "exit_code"}
+            and isinstance(value["step"], str) and value["step"] in DIAGNOSTIC_STEPS
+            and isinstance(value["code"], str) and value["code"] in DIAGNOSTIC_CODES
+            and (value["exit_code"] is None or
+                 type(value["exit_code"]) is int and -255 <= value["exit_code"] <= 599))
+
+
+def failure(step, exc):
+    if isinstance(exc, DiagnosticFailure) and valid_diagnostic(exc.diagnostic):
+        return exc.diagnostic
+    code, exit_code = "INTERNAL_ERROR", None
+    if isinstance(exc, CommandFailure):
+        code, exit_code = exc.code, exc.exit_code
+    elif isinstance(exc, subprocess.TimeoutExpired):
+        code = "COMMAND_TIMEOUT"
+    elif isinstance(exc, PermissionError):
+        code = "PERMISSION_DENIED"
+    elif isinstance(exc, (OSError, http.client.HTTPException)):
+        code = "IO_ERROR"
+    elif isinstance(exc, (ValueError, KeyError, TypeError)):
+        code = "INVALID_DATA"
+    elif isinstance(exc, RuntimeError):
+        code = "CHECK_FAILED"
+    result = {"step": step, "code": code, "exit_code": exit_code}
+    return result if valid_diagnostic(result) else {"step": step, "code": "INTERNAL_ERROR", "exit_code": None}
+
+
+@contextmanager
+def diagnostic_step(step):
+    try:
+        yield
+    except Exception as exc:
+        diagnostic = failure(step, exc)
+        LOG.warning("maintenance_check outcome=FAIL step=%s code=%s exit_code=%s",
+                    diagnostic["step"], diagnostic["code"], diagnostic["exit_code"])
+        raise DiagnosticFailure(diagnostic) from None
+    else:
+        LOG.info("maintenance_check outcome=PASS step=%s", step)
 
 
 def private_dir(path):
@@ -150,10 +209,11 @@ def validate_record(record):
 
 
 def public(record):
-    # No filesystem paths, request key, principal, markers, logs or exceptions.
-    return {**record["request"], "state": record["state"], "stage": record["stage"],
+    # No raw exception messages, command arguments, paths, markers or secrets.
+    result = {**record["request"], "state": record["state"], "stage": record["stage"],
             "updated_at": record["updated_at"],
             "readiness_basis": "local_tls_and_anonymous_401" if record["state"] == "SUCCEEDED" else None}
+    return result
 
 
 def clean_env():
@@ -166,11 +226,16 @@ def clean_env():
 
 
 def command(*args, timeout=60):
-    result = subprocess.run(args, env=clean_env(), stdin=subprocess.DEVNULL,
-                            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-                            timeout=timeout, check=False)
+    try:
+        result = subprocess.run(args, env=clean_env(), stdin=subprocess.DEVNULL,
+                                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                                timeout=timeout, check=False)
+    except subprocess.TimeoutExpired:
+        raise CommandFailure("COMMAND_TIMEOUT") from None
+    except OSError:
+        raise CommandFailure("COMMAND_UNAVAILABLE") from None
     if result.returncode:
-        raise RuntimeError("Maintenance command failed")
+        raise CommandFailure("COMMAND_FAILED", result.returncode)
     return result.stdout
 
 
@@ -188,7 +253,9 @@ def api(path):
             "Accept": "application/vnd.github+json", "User-Agent": "Project-OS-maintenance",
             "X-GitHub-Api-Version": "2022-11-28"})
         response = conn.getresponse()
-        if response.status != 200 or response.getheader("Link"):
+        if response.status != 200:
+            raise CommandFailure("GITHUB_HTTP_ERROR", response.status)
+        if response.getheader("Link"):
             raise ValueError("Incomplete GitHub evidence")
         raw = response.read(2 * 1024 * 1024 + 1)
         if len(raw) > 2 * 1024 * 1024:
@@ -228,36 +295,41 @@ def approved_wheel(req, run):
 
 def approved_main(req):
     sha = req["target_sha"]
-    run = api("/actions/runs/" + str(req["ci_run_id"]))
-    if (run["id"] != req["ci_run_id"] or run["workflow_id"] != WORKFLOW_ID
-            or run["path"].split("@", 1)[0] != WORKFLOW_PATH
-            or run["repository"]["id"] != REPO_ID or run["head_repository"]["id"] != REPO_ID
-            or run["event"] != "push" or run["head_branch"] != "main" or run["head_sha"] != sha
-            or run["status"] != "completed" or run["conclusion"] != "success"):
-        raise ValueError("Unapproved CI run")
-    rules = api("/rules/branches/main")
-    required = set()
-    if not isinstance(rules, list) or not any(r["type"] == "pull_request" for r in rules):
-        raise ValueError("Missing branch protection")
-    for rule in rules:
-        if rule["type"] == "required_status_checks":
-            for check in rule["parameters"]["required_status_checks"]:
-                required.add((check["context"], check["integration_id"]))
-    # The existing CI's tests and installation probe must remain required.
-    if not {("tests", APP_ID), ("probe", APP_ID)} <= required:
-        raise ValueError("Missing required CI checks")
-    result = api("/commits/" + sha + "/check-runs?per_page=100")
-    checks = result["check_runs"]
-    if result["total_count"] != len(checks):
-        raise ValueError("Incomplete checks")
-    passed = {(c["name"], c["app"]["id"]) for c in checks
-              if c["head_sha"] == sha and c["check_suite"]["id"] == run["check_suite_id"]
-              and c["status"] == "completed" and c["conclusion"] == "success"}
-    if not required <= passed:
-        raise ValueError("Required CI check failed")
-    approved_wheel(req, run)
-    if api("/git/ref/heads/main")["object"]["sha"] != sha:
-        raise ValueError("Target is not current main")
+    with diagnostic_step("github_run"):
+        run = api("/actions/runs/" + str(req["ci_run_id"]))
+        if (run["id"] != req["ci_run_id"] or run["workflow_id"] != WORKFLOW_ID
+                or run["path"].split("@", 1)[0] != WORKFLOW_PATH
+                or run["repository"]["id"] != REPO_ID or run["head_repository"]["id"] != REPO_ID
+                or run["event"] != "push" or run["head_branch"] != "main" or run["head_sha"] != sha
+                or run["status"] != "completed" or run["conclusion"] != "success"):
+            raise ValueError("Unapproved CI run")
+    with diagnostic_step("github_rules"):
+        rules = api("/rules/branches/main")
+        required = set()
+        if not isinstance(rules, list) or not any(r["type"] == "pull_request" for r in rules):
+            raise ValueError("Missing branch protection")
+        for rule in rules:
+            if rule["type"] == "required_status_checks":
+                for check in rule["parameters"]["required_status_checks"]:
+                    required.add((check["context"], check["integration_id"]))
+        # The existing CI's tests and installation probe must remain required.
+        if not {("tests", APP_ID), ("probe", APP_ID)} <= required:
+            raise ValueError("Missing required CI checks")
+    with diagnostic_step("github_checks"):
+        result = api("/commits/" + sha + "/check-runs?per_page=100")
+        checks = result["check_runs"]
+        if result["total_count"] != len(checks):
+            raise ValueError("Incomplete checks")
+        passed = {(c["name"], c["app"]["id"]) for c in checks
+                  if c["head_sha"] == sha and c["check_suite"]["id"] == run["check_suite_id"]
+                  and c["status"] == "completed" and c["conclusion"] == "success"}
+        if not required <= passed:
+            raise ValueError("Required CI check failed")
+    with diagnostic_step("wheel_evidence"):
+        approved_wheel(req, run)
+    with diagnostic_step("github_main"):
+        if api("/git/ref/heads/main")["object"]["sha"] != sha:
+            raise ValueError("Target is not current main")
 
 
 class Maintenance:
@@ -310,18 +382,50 @@ class Maintenance:
             return result
         return None
 
+    def public_status(self, record):
+        result = public(record)
+        if record["state"] not in {"BLOCKED", "LOCAL_RECOVERY_REQUIRED", "ACCEPTED"}:
+            return result
+        path = self.store / (record["request"]["id"] + ".diagnostic.json")
+        if not os.path.lexists(path):
+            return result
+        try:
+            evidence = read_json(path, 1024)
+            if (not isinstance(evidence, dict)
+                    or set(evidence) != {"state", "stage", "updated_at", "diagnostic"}
+                    or not valid_diagnostic(evidence["diagnostic"])):
+                raise ValueError("Invalid diagnostic")
+            if all(evidence[key] == record[key] for key in ("state", "stage", "updated_at")):
+                result["diagnostic"] = evidence["diagnostic"]
+        except (OSError, ValueError, TypeError, KeyError):
+            LOG.warning("maintenance_diagnostic outcome=UNAVAILABLE")
+        return result
+
     def status(self, key):
         ident = request_id(key)
         try:
             with self.locked():
                 record = self.lookup(ident)
-                return public(record) if record else {"state": "NOT_FOUND"}
+                return self.public_status(record) if record else {"state": "NOT_FOUND"}
         except (OSError, ValueError, KeyError, TypeError, RuntimeError):
             raise ValueError("MAINTENANCE_STATUS_UNAVAILABLE") from None
 
-    def transition(self, record, state, stage):
+    def transition(self, record, state, stage, diagnostic=None):
         record.update(state=state, stage=stage, updated_at=datetime.now(timezone.utc).isoformat())
-        save(self.active, validate_record(record))
+        validate_record(record)
+        if diagnostic is not None:
+            # Keep the authoritative state record byte-schema compatible with
+            # older runners. Publish the optional evidence first; status only
+            # joins the exact recorded transition, never an orphan/stale write.
+            path = self.store / (record["request"]["id"] + ".diagnostic.json")
+            if not valid_diagnostic(diagnostic):
+                raise ValueError("Invalid diagnostic")
+            try:
+                save(path, {"state": state, "stage": stage,
+                            "updated_at": record["updated_at"], "diagnostic": diagnostic})
+            except (OSError, ValueError):
+                LOG.warning("maintenance_diagnostic outcome=UNAVAILABLE")
+        save(self.active, record)
 
     def launch(self, ident):
         # This is a transient SERVICE, never a scope of the MCP service.
@@ -333,7 +437,7 @@ class Maintenance:
         command("/usr/bin/systemd-run", "--user", "--collect", "--no-block",
                 "--unit=" + UNIT, "--property=Type=exec", "--property=UMask=0077",
                 "--property=WorkingDirectory=/", "--property=StandardOutput=null",
-                "--property=StandardError=null", "/usr/bin/env", "-i",
+                "--property=StandardError=journal", "/usr/bin/env", "-i",
                 *(key + "=" + value for key, value in env.items()),
                 "/usr/bin/python3", "-I", "-B", str(Path(__file__)),
                 "--run", str(self.root), str(self.kit), ident, timeout=10)
@@ -349,7 +453,7 @@ class Maintenance:
                 if existing:
                     if existing["request"] != req:
                         raise ValueError("REQUEST_KEY_CONFLICT")
-                    return public(existing)
+                    return self.public_status(existing)
                 old = self.current()
                 if old and old["state"] not in TERMINAL:
                     raise RuntimeError("MAINTENANCE_BUSY_OR_UNCONFIRMED")
@@ -369,7 +473,7 @@ class Maintenance:
                     authorize()
                     if not self.enabled():
                         self.transition(record, "BLOCKED", "accepted")
-                        return public(record)
+                        return self.public_status(record)
                 except PermissionError:
                     self.transition(record, "BLOCKED", "accepted")
                     raise
@@ -377,9 +481,9 @@ class Maintenance:
                 # Leave ACCEPTED durable; runner or local reconciliation may resolve it.
                 try:
                     self.launch(req["id"])
-                except (OSError, RuntimeError, ValueError, subprocess.SubprocessError):
-                    pass
-                return public(record)
+                except (OSError, RuntimeError, ValueError, subprocess.SubprocessError) as exc:
+                    self.transition(record, "ACCEPTED", "accepted", failure("accepted", exc))
+                return self.public_status(record)
         except PermissionError:
             raise PermissionError("DENIED") from None
         except (OSError, ValueError, KeyError, TypeError, RuntimeError, subprocess.SubprocessError):
@@ -433,47 +537,61 @@ class Maintenance:
 
     def preflight(self, record):
         req = record["request"]
-        if not self.enabled() or receipt(self.venv) != record["previous"]:
-            raise PermissionError("Maintenance admission changed")
-        # Only the exact running, linked, disabled non-fixture instance.
-        self.lifecycle("status")
-        self.idle_jobs()
-        head, branch = self.checkout()
-        if os.path.lexists(self.venv.parent / ".venv-install.guard/active.json"):
-            raise RuntimeError("Unresolved install")
-        profile = read_json(self.root / "service/runtime.json", 65536)
-        if profile.get("image", "invalid") is not None or "podman_context" in profile:
-            raise ValueError("Fixture profile")
+        with diagnostic_step("admission"):
+            if not self.enabled() or receipt(self.venv) != record["previous"]:
+                raise PermissionError("Maintenance admission changed")
+            # Only the exact running, linked, disabled non-fixture instance.
+        with diagnostic_step("lifecycle"):
+            # Same conservative boundary as lifecycle; report the cause without a path.
+            if any(os.path.lexists(path / ".git") for path in (self.root, *self.root.parents)):
+                raise DiagnosticFailure({"step": "lifecycle", "code": "INSTANCE_INSIDE_GIT", "exit_code": None})
+            self.lifecycle("status")
+        with diagnostic_step("idle_jobs"):
+            self.idle_jobs()
+        with diagnostic_step("checkout"):
+            head, branch = self.checkout()
+        with diagnostic_step("install_guard"):
+            if os.path.lexists(self.venv.parent / ".venv-install.guard/active.json"):
+                raise RuntimeError("Unresolved install")
+        with diagnostic_step("runtime_profile"):
+            profile = read_json(self.root / "service/runtime.json", 65536)
+            if profile.get("image", "invalid") is not None or "podman_context" in profile:
+                raise ValueError("Fixture profile")
         target = req["target_sha"]
         if req["action"] == "update":
             approved_main(req)
-            git(self.kit, "fetch", "--no-tags", "--no-recurse-submodules", ORIGIN, "refs/heads/main")
-            if git(self.kit, "rev-parse", "FETCH_HEAD") != target:
-                raise ValueError("Main moved")
-            git(self.kit, "merge-base", "--is-ancestor", head, target)
-            git(self.kit, "merge-base", "--is-ancestor", req["expected_sha"], target)
-            if os.path.lexists(self.venv.parent / ".venv-install.rollback"):
-                tx = self.rollback_tx()
-                if tx["sha"] == target:
-                    raise ValueError("Retained transaction for target; reconcile locally")
+            with diagnostic_step("git_fetch"):
+                git(self.kit, "fetch", "--no-tags", "--no-recurse-submodules", ORIGIN, "refs/heads/main")
+                if git(self.kit, "rev-parse", "FETCH_HEAD") != target:
+                    raise ValueError("Main moved")
+            with diagnostic_step("git_ancestry"):
+                git(self.kit, "merge-base", "--is-ancestor", head, target)
+                git(self.kit, "merge-base", "--is-ancestor", req["expected_sha"], target)
+            with diagnostic_step("rollback_identity"):
+                if os.path.lexists(self.venv.parent / ".venv-install.rollback"):
+                    tx = self.rollback_tx()
+                    if tx["sha"] == target:
+                        raise ValueError("Retained transaction for target; reconcile locally")
         else:
             # Do not fetch or choose an arbitrary historical revision. The
             # existing transaction identifies the only eligible predecessor.
-            tx = self.rollback_tx()
-            if (head != req["expected_sha"] or tx["sha"] != head or tx["phase"] != "installed"
-                    or tx["root"] != str(self.root) or tx["wheel"] != record["previous"]["wheel_sha256"]
-                    or tx["prior"]["eligible"] is not True
-                    or tx["prior"]["reviewed"] != {"sha": target, "wheel_sha256": req["wheel_sha256"]}):
-                raise ValueError("Rollback identity mismatch")
-            # A rollback that removes the remote maintenance API needs local
-            # recovery instead; don't strand the operator without status.
-            git(self.kit, "cat-file", "-e", target + ":local-bridge/src/project_os_bridge/maintenance.py")
-        flags = [name for name in FLAGS if os.path.lexists(self.state / name)]
-        for name in flags:
-            if private_bytes(self.state / name, 0) != b"":
-                raise ValueError("Invalid opt-in")
-        if FLAGS[0] not in flags or not self.enabled() or self.checkout() != (head, branch):
-            raise PermissionError("Maintenance admission changed")
+            with diagnostic_step("rollback_identity"):
+                tx = self.rollback_tx()
+                if (head != req["expected_sha"] or tx["sha"] != head or tx["phase"] != "installed"
+                        or tx["root"] != str(self.root) or tx["wheel"] != record["previous"]["wheel_sha256"]
+                        or tx["prior"]["eligible"] is not True
+                        or tx["prior"]["reviewed"] != {"sha": target, "wheel_sha256": req["wheel_sha256"]}):
+                    raise ValueError("Rollback identity mismatch")
+                # A rollback that removes the remote maintenance API needs local
+                # recovery instead; don't strand the operator without status.
+                git(self.kit, "cat-file", "-e", target + ":local-bridge/src/project_os_bridge/maintenance.py")
+        with diagnostic_step("opt_ins"):
+            flags = [name for name in FLAGS if os.path.lexists(self.state / name)]
+            for name in flags:
+                if private_bytes(self.state / name, 0) != b"":
+                    raise ValueError("Invalid opt-in")
+            if FLAGS[0] not in flags or not self.enabled() or self.checkout() != (head, branch):
+                raise PermissionError("Maintenance admission changed")
         record["flags"] = flags
         return head, branch
 
@@ -541,9 +659,10 @@ class Maintenance:
         mutated = False
         try:
             head, branch = self.preflight(record)
-            self.idle_jobs()
-            if not self.enabled() or receipt(self.venv) != record["previous"]:
-                raise PermissionError("Maintenance admission changed")
+            with diagnostic_step("final_admission"):
+                self.idle_jobs()
+                if not self.enabled() or receipt(self.venv) != record["previous"]:
+                    raise PermissionError("Maintenance admission changed")
             with self.locked():
                 self.transition(record, "RUNNING", "quiescing")
             mutated = True
@@ -606,16 +725,20 @@ class Maintenance:
             sync_dir(self.state)
             with self.locked():
                 self.transition(record, "SUCCEEDED", "complete")
-        except Exception:
+        except Exception as exc:
+            diagnostic = failure(record["stage"], exc)
+            LOG.warning("maintenance_failure step=%s code=%s exit_code=%s",
+                        diagnostic["step"], diagnostic["code"], diagnostic["exit_code"])
             # No guessing at a partial mutation, no second install or restart.
             # Existing coordinator/rollback evidence remains intact for local recovery.
             with self.locked():
-                self.transition(record, "LOCAL_RECOVERY_REQUIRED" if mutated else "BLOCKED", record["stage"])
+                self.transition(record, "LOCAL_RECOVERY_REQUIRED" if mutated else "BLOCKED", record["stage"], diagnostic)
             return False
         return True
 
 
 def main():
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--run", nargs=3, required=True)
     args = parser.parse_args()
@@ -629,7 +752,7 @@ def main():
         service = Maintenance(Path(root), Path(kit))
         if not service.run(ident):
             raise SystemExit(1)
-    except (OSError, ValueError, RuntimeError, TypeError, KeyError, subprocess.SubprocessError):
+    except Exception:
         raise SystemExit("MAINTENANCE_BLOCKED_OR_UNCONFIRMED") from None
 
 

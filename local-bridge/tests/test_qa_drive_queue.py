@@ -47,6 +47,23 @@ class DriveQueueTests(unittest.TestCase):
         self.assertEqual(submit(self.jobs, "owner", "job", self.target), "FAILED")
         self.assertEqual(submit(self.jobs, "owner", "job", self.target, reconcile_only=True), "QUEUED")
 
+    def test_durable_delivery_failure_code_is_allowlisted(self):
+        from project_os_bridge.drive_delivery import DriveDeliveryError
+        delivery = Mock()
+        delivery.run_queued.side_effect = DriveDeliveryError("DRIVE_HTTP_403")
+        submit(self.jobs, "owner", "job", self.target)
+        process_one(self.jobs, delivery, enabled=lambda: True)
+        with self.jobs.transaction() as c:
+            result = json.loads(c.execute("SELECT result FROM jobs WHERE id='job'").fetchone()[0])
+        self.assertEqual(result["qa_delivery_request"]["error_code"], "DRIVE_HTTP_403")
+        submit(self.jobs, "owner", "job", self.target, reconcile_only=True)
+        delivery.run_queued.side_effect = RuntimeError("PRIVATE_TOKEN_DO_NOT_DISCLOSE")
+        process_one(self.jobs, delivery, enabled=lambda: True)
+        with self.jobs.transaction() as c:
+            result = json.loads(c.execute("SELECT result FROM jobs WHERE id='job'").fetchone()[0])
+        self.assertEqual(result["qa_delivery_request"]["error_code"], "QA_DELIVERY_FAILED")
+        self.assertNotIn("PRIVATE_TOKEN_DO_NOT_DISCLOSE", json.dumps(result))
+
     def test_recovery_preserves_interruption(self):
         submit(self.jobs, "owner", "job", self.target)
         with self.jobs.transaction() as c:
