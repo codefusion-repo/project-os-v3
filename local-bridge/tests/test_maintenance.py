@@ -134,6 +134,32 @@ class MaintenanceTests(unittest.TestCase):
         self.assertFalse(self.service.enabled())
         self.launch.assert_not_called()
 
+    def test_enrolled_workspace_does_not_disable_maintenance(self):
+        for name in ("workspace-grants.json", "workspace-execution.json"):
+            m.save(self.service.state / name, {"demo": {"fixture": True}})
+        self.assertTrue(self.service.enabled())
+        self.assertEqual(self.submit()["state"], "ACCEPTED")
+        (self.service.state / m.FLAG).unlink()
+        self.assertFalse(self.service.enabled())
+
+    def test_pending_qa_signature_blocks_maintenance(self):
+        db = self.service.state / "jobs.sqlite3"
+        db.touch(mode=0o600)
+        with sqlite3.connect(db) as conn:
+            conn.executescript("CREATE TABLE jobs(id TEXT, workflow TEXT, state TEXT, result TEXT);"
+                               "CREATE TABLE workspace_inputs(job_id TEXT, request TEXT);"
+                               "CREATE TABLE fixture_effects(resolved_at TEXT);")
+            conn.execute("INSERT INTO jobs VALUES('job','workspace_execute','SUCCEEDED','{}')")
+            conn.execute("INSERT INTO workspace_inputs VALUES('job',?)",
+                         (json.dumps({"qa_signer_sha256": "a" * 64}),))
+        before = db.read_bytes()
+        with self.assertRaisesRegex(RuntimeError, "Pending QA finalization"):
+            self.service.idle_jobs()
+        self.assertEqual(db.read_bytes(), before)
+        with sqlite3.connect(db) as conn:
+            conn.execute("UPDATE jobs SET result=?", (json.dumps({"qa_finalization": {"state": "SUCCEEDED"}}),))
+        self.service.idle_jobs()
+
     def test_jobs_preflight_no_mutation(self):
         db = self.service.state / "jobs.sqlite3"
         db.touch(mode=0o600)
@@ -177,6 +203,11 @@ class MaintenanceTests(unittest.TestCase):
             head = OLD
         events = []
         service = self.service
+        bindings = {}
+        for name in ("workspace-grants.json", "workspace-execution.json"):
+            path = service.state / name
+            m.save(path, {"demo": {"fixture": True}})
+            bindings[path] = (path.read_bytes(), path.stat().st_ino, path.stat().st_mode)
         flags = [m.FLAGS[0], m.FLAGS[2]]
         head_now = [head]
 
@@ -232,6 +263,8 @@ class MaintenanceTests(unittest.TestCase):
         # Reconstruct a fresh object to simulate the service's new process.
         fresh = m.Maintenance(self.root, self.kit)
         status = fresh.status("request-1")
+        for path, expected in bindings.items():
+            self.assertEqual((path.read_bytes(), path.stat().st_ino, path.stat().st_mode), expected)
         if revoke:
             self.assertFalse(ok)
             self.assertEqual(status["state"], "BLOCKED")

@@ -792,6 +792,24 @@ class UpgradeTests(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             upgrade.check_jobs(self.kit)
 
+    def test_pending_qa_finalization_blocks_fenced_coordinator(self):
+        db = self.kit / "jobs.sqlite3"
+        db.touch(mode=0o600)
+        with sqlite3.connect(db) as conn:
+            conn.executescript("CREATE TABLE jobs(id TEXT, workflow TEXT, state TEXT, result TEXT);"
+                               "CREATE TABLE workspace_inputs(job_id TEXT, request TEXT);"
+                               "CREATE TABLE fixture_effects(resolved_at TEXT);")
+            conn.execute("INSERT INTO jobs VALUES('job','workspace_execute','SUCCEEDED','{}')")
+            conn.execute("INSERT INTO workspace_inputs VALUES('job',?)",
+                         (json.dumps({"qa_signer_sha256": "a" * 64}),))
+        before = db.read_bytes()
+        with self.assertRaisesRegex(RuntimeError, "Pending QA finalization"):
+            upgrade.check_jobs(self.kit)
+        self.assertEqual(db.read_bytes(), before)
+        with sqlite3.connect(db) as conn:
+            conn.execute("UPDATE jobs SET result=?", (json.dumps({"qa_finalization": {"state": "FAILED"}}),))
+        upgrade.check_jobs(self.kit)
+
     def test_lock_contention(self):
         path = self.kit / "maintenance.lock"
         with upgrade.lock(path):
