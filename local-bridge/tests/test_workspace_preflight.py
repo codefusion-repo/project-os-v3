@@ -867,7 +867,7 @@ class WorkspacePreflightTests(unittest.TestCase):
         tools = self.root / "tools"
         tools.mkdir(mode=0o700)
         npm = tools / "npm"
-        npm.write_text("#!/bin/sh\\ncase \"$1\" in\\nci) exit 0;;\\nrun) test \"$2\" = test && printf success > result.txt;;\\n*) exit 9;;\\nesac\\n")
+        npm.write_text("#!/bin/sh\ncase \"$1\" in\nci) exit 0;;\nrun) test \"$2\" = test && printf success > result.txt;;\n*) exit 9;;\nesac\n")
         npm.chmod(0o700)
         jobs = self.workspace_queue()
         policy = Policy([*jobs.policy.grants, ("operator", "workspace_execute", "demo")])
@@ -888,7 +888,7 @@ class WorkspacePreflightTests(unittest.TestCase):
         self.assertEqual(self.git("status", "--porcelain"), before)
         self.assertEqual(submit_workspace(jobs, "operator", "demo", self.sha,
                                           "expo-test", "direct", backend=backend), job)
-        npm.write_text("#!/bin/sh\\nif test \"$1\" = ci; then printf changed > package-lock.json; fi\\n")
+        npm.write_text("#!/bin/sh\nif test \"$1\" = ci; then printf changed > package-lock.json; fi\n")
         npm.chmod(0o700)
         job = submit_workspace(jobs, "operator", "demo", self.sha, "expo-test", "changed", backend=backend)
         run_pending(jobs, workspace_backend=backend)
