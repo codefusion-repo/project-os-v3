@@ -12,7 +12,7 @@ from .core import Policy
 from .methodology import SHA
 from .workspace_preflight import (_binding, binding_digest, materialize_workspace,
                                   prepare_workspace, normalize_changes, describe_changes, read_workspace_context)
-from .workspace_profiles import PROFILES, profile_for, execution_route, QA_PROFILES, artifact_identity
+from .workspace_profiles import PROFILES, profile_for, execution_route, QA_PROFILES, artifact_identity, CODEX_PROFILE
 from .workos_auth import private_directory, private_file
 
 MARKER = "local-workspace-mode"
@@ -22,7 +22,7 @@ RUNTIME = "workspace-runtime.json"
 SUPERVISED_GRANTS = "workspace-grants.json"
 SUPERVISED_EXECUTION = "workspace-execution.json"
 PREPARATION_OPS = frozenset({"workspace_prepare", "workspace_materialize",
-                             "workspace_change", "workspace_context", "workspace_dirty_context", *PROFILES})
+                             "workspace_change", "workspace_context", "workspace_dirty_context", *PROFILES, CODEX_PROFILE})
 WORKSPACE_OPS = PREPARATION_OPS | {"workspace_execute", "workspace_delivery"}
 
 
@@ -51,7 +51,7 @@ class SupervisedWorkspacePolicy(Policy):
                 ops = initial & current.get(alias, frozenset())
                 if {"workspace_prepare", "workspace_materialize", "workspace_execute"} <= ops:
                     if any(execution_route(profile, alias) in self.backend.routes
-                           for profile in PROFILES if profile in ops):
+                           for profile in (*PROFILES, CODEX_PROFILE) if profile in ops):
                         return True
             return False
         except (OSError, ValueError, TypeError):
@@ -129,7 +129,7 @@ def load_supervised_workspace_backend(policy):
         raise ValueError("Invalid workspace execution bindings")
     toolchains, plans, signers = {}, {}, {}
     for project, profiles in data.items():
-        if not isinstance(profiles, dict) or not profiles or not set(profiles) <= set(PROFILES):
+        if not isinstance(profiles, dict) or not profiles or not set(profiles) <= {*PROFILES, CODEX_PROFILE}:
             raise ValueError("Invalid workspace execution profiles")
         for profile, entry in profiles.items():
             fields = {"toolchain"} | ({"qa", "qa_signing"} if profile in QA_PROFILES else set())
@@ -180,6 +180,8 @@ def authorize_request(policy, principal, request, *, execute=False):
             fields.add("qa_plan_sha256")
             if "qa_signer_sha256" in request or type(policy) is SupervisedWorkspacePolicy:
                 fields.add("qa_signer_sha256")
+    if isinstance(request, dict) and "codex_task" in request:
+        fields.add("codex_task")
     if isinstance(request, dict) and "changes" in request:
         fields.add("changes")
     if isinstance(request, dict) and "delivery_target" in request:
@@ -187,13 +189,21 @@ def authorize_request(policy, principal, request, *, execute=False):
     if (not isinstance(request, dict)
             or set(request) != fields
             or any(not isinstance(value, str) for key, value in request.items()
-                   if key not in {"changes", "delivery_target"})
+                   if key not in {"changes", "delivery_target", "codex_task"})
             or not PROJECT.fullmatch(request["project"])
             or not SHA.fullmatch(request["expected_sha"])
             or not re.fullmatch(r"[0-9a-f]{64}", request["binding"])):
         raise ValueError("INVALID_WORKSPACE_REQUEST")
     profile_for(request["profile"])
     project = request["project"]
+    if request["profile"] == CODEX_PROFILE:
+        from .codex_provider import validate_task
+        if (not execute or type(policy) is not SupervisedWorkspacePolicy
+                or "codex_task" not in request or "changes" in request or "delivery_target" in request):
+            raise ValueError("INVALID_CODEX_TASK")
+        validate_task(request["codex_task"])
+    elif "codex_task" in request:
+        raise ValueError("INVALID_CODEX_TASK")
     if "delivery_target" in request:
         target = request["delivery_target"]
         if (not execute or type(policy) is not SupervisedWorkspacePolicy
@@ -227,7 +237,9 @@ def authorize_request(policy, principal, request, *, execute=False):
         policy.require(principal, op, project)
 
 
-def submit_workspace(jobs, principal, project, expected_sha, profile, request_key, *, authorize=lambda: None, backend=None, changes=None, delivery_target=None):
+def submit_workspace(jobs, principal, project, expected_sha, profile, request_key, *, authorize=lambda: None, backend=None, changes=None, delivery_target=None, codex_task=None):
+    if (profile == CODEX_PROFILE) != (codex_task is not None):
+        raise ValueError("INVALID_CODEX_TASK")
     runtime = local_runtime(jobs.probe.root, jobs.policy)
     jobs.policy.require(principal, "submit", workspace_resource(jobs.policy))
     jobs.policy.require(principal, "workspace_materialize", project)
@@ -247,6 +259,8 @@ def submit_workspace(jobs, principal, project, expected_sha, profile, request_ke
     _, entry, root = _binding(*args)
     request = {"project": project, "profile": profile, "expected_sha": expected_sha,
                "binding": binding_digest(entry, root)}
+    if codex_task is not None:
+        request["codex_task"] = codex_task
     if changes is not None:
         jobs.policy.require(principal, "workspace_change", project)
         request["changes"] = normalize_changes(changes)
@@ -377,6 +391,26 @@ def run_workspace(jobs, row, *, executor=None):
         authorize_request(jobs.policy, row["principal"], request, execute=execute)
         if execute and executor is None:
             return "BLOCKED", {**result, "reason": "EXECUTION_BACKEND_UNAVAILABLE"}
+        if request["profile"] == CODEX_PROFILE:
+            from .codex_provider import require_clean_checkout
+            args = (runtime, jobs.policy, row["principal"], request["project"],
+                    request["expected_sha"], request["profile"])
+            snapshot = prepare_workspace(*args)
+            _, entry, root = _binding(*args)
+            if binding_digest(entry, root) != request["binding"]:
+                raise PermissionError("WORKSPACE_BINDING_CHANGED")
+            require_clean_checkout(root, request["expected_sha"], request["codex_task"]["branch"])
+            authorize_request(jobs.policy, row["principal"], request, execute=True)
+            dispatched = True
+            execution = executor(root, row, snapshot)
+            verified = (execution.get("cleanup_verified") is True
+                        and execution.get("execution_id") == request["execution_id"])
+            state = ("SUCCEEDED" if verified and execution.get("exit_code") == 0
+                     and execution.get("executor") == "codex" else "BLOCKED")
+            return state, {**result, **snapshot, "operation": "codex",
+                           "execution_available": execution.get("started") is True,
+                           "issue": request["codex_task"]["issue"], "pr": request["codex_task"]["pr"],
+                           "reason": execution.get("reason"), "execution": execution}
         snapshot = materialize_workspace(runtime, jobs.policy, row["principal"], request["project"],
                                          request["expected_sha"], request["profile"],
                                          jobs.probe.root, row["id"], expected_binding=request["binding"], changes=request.get("changes"))
