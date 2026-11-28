@@ -21,3 +21,20 @@ class ValidationTests(unittest.TestCase):
                 validate_fixture(repo,"other",revision)
             new=repo.replace("local",revision," ")
             self.assertEqual(validate_fixture(repo,"local",new["revision"])["status"],"FAILED")
+
+
+    def test_direct_command_stops_on_revocation(self):
+        import sys
+        import time
+        from project_os_bridge.execution import _command
+        with tempfile.TemporaryDirectory() as folder:
+            calls = []
+            def enabled():
+                calls.append(True)
+                return len(calls) <= 2
+            code, clean = _command((sys.executable, "-c", "import time; time.sleep(60)"),
+                                   Path(folder), {"PATH": "/usr/bin:/bin"},
+                                   time.monotonic() + 10, enabled=enabled)
+            self.assertEqual(code, 130)
+            self.assertTrue(clean)
+            self.assertGreaterEqual(len(calls), 3)

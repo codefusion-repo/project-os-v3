@@ -61,8 +61,22 @@ def run_pending(jobs: Jobs, *, enabled=lambda: True, workspace_backend=None):
                     result = jobs.probe.read()
                     state = "SUCCEEDED"
                 elif row["workflow"] in {"workspace_prepare", "workspace_execute"}:
-                    from .workspace_jobs import run_workspace
-                    executor = workspace_backend.execute if workspace_backend is not None else None
+                    from .workspace_jobs import run_workspace, authorize_request
+
+                    def execution_enabled():
+                        try:
+                            if not enabled():
+                                return False
+                            authorize_request(jobs.policy, row["principal"], row["workspace"], execute=True)
+                            return True
+                        except (OSError, ValueError, TypeError):
+                            return False
+
+                    executor = None
+                    if workspace_backend is not None:
+                        def executor(workspace, claimed, snapshot):
+                            return workspace_backend.execute(workspace, claimed, snapshot,
+                                                             enabled=execution_enabled)
                     state, result = run_workspace(jobs, row, executor=executor)
                     if row.get("effect_context") is not None:
                         fixture_absent = result.get("execution", {}).get("cleanup_verified") is True

@@ -1,4 +1,4 @@
-"""Closed, internal profile descriptors; no runtime backend is enabled."""
+"""Closed registered profile descriptors for direct local execution."""
 import re
 import os
 import hashlib
@@ -26,7 +26,7 @@ PROFILES = MappingProxyType({
         ("flutter", "build", "apk", "--debug", "--no-pub"), "apk"),
     "expo-typecheck": Profile(EXPO, ("npm", "run", "typecheck")),
     "expo-test": Profile(EXPO, ("npm", "run", "test")),
-    # Native generation and Gradle/toolchain setup belong to the future backend.
+    # Native generation and Gradle/toolchain setup use installed local tools.
     # APK build command runs from the generated android/ directory, never ADB.
     # Managed Expo projects need not have an android/ directory in Git.
     "expo-apk-debug": Profile(EXPO, ("./gradlew", "--offline", ":app:assembleDebug"), "apk"),

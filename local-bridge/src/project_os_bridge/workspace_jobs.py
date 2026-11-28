@@ -340,6 +340,7 @@ def run_workspace(jobs, row, *, executor=None):
     request = row["workspace"]
     result = {"operation": "prepare", "profile": request["profile"],
               "head": request["expected_sha"], "execution_available": False}
+    dispatched = False
     try:
         runtime = local_runtime(jobs.probe.root, jobs.policy)
         execute = row["workflow"] == "workspace_execute"
@@ -357,18 +358,25 @@ def run_workspace(jobs, row, *, executor=None):
                                   request["expected_sha"], request["profile"])
         if binding_digest(entry, root) != request["binding"]:
             raise PermissionError("WORKSPACE_BINDING_CHANGED")
-        # Only the registered backend (or the pre-existing disposable CI test executor).
+        # Only the registered direct backend.
+        dispatched = True
         execution = executor(jobs.probe.root / ("workspace-" + row["id"]), row, snapshot)
         if "context_id" in request and (execution.get("cleanup_verified") is not True
                 or execution.get("execution_id") != request.get("execution_id")):
             return "BLOCKED", {**result, **snapshot, "operation": "execute",
-                               "reason": "CLEANUP_OR_EXECUTION_UNVERIFIED"}
+                               "reason": "CLEANUP_OR_EXECUTION_UNVERIFIED", "execution": execution}
         if type(execution.get("exit_code")) is not int:
             raise ValueError("EXECUTION_EVIDENCE_INVALID")
         return ("SUCCEEDED" if execution["exit_code"] == 0 else "FAILED",
                 {**result, **snapshot, "operation": "execute", "execution_available": True,
                  "reason": None, "execution": execution})
     except (PermissionError, ValueError, FileExistsError, FileNotFoundError):
+        if not dispatched and row.get("effect_context") is not None:
+            result["execution"] = {"cleanup_verified": True, "execution_id": request["execution_id"],
+                                   "started": False}
         return "BLOCKED", {**result, "reason": "WORKSPACE_PREFLIGHT_BLOCKED"}
     except (OSError, RuntimeError):
+        if not dispatched and row.get("effect_context") is not None:
+            result["execution"] = {"cleanup_verified": True, "execution_id": request["execution_id"],
+                                   "started": False}
         return "FAILED", {**result, "reason": "WORKSPACE_PREPARATION_FAILED"}

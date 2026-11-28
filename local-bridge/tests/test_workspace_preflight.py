@@ -504,7 +504,7 @@ class WorkspacePreflightTests(unittest.TestCase):
         backend = WorkspaceWSL({"demo:flutter-apk-debug": {"PATH": "/usr/bin:/bin"}})
         first = submit_workspace(jobs, "operator", "demo", self.sha, "flutter-apk-debug", "apk", backend=backend)
         second = submit_workspace(jobs, "operator", "demo", self.sha, "flutter-apk-debug", "empty", backend=backend)
-        def command(argv, cwd, env, deadline):
+        def command(argv, cwd, env, deadline, *, enabled):
             if argv[1] == "build":
                 path = cwd / "build/app/outputs/flutter-apk/app-debug.apk"
                 path.parent.mkdir(parents=True)
@@ -549,7 +549,7 @@ class WorkspacePreflightTests(unittest.TestCase):
             WorkspaceWSL(toolchain)
         backend = WorkspaceWSL(toolchain, qa_plans={route: {"public_env": {"EXPO_PUBLIC_QA": "true"}}})
         job = submit_workspace(jobs, "operator", "demo", self.sha, "expo-apk-qa", "qa", backend=backend)
-        def command(argv, cwd, env, deadline):
+        def command(argv, cwd, env, deadline, *, enabled):
             self.assertEqual(env["EXPO_PUBLIC_QA"], "true")
             if ":app:assembleRelease" in argv:
                 path = cwd / "app/build/outputs/apk/release/app-release.apk"
@@ -582,7 +582,7 @@ class WorkspacePreflightTests(unittest.TestCase):
         backend = WorkspaceWSL({route: {"PATH": "/usr/bin:/bin"}}, qa_plans={route: {}})
         def build(key):
             job = submit_workspace(jobs, "operator", "demo", self.sha, "expo-apk-qa", key, backend=backend)
-            def command(argv, cwd, env, deadline):
+            def command(argv, cwd, env, deadline, *, enabled):
                 if ":app:assembleRelease" in argv:
                     path = cwd / "app/build/outputs/apk/release/app-release.apk"
                     path.parent.mkdir(parents=True)
@@ -681,7 +681,7 @@ class WorkspacePreflightTests(unittest.TestCase):
         backend = WorkspaceWSL({route: {"PATH": "/usr/bin:/bin"}}, qa_plans={route: {}},
                                qa_signers={route: signer})
         job = submit_workspace(jobs, "operator", "demo", self.sha, "expo-apk-qa", "auto-qa", backend=backend)
-        def command(argv, cwd, env, deadline):
+        def command(argv, cwd, env, deadline, *, enabled):
             if ":app:assembleRelease" in argv:
                 path = cwd / "app/build/outputs/apk/release/app-release.apk"
                 path.parent.mkdir(parents=True)

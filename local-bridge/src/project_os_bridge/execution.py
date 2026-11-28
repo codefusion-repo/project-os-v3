@@ -62,7 +62,9 @@ def _group_exists(pid):
         return False
 
 
-def _command(argv, cwd, env, deadline):
+def _command(argv, cwd, env, deadline, *, enabled=lambda: True):
+    if not enabled():
+        return 130, True
     remaining = deadline - time.monotonic()
     if remaining <= 0:
         return 124, True
@@ -74,13 +76,19 @@ def _command(argv, cwd, env, deadline):
                                stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                                stderr=subprocess.DEVNULL, start_new_session=True,
                                umask=0o077)
-    timed_out = False
-    try:
-        code = process.wait(timeout=remaining)
-    except subprocess.TimeoutExpired:
-        timed_out = True
-        code = 124
-    if timed_out or _group_exists(process.pid):
+    stopped = False
+    while True:
+        remaining = deadline - time.monotonic()
+        if not enabled() or remaining <= 0:
+            stopped = True
+            code = 124 if remaining <= 0 else 130
+            break
+        try:
+            code = process.wait(timeout=min(remaining, 0.5))
+            break
+        except subprocess.TimeoutExpired:
+            continue
+    if stopped or _group_exists(process.pid):
         # Only signal the process group launched for this command.
         try:
             os.killpg(process.pid, signal.SIGTERM)
@@ -100,7 +108,7 @@ def _command(argv, cwd, env, deadline):
         except subprocess.TimeoutExpired:
             return 124, False
         # A command leaving children behind is not a successful build.
-        if not timed_out and code == 0:
+        if not stopped and code == 0:
             code = 125
     return code, not _group_exists(process.pid)
 
@@ -179,7 +187,7 @@ class WorkspaceWSL:
         plan = self.qa_plans.get(self.route(profile, project))
         return plan.digest() if plan is not None else None
 
-    def execute(self, workspace, row, snapshot):
+    def execute(self, workspace, row, snapshot, *, enabled=lambda: True):
         request = row["workspace"]
         profile = request["profile"]
         key = self.route(profile, request["project"])
@@ -227,7 +235,7 @@ class WorkspaceWSL:
             if not cwd.is_dir():
                 return {**result, "exit_code": 125, "reason": "PROFILE_LAYOUT_UNAVAILABLE"}
             try:
-                code, clean = _command(command, cwd, env, deadline)
+                code, clean = _command(command, cwd, env, deadline, enabled=enabled)
             except OSError:
                 return {**result, "cleanup_verified": False, "reason": "EXECUTION_UNCERTAIN"}
             if not clean:
@@ -239,7 +247,9 @@ class WorkspaceWSL:
             if not unchanged:
                 return {**result, "exit_code": 125, "reason": "LOCKFILE_CHANGED"}
             if code != 0:
-                return {**result, "exit_code": code}
+                return {**result, "exit_code": code, **({"reason": "EXECUTION_STOPPED"} if code == 130 else {})}
+        if not enabled():
+            return {**result, "exit_code": 130, "reason": "EXECUTION_STOPPED"}
         result["exit_code"] = 0
         if descriptor.artifact_kind == "apk":
             source = (plan.output if plan is not None else

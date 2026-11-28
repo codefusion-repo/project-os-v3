@@ -106,7 +106,7 @@ def main():
                 data = apk(version)
                 job = submit_workspace(jobs, "operator", "demo", fixture.sha,
                                        "expo-apk-qa", "signing-" + str(version), backend=backend)
-                def build_command(argv, cwd, env, deadline):
+                def build_command(argv, cwd, env, deadline, *, enabled):
                     if ":app:assembleRelease" in argv:
                         path = cwd / "app/build/outputs/apk/release/app-release.apk"
                         path.parent.mkdir(parents=True)
