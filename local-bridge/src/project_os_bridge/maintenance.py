@@ -358,7 +358,7 @@ class Maintenance:
             return (all(private_bytes(self.state / name, 0) == b""
                         for name in (FLAG, FLAGS[0]))
                     and not any(os.path.lexists(self.state / name)
-                                for name in ("fixture-image", "local-fixture-mode", "workspace-grants.json", "workspace-execution.json")))
+                                for name in ("fixture-image", "local-fixture-mode")))
         except (OSError, ValueError):
             return False
 
@@ -542,6 +542,14 @@ class Maintenance:
                 raise RuntimeError("Pending jobs")
             if conn.execute("SELECT 1 FROM jobs WHERE json_extract(result,'$.qa_delivery_request.state') IN ('QUEUED','RUNNING') LIMIT 1").fetchone():
                 raise RuntimeError("Pending QA delivery")
+            # A successful build can still be awaiting signature finalization.
+            # Historical or non-QA jobs without a frozen signer are unaffected.
+            if conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='workspace_inputs'").fetchone():
+                if conn.execute("SELECT 1 FROM jobs JOIN workspace_inputs ON jobs.id=workspace_inputs.job_id "
+                                "WHERE jobs.workflow='workspace_execute' AND jobs.state='SUCCEEDED' "
+                                "AND json_extract(workspace_inputs.request,'$.qa_signer_sha256') IS NOT NULL "
+                                "AND json_extract(jobs.result,'$.qa_finalization') IS NULL LIMIT 1").fetchone():
+                    raise RuntimeError("Pending QA finalization")
             if conn.execute("SELECT 1 FROM fixture_effects WHERE resolved_at IS NULL LIMIT 1").fetchone():
                 raise RuntimeError("Unresolved effects")
 
