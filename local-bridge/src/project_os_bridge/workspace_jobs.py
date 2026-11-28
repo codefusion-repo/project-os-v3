@@ -240,7 +240,7 @@ def authorize_request(policy, principal, request, *, execute=False):
 def browser_route(jobs, principal, project, expected_sha, task, request_key, *, authorize):
     """Advisory route, not a lease across Browser/GitHub operations."""
     from .worker import exclusive_worker, WorkerBusy
-    from .codex_provider import require_clean_checkout, validate_task
+    from .codex_provider import require_checkout, validate_task
     validate_task(task)
     if not isinstance(request_key, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,80}", request_key):
         raise ValueError("INVALID_REQUEST_KEY")
@@ -260,7 +260,7 @@ def browser_route(jobs, principal, project, expected_sha, task, request_key, *, 
                 if conn.execute("SELECT 1 FROM jobs WHERE principal=? AND resource=? AND request_key=?",
                                 (principal, workspace_resource(jobs.policy), request_key)).fetchone():
                     return {**blocked, "reason": "EXISTING_REQUEST_RECONCILE"}
-                observed = require_clean_checkout(root, expected_sha, task["branch"])
+                observed = require_checkout(root, expected_sha, task["branch"])
                 current_entry, current_root = project_checkout(runtime, jobs.policy, principal, project, expected_sha)
                 if binding_digest(current_entry, current_root) != binding:
                     return {**blocked, "reason": "WORKSPACE_BINDING_CHANGED"}
@@ -428,14 +428,14 @@ def run_workspace(jobs, row, *, executor=None):
         if execute and executor is None:
             return "BLOCKED", {**result, "reason": "EXECUTION_BACKEND_UNAVAILABLE"}
         if request["profile"] == CODEX_PROFILE:
-            from .codex_provider import require_clean_checkout
+            from .codex_provider import require_checkout
             args = (runtime, jobs.policy, row["principal"], request["project"],
                     request["expected_sha"], request["profile"])
             snapshot = prepare_workspace(*args)
             _, entry, root = _binding(*args)
             if binding_digest(entry, root) != request["binding"]:
                 raise PermissionError("WORKSPACE_BINDING_CHANGED")
-            require_clean_checkout(root, request["expected_sha"], request["codex_task"]["branch"])
+            require_checkout(root, request["expected_sha"], request["codex_task"]["branch"])
             authorize_request(jobs.policy, row["principal"], request, execute=True)
             dispatched = True
             execution = executor(root, row, snapshot)

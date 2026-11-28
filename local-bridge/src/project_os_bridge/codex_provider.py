@@ -27,16 +27,23 @@ MAX_STREAM = 32 * 1024 * 1024
 MAX_LINE = 2 * 1024 * 1024
 
 
+def valid_branch(branch):
+    return (isinstance(branch, str)
+            and re.fullmatch(r"work/[A-Za-z0-9][A-Za-z0-9._/-]{0,119}", branch) is not None
+            and ".." not in branch and "//" not in branch and not branch.endswith("/")
+            and all(not part.startswith(".") and not part.endswith((".", ".lock"))
+                    for part in branch.split("/")))
+
+
 def validate_task(task):
-    if (not isinstance(task, dict) or set(task) != {"mode", "issue", "pr", "branch", "prompt"}
+    if (not isinstance(task, dict) or set(task) not in ({"mode", "issue", "pr", "branch", "prompt"},
+                                 {"mode", "issue", "pr", "branch", "prompt", "target_branch"})
             or task["mode"] not in {"auto", "codex"}
             or type(task["issue"]) is not int or not 0 < task["issue"] <= 2147483647
             or (task["pr"] is not None and
                 (type(task["pr"]) is not int or not 0 < task["pr"] <= 2147483647))
-            or not isinstance(task["branch"], str)
-            or not re.fullmatch(r"work/[A-Za-z0-9][A-Za-z0-9._/-]{0,119}", task["branch"])
-            or ".." in task["branch"] or "//" in task["branch"]
-            or any(part.endswith((".", ".lock")) for part in task["branch"].split("/"))
+            or not valid_branch(task["branch"])
+            or ("target_branch" in task and not valid_branch(task["target_branch"]))
             or not isinstance(task["prompt"], str) or not task["prompt"].strip()
             or len(task["prompt"].encode("utf-8")) > 16384
             or any(ord(c) < 32 and c not in "\n\t" for c in task["prompt"])
@@ -76,17 +83,19 @@ def checkout_state(root):
         raise ValueError("CODEX_HEAD_UNAVAILABLE")
     status = git(root, "status", "--porcelain=v1", "-z", "--untracked-files=all")
     diff = git(root, "diff", "--no-ext-diff", "--no-textconv", "--binary", "HEAD", "--")
-    if len(status) > 1024 * 1024 or len(diff) > MAX_STREAM:
+    staged = git(root, "diff", "--cached", "--no-ext-diff", "--no-textconv", "--binary", "HEAD", "--")
+    if len(status) > 1024 * 1024 or len(diff) > MAX_STREAM or len(staged) > MAX_STREAM:
         raise ValueError("CODEX_EVIDENCE_LIMIT")
     return {"head": head, "branch": branch, "dirty": bool(status),
             "status_sha256": hashlib.sha256(status).hexdigest(),
-            "tracked_diff_sha256": hashlib.sha256(diff).hexdigest()}
+            "tracked_diff_sha256": hashlib.sha256(diff).hexdigest(),
+            "staged_diff_sha256": hashlib.sha256(staged).hexdigest()}
 
 
-def require_clean_checkout(root, expected_sha, branch):
+def require_checkout(root, expected_sha, branch):
     state = checkout_state(root)
-    if state["head"] != expected_sha or state["branch"] != branch or state["dirty"]:
-        raise ValueError("CODEX_CHECKOUT_CHANGED_OR_DIRTY")
+    if state["head"] != expected_sha or state["branch"] != branch:
+        raise ValueError("CODEX_CHECKOUT_CHANGED")
     return state
 
 
@@ -219,10 +228,13 @@ def execute_turn(executable, root, env, task, expected_sha, enabled):
     code = 125
     task_text = (
         "Project OS implementation task. Follow the repository AGENTS.md and its pinned "
-        "methodology. Work only in this existing checkout on branch " + task["branch"] +
+        "methodology. Work only in this existing checkout, entering on branch " + task["branch"] +
         " starting from " + expected_sha + ". GitHub issue #" + str(task["issue"]) +
         ("; PR #" + str(task["pr"]) if task["pr"] is not None else "") +
-        ". Preserve unrelated files, existing credentials, configuration and permissions. "
+        (". Prepare and finish on the explicitly authorized branch " + task["target_branch"]
+         if task.get("target_branch") else ". Stay on the entry branch") +
+        ". Perform your own identity, branch, HEAD and existing-changes preflight before editing. "
+        "Preserve preexisting changes and unrelated files, existing credentials, configuration and permissions. "
         "Do not create clones, worktrees, containers or installations. Never read or reveal "
         "secrets for reporting, never include private paths or raw logs in the final message. "
         "Do not push, merge, close issues, change settings or deploy unless the task "
@@ -276,7 +288,7 @@ def execute_turn(executable, root, env, task, expected_sha, enabled):
 
 def run_codex(root, env, request, *, enabled):
     task = validate_task(request["codex_task"])
-    before = require_clean_checkout(root, request["expected_sha"], task["branch"])
+    before = require_checkout(root, request["expected_sha"], task["branch"])
     result = {"execution_id": request["execution_id"], "execution_environment": "wsl-direct",
               "before": before, "started": False, "cleanup_verified": True}
     executable = shutil.which("codex", path=env["PATH"])
@@ -289,7 +301,7 @@ def run_codex(root, env, request, *, enabled):
     if not enabled():
         return {**result, "executor": "blocked", "reason": "CODEX_AUTHORIZATION_REVOKED"}
     try:
-        observed = require_clean_checkout(root, request["expected_sha"], task["branch"])
+        observed = require_checkout(root, request["expected_sha"], task["branch"])
         if observed != before:
             raise ValueError("CODEX_CHECKOUT_CHANGED")
     except (OSError, ValueError):
@@ -303,7 +315,7 @@ def run_codex(root, env, request, *, enabled):
     try:
         after = checkout_state(root)
         result["after"] = after
-        if after["branch"] != before["branch"]:
+        if after["branch"] != task.get("target_branch", before["branch"]):
             raise ValueError("CODEX_BRANCH_CHANGED")
         git(root, "merge-base", "--is-ancestor", before["head"], after["head"])
     except (OSError, ValueError):

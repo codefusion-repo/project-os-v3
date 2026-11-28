@@ -274,7 +274,8 @@ def build_server(verifier, jobs, fixture_reader=None, *, diagnostics=None, githu
             async def submit_codex_job(project: StrictStr, expected_sha: StrictStr,
                                        branch: StrictStr, issue: StrictInt, prompt: StrictStr,
                                        request_key: StrictStr, mode: StrictStr = "auto",
-                                       pr: StrictInt | None = None) -> dict:
+                                       pr: StrictInt | None = None,
+                                       target_branch: StrictStr | None = None) -> dict:
                 """Route an authorized implementation task to Codex on its existing checkout.
                 Browser mode does not queue anything. No caller executable, environment or shell."""
                 from .codex_provider import validate_task, MODES
@@ -288,7 +289,8 @@ def build_server(verifier, jobs, fixture_reader=None, *, diagnostics=None, githu
                     raise ValueError("INVALID_CODEX_ROUTE")
                 check()
                 task = validate_task({"mode": "codex" if mode == "browser" else mode,
-                                      "issue": issue, "pr": pr, "branch": branch, "prompt": prompt})
+                                      "issue": issue, "pr": pr, "branch": branch, "prompt": prompt,
+                                      **({"target_branch": target_branch} if target_branch is not None else {})})
                 from .workspace_jobs import browser_route
                 def submit():
                     check()

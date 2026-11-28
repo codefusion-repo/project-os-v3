@@ -1371,7 +1371,7 @@ class AuthTests(unittest.TestCase):
         # Synthetic CLI exercises the actual JSONL process boundary, not account access.
         executable = bin_dir / "codex"
         executable.write_text("#!" + sys.executable + "\n" + r'''
-import json, sys
+import json, sys, subprocess
 from pathlib import Path
 def emit(value):
     print(json.dumps(value), flush=True)
@@ -1383,8 +1383,13 @@ if sys.argv[1:] == ["app-server"]:
         elif data.get("method") == "account/rateLimits/read":
             emit({"id": data["id"], "result": {"ordinaryUsageAllowed": True}})
 elif sys.argv[1:] == ["--ask-for-approval", "never", "exec", "--json", "-"]:
-    assert "Fixture implementation" in sys.stdin.read()
-    Path("AGENTS.md").write_text("Fixture implementation complete\n")
+    prompt = sys.stdin.read()
+    assert "Fixture implementation" in prompt
+    if "work/authorized" in prompt:
+        subprocess.run(["git", "switch", "-c", "work/authorized"], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        Path("next.txt").write_text("next\n")
+    else:
+        Path("AGENTS.md").write_text("Fixture implementation complete\n")
     emit({"type": "item.completed", "item": {"type": "agent_message", "text": "Fixture changed."}})
     emit({"type": "turn.completed", "usage": {}})
 else:
@@ -1433,7 +1438,18 @@ else:
             self.assertEqual(git("rev-parse", "HEAD"), sha)
             self.assertEqual(payload("submit_codex_job", **args, mode="browser")["executor"], "blocked")
             self.assertEqual(payload("submit_codex_job", **{**args, "request_key": "dirty"},
-                                     mode="browser")["executor"], "blocked")
+                                     mode="browser")["executor"], "browser")
+            (repo / "untracked.txt").write_text("keep\n")
+            second = payload("submit_codex_job", **{**args, "request_key": "continuation"},
+                             target_branch="work/authorized")
+            run_pending(jobs, workspace_backend=backend, enabled=verifier.enabled)
+            continued = payload("get_job_evidence", job_id=second["job_id"])
+            self.assertEqual(continued["state"], "SUCCEEDED")
+            self.assertTrue(continued["result"]["execution"]["before"]["dirty"])
+            self.assertEqual(continued["result"]["execution"]["after"]["branch"], "work/authorized")
+            self.assertEqual((repo / "untracked.txt").read_text(), "keep\n")
+            self.assertEqual((repo / "AGENTS.md").read_text(), "Fixture implementation complete\n")
+            self.assertEqual(jobs.pending_effects(), [])
             grants.write_text(json.dumps({"demo": [op for op in ops if op != "codex-implement"]}))
             self.assertEqual(payload("submit_codex_job", **args)["executor"], "blocked")
 
