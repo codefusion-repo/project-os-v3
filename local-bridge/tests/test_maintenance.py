@@ -99,6 +99,23 @@ class MaintenanceTests(unittest.TestCase):
         self.assertFalse((self.service.venv.parent / ".venv-install.rollback").exists())
         self.assertFalse((self.service.venv.parent / ".venv-install.guard").exists())
 
+    def test_rate_limit_blocks_before_quiescence_with_durable_diagnostic(self):
+        result = self.submit()
+        m.save(self.root / "service/runtime.json", {"image": None})
+        with patch.object(self.service, "lifecycle") as lifecycle, \
+                patch.object(self.service, "idle_jobs"), \
+                patch.object(self.service, "checkout", return_value=(OLD, "main")), \
+                patch.object(self.service, "coordinator") as coordinator, \
+                patch.object(m, "gh_request", return_value={
+                    "complete": False, "error": "GH_RATE_LIMIT", "http_status": 403}) as request:
+            self.assertFalse(self.service.run(result["id"]))
+        lifecycle.assert_called_once_with("status")
+        request.assert_called_once()
+        coordinator.assert_not_called()
+        self.assertEqual(self.service.status("request-1")["diagnostic"],
+                         {"step": "github_run", "code": "GITHUB_RATE_LIMIT", "exit_code": 403})
+        self.assertEqual(m.receipt(self.service.venv), PREVIOUS)
+
     def test_default_deny_and_unsafe_marker(self):
         marker = self.service.state / m.FLAG
         marker.unlink()
@@ -354,6 +371,83 @@ def approval_evidence():
             {"total_count": 1, "artifacts": [artifact]}, {"object": {"sha": NEW}}]
 
 
+class TransportTests(unittest.TestCase):
+    def test_standalone_host_python_loads_shared_transport(self):
+        import sys
+        script = Path(m.__file__).resolve()
+        result = subprocess.run([sys.executable, "-I", "-B", str(script), "--help"],
+                                stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                stderr=subprocess.PIPE, timeout=15, check=False)
+        self.assertEqual(result.returncode, 0)
+        self.assertIn(b"--run", result.stdout)
+
+    def test_canonical_authenticated_get_and_no_anonymous_fallback(self):
+        config = Path("/fixture/gh")
+        with patch.object(m, "gh_request", return_value={"complete": True, "data": {"ok": True}}) as call:
+            self.assertEqual(m.api("/actions/runs/123", config), {"ok": True})
+            call.assert_called_once_with(config, "repos/" + m.REPO + "/actions/runs/123", strict=True)
+            for path in ("https://other.example", "/issues/1", "/actions/runs/123?other=1", "/../private"):
+                with self.assertRaises(ValueError):
+                    m.api(path, config)
+            call.assert_called_once()
+        for error, status, expected in (
+                ("GH_RATE_LIMIT", 403, "GITHUB_RATE_LIMIT"),
+                ("GH_RATE_LIMIT", 429, "GITHUB_RATE_LIMIT"),
+                ("GH_AUTH_REQUIRED", 401, "GITHUB_AUTH_REQUIRED"),
+                ("GH_HTTP_ERROR", 403, "GITHUB_HTTP_ERROR"),
+                ("GH_CONFIG_UNAVAILABLE", None, "GITHUB_CONFIG_UNAVAILABLE"),
+                ("GH_INCOMPLETE_RESPONSE", 200, "GITHUB_EVIDENCE_INVALID")):
+            with patch.object(m, "gh_request", return_value={
+                    "complete": False, "error": error, "http_status": status,
+                    "private": "secret-fixture-payload"}) as call:
+                with self.assertRaises(m.CommandFailure) as caught:
+                    m.api("/actions/runs/123", config)
+                self.assertEqual(caught.exception.code, expected)
+                self.assertEqual(caught.exception.exit_code, status)
+                self.assertNotIn("secret-fixture-payload", str(caught.exception))
+                call.assert_called_once()
+
+    def test_shared_transport_strict_headers_and_json(self):
+        from project_os_bridge.github_transport import _http_result
+        for raw, error in (
+                (b"HTTP/2.0 403 Forbidden\r\nX-RateLimit-Remaining: 0\r\n\r\nprivate", "GH_RATE_LIMIT"),
+                (b"HTTP/2.0 429 Too Many Requests\r\n\r\nprivate", "GH_RATE_LIMIT"),
+                (b"HTTP/2.0 401 Unauthorized\r\n\r\nprivate", "GH_AUTH_REQUIRED"),
+                (b'HTTP/2.0 200 OK\r\nLink: private\r\n\r\n{"id":1}', "GH_INCOMPLETE_RESPONSE"),
+                (b'HTTP/2.0 200 OK\r\n\r\n{"id":1,"id":2}', "GH_UNAVAILABLE_OR_INVALID_JSON")):
+            result = _http_result(raw, 0, strict=True)
+            self.assertFalse(result["complete"])
+            self.assertEqual(result["error"], error)
+            self.assertNotIn("private", str(result))
+
+    def test_shared_transport_uses_only_private_cli_profile(self):
+        from project_os_bridge import github_transport as transport
+        import io
+        with tempfile.TemporaryDirectory() as folder:
+            config = Path(folder).resolve()
+            proc = Mock()
+            proc.stdout = io.BytesIO(b'HTTP/2.0 200 OK\r\n\r\n{"id":1}')
+            proc.wait.return_value = 0
+            context = Mock()
+            context.__enter__ = Mock(return_value=proc)
+            context.__exit__ = Mock(return_value=False)
+            with patch.dict(os.environ, {"GH_TOKEN": "secret", "GH_DEBUG": "api"}), \
+                    patch.object(transport.subprocess, "Popen", return_value=context) as launch:
+                self.assertEqual(transport.gh_request(config, "repos/" + m.REPO + "/actions/runs/123",
+                                                     strict=True), {"complete": True, "data": {"id": 1}})
+            self.assertEqual(launch.call_args.kwargs["env"]["GH_CONFIG_DIR"], str(config))
+            self.assertEqual(launch.call_args.kwargs["env"]["HOME"], str(config))
+            self.assertNotIn("GH_TOKEN", launch.call_args.kwargs["env"])
+            self.assertNotIn("GH_DEBUG", launch.call_args.kwargs["env"])
+            self.assertIn("GET", launch.call_args.args[0])
+            self.assertNotIn("secret", str(launch.call_args))
+            config.chmod(0o755)
+            with patch.object(transport.subprocess, "Popen") as launch:
+                self.assertEqual(transport.gh_request(config, "repos/" + m.REPO + "/actions/runs/123",
+                                                     strict=True)["error"], "GH_CONFIG_UNAVAILABLE")
+                launch.assert_not_called()
+
+
 class ApprovalTests(unittest.TestCase):
     def evidence(self):
         return approval_evidence()
@@ -361,7 +455,7 @@ class ApprovalTests(unittest.TestCase):
     def check(self, evidence):
         req = m.request("update", OLD, NEW, WHEEL, 123, m.request_id("test"))
         with patch.object(m, "api", side_effect=evidence):
-            m.approved_main(req)
+            m.approved_main(req, Path('/fixture/gh'))
 
     def test_approved_and_wrong_run_check_suite_or_main(self):
         self.check(self.evidence())

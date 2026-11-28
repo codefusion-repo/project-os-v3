@@ -2,55 +2,17 @@
 import json
 import os
 import re
-import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 from types import MappingProxyType
 from concurrent.futures import ThreadPoolExecutor
 
 from .core import Policy
+from .github_transport import _http_result, gh_request
 
 
 class GitHubReadError(RuntimeError):
     """Fixed upstream error category; no raw response text."""
-
-
-def _http_result(raw, exit_code):
-    """Classify bounded gh --include output without returning headers."""
-    head, sep, body = raw.partition(b"\r\n\r\n")
-    if not sep:
-        head, sep, body = raw.partition(b"\n\n")
-    lines = head.splitlines()
-    status = re.fullmatch(rb"HTTP/\d(?:\.\d)? ([1-5]\d\d)(?: [^\r\n]*)?", lines[0]) if lines else None
-    if not sep or status is None:
-        return {"complete": False, "error": "GH_FAILED_OR_TIMEOUT" if exit_code else "INVALID_RESPONSE"}
-    code = int(status[1])
-    headers = {}
-    for line in lines[1:]:
-        key, colon, value = line.partition(b":")
-        if not colon:
-            return {"complete": False, "error": "INVALID_RESPONSE"}
-        headers.setdefault(key.lower(), []).append(value.strip())
-    if code == 429 or (code == 403 and (
-            b"0" in headers.get(b"x-ratelimit-remaining", [])
-            or bool(headers.get(b"retry-after")))):
-        return {"complete": False, "error": "GH_RATE_LIMIT"}
-    if code == 403:
-        try:
-            error = json.loads(body)
-            message = error.get("message", "") if isinstance(error, dict) else ""
-            if isinstance(message, str) and "secondary rate limit" in message.lower():
-                return {"complete": False, "error": "GH_RATE_LIMIT"}
-        except (ValueError, UnicodeError):
-            pass
-    if code != 200:
-        return {"complete": False, "error": "GH_HTTP_ERROR"}
-    if exit_code:
-        return {"complete": False, "error": "GH_FAILED_OR_TIMEOUT"}
-    try:
-        return {"complete": True, "data": json.loads(body)}
-    except (ValueError, UnicodeError):
-        return {"complete": False, "error": "GH_UNAVAILABLE_OR_INVALID_JSON"}
 
 
 class GitHubReader:
@@ -82,30 +44,7 @@ class GitHubReader:
         return self._repo(principal, project)
 
     def _request(self, endpoint):
-        # Explicit GET, no caller-defined endpoint, no inherited tokens or Git config.
-        env = {"PATH": "/usr/bin:/bin", "HOME": str(self.config_dir),
-               "GH_CONFIG_DIR": str(self.config_dir), "GH_PROMPT_DISABLED": "1",
-               "GH_HOST": "github.com", "NO_COLOR": "1", "GH_NO_UPDATE_NOTIFIER": "1"}
-        try:
-            # Bound memory and disk: stream at most one MiB plus one byte;
-            # timeout is enforced by a separate watchdog around the pipe read.
-            import threading
-            with subprocess.Popen(["gh","api","--hostname","github.com","--method","GET","--include",endpoint],
-                                  env=env,cwd=self.config_dir,stdin=subprocess.DEVNULL,
-                                  stdout=subprocess.PIPE,stderr=subprocess.DEVNULL) as proc:
-                timer = threading.Timer(15, proc.kill)
-                timer.start()
-                try:
-                    raw = proc.stdout.read(1_048_577)
-                    if len(raw) > 1_048_576:
-                        proc.kill()
-                        return {"complete":False,"error":"RESPONSE_LIMIT"}
-                    exit_code = proc.wait()
-                finally:
-                    timer.cancel()
-            return _http_result(raw, exit_code)
-        except (OSError, ValueError):
-            return {"complete":False,"error":"GH_UNAVAILABLE_OR_INVALID_JSON"}
+        return gh_request(self.config_dir, endpoint)
 
     def issue_context(self, principal, project, number, *, check_access=None):
         repo = self._repo(principal, project)
