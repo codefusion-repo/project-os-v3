@@ -1545,7 +1545,8 @@ else:
             listing=call(client,"tools/list",{})
             self.assertEqual(listing.status_code,200)
             self.assertEqual({x["name"] for x in listing.json()["result"]["tools"]},
-                             {"health","submit_probe_job","get_job_status","get_job_evidence","cancel_job","github_fixture_context"})
+                             {"health","submit_probe_job","get_job_status","get_job_evidence","cancel_job","github_fixture_context",
+                              "list_jobs","measure_mcp_wait","wait_job"})
             health=call(client,"tools/call",args)
             self.assertEqual(health.status_code,200)
             self.assertFalse(health.json()["result"].get("isError",False))

@@ -895,6 +895,12 @@ def serve_with_worker(server, jobs, verifier, *, readiness=None, workspace_backe
         from .qa_drive_operational import SupervisedDriveDelivery
         from .qa_drive_queue import recover, process_one
         delivery_worker = SupervisedDriveDelivery(jobs, github_provider)
+    # The existing service cycle observes durable terminal events; optional
+    # notification failures must never stop HTTP or alter a Job.
+    notifications = None
+    if workspace_backend is not None and type(jobs.policy) is SupervisedWorkspacePolicy:
+        from .notifications import NotificationSender
+        notifications = NotificationSender(jobs, verifier.subject, verifier.enabled)
     stop = threading.Event()
     failed = threading.Event()
 
@@ -932,6 +938,8 @@ def serve_with_worker(server, jobs, verifier, *, readiness=None, workspace_backe
                 except WorkerBusy:
                     # Another exclusive worker owns the disposable queue.
                     pass
+                if notifications is not None and not stopping():
+                    notifications.tick()
                 stop.wait(0.5)
         except Exception:
             # Never log exceptions containing local paths or credentials.

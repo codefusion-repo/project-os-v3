@@ -68,7 +68,10 @@ def list_authorized(jobs, actor, access, check, *, project=None, resource=None,
     for row in page:
         check()
         jobs.policy.require(actor, "read", row["resource"])
-        access(row["id"])
+        request = access(row["id"])
+        if isinstance(request, dict) and (request.get("project") != row["project"]
+                or request.get("profile") != row["operation"]):
+            raise PermissionError("DENIED")
     check()
     return {"jobs": page, "next_cursor": (page[-1]["created"] + "|" + page[-1]["id"]
                                          if more else None), "snapshot": "observed"}

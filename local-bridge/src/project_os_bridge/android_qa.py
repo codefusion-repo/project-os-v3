@@ -366,6 +366,8 @@ def finalize_pending_locked(jobs, backend, *, enabled):
             outcome = {"state": "FAILED", "reason": "QA_FINALIZATION_FAILED",
                        "error_code": qa_error_code(exc, "QA_FINALIZATION_FAILED")}
         result["qa_finalization"] = outcome
+        from .core import now
+        result["qa_finalization_at"] = now()
         # Commit the delivery intent with the signing result: no crash window
         # between durable successful finalization and enqueueing its delivery.
         if outcome["state"] == "SUCCEEDED" and "delivery_target" in request:
