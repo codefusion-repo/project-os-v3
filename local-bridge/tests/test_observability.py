@@ -5,7 +5,7 @@ from pathlib import Path
 from unittest.mock import Mock
 
 from project_os_bridge.core import Jobs, Policy
-from project_os_bridge.observability import list_authorized, wait_for_job, measure_wait
+from project_os_bridge.observability import list_authorized, wait_for_job, measure_wait, WAIT_LIMIT_SECONDS
 
 
 class ObservationTests(unittest.TestCase):
@@ -44,7 +44,7 @@ class ObservationTests(unittest.TestCase):
     def test_wait_no_mutation_and_terminal(self):
         ident = self.jobs.submit("alice", "disposable", "probe_check", "wait")
         read = lambda: self.jobs.get("alice", ident)
-        result = asyncio.run(wait_for_job(read, self.check, 0, max_seconds=0))
+        result = asyncio.run(wait_for_job(read, self.check, 0, max_seconds=WAIT_LIMIT_SECONDS))
         self.assertTrue(result["wait_expired"])
         with self.assertRaises(ValueError):
             asyncio.run(wait_for_job(read, self.check, 1, max_seconds=0))
@@ -61,7 +61,7 @@ class ObservationTests(unittest.TestCase):
                 await asyncio.to_thread(self.jobs.cancel, "alice", job)
             task = asyncio.create_task(finish())
             result = await wait_for_job(lambda: self.jobs.get("alice", job), self.check,
-                                        2, max_seconds=2)
+                                        2, max_seconds=WAIT_LIMIT_SECONDS)
             await task
             self.assertTrue(result["terminal"])
             observed = await measure_wait(1, self.check)
