@@ -38,6 +38,7 @@ from .readiness import read_metadata, verify_metadata
 from .diagnostics import Diagnostics, Section
 from .maintenance import Maintenance
 from .workspace_profiles import QA_PROFILES, CODEX_PROFILE
+from .observability import (list_authorized, wait_for_job, measure_wait, WAIT_LIMIT_SECONDS)
 
 
 def build_server(verifier, jobs, fixture_reader=None, *, diagnostics=None, github_provider=None, maintenance=None, workspace_candidate=False, workspace_backend=None):
@@ -556,11 +557,12 @@ def build_server(verifier, jobs, fixture_reader=None, *, diagnostics=None, githu
                 return
         if workspace_candidate:
             try:
-                require_workspace_job(jobs, actor, job_id, allow_execute=workspace_backend is not None)
+                request = require_workspace_job(jobs, actor, job_id, allow_execute=workspace_backend is not None)
             except (PermissionError, OSError, ValueError, TypeError):
                 raise PermissionError("DENIED") from None
             if principal() != actor:
                 raise PermissionError("DENIED")
+            return request
 
     def redact_delivery(actor, job_id, result):
         payload = result.get("result")
@@ -571,6 +573,61 @@ def build_server(verifier, jobs, fixture_reader=None, *, diagnostics=None, githu
             # The delivery tool revalidates live PR, current grant and remote file.
             payload["qa_delivery"] = {"state": payload["qa_delivery"].get("state")}
         return result
+
+    # One long read per service; the remaining HTTP slots and worker remain free.
+    wait_slot = asyncio.Lock()
+
+    def live_reader(actor):
+        token = get_access_token()
+        def check():
+            if (principal() != actor or token is None or token.expires_at is None
+                    or token.expires_at <= time.time()):
+                raise PermissionError("DENIED")
+        return check
+
+    @mcp.tool(annotations=read)
+    async def list_jobs(project: StrictStr | None = None, resource: StrictStr | None = None,
+                        state: StrictStr | None = None, since: StrictStr | None = None,
+                        cursor: StrictStr | None = None, limit: StrictInt = 20) -> dict:
+        """List authorized Jobs with bounded metadata, filters and keyset pagination."""
+        actor = principal()
+        check = live_reader(actor)
+        def access(job_id):
+            check()
+            return workspace_access(actor, job_id)
+        return await asyncio.to_thread(list_authorized, jobs, actor, access, check,
+                                       project=project, resource=resource, state=state,
+                                       since=since, cursor=cursor, limit=limit)
+
+    @mcp.tool(annotations=read)
+    async def measure_mcp_wait(seconds: StrictInt) -> dict:
+        """Bounded transport timing experiment; no Job, execution or external effect."""
+        check = live_reader(principal())
+        if wait_slot.locked():
+            raise ValueError("WAIT_SLOT_BUSY")
+        async with wait_slot:
+            return await measure_wait(seconds, check)
+
+    @mcp.tool(annotations=read)
+    async def wait_job(job_id: StrictStr, timeout_seconds: StrictInt = 0) -> dict:
+        """Read existing Job; positive wait disabled until Browser timing evidence."""
+        actor = principal()
+        check = live_reader(actor)
+        def read_job():
+            check()
+            workspace_access(actor, job_id)
+            result = jobs.get(actor, job_id)
+            workspace_access(actor, job_id)
+            check()
+            return redact_delivery(actor, job_id, result)
+        if wait_slot.locked() and timeout_seconds:
+            raise ValueError("WAIT_SLOT_BUSY")
+        if timeout_seconds:
+            async with wait_slot:
+                return await wait_for_job(read_job, check, timeout_seconds,
+                                          max_seconds=WAIT_LIMIT_SECONDS)
+        return await wait_for_job(read_job, check, timeout_seconds,
+                                  max_seconds=WAIT_LIMIT_SECONDS)
 
     @mcp.tool(annotations=read)
     def get_job_status(job_id: str) -> dict:

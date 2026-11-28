@@ -186,6 +186,38 @@ class Jobs:
             self.event(c, job_id, "QUEUED")
             return job_id
 
+    def list_candidates(self, principal, *, resource=None, state=None, since=None, before=None):
+        """Bounded metadata snapshot, never results, prompts or request keys.
+        Caller must apply the same per-Job live authorization before disclosure.
+        """
+        if not principal or resource not in (None, "disposable", "workspace"):
+            raise ValueError("INVALID_JOB_FILTER")
+        if state not in (None, "QUEUED", "RUNNING", "SUCCEEDED", "FAILED", "BLOCKED",
+                         "INTERRUPTED", "CANCELLED"):
+            raise ValueError("INVALID_JOB_FILTER")
+        filters, args = ["principal=?"], [principal]
+        for field, value in (("resource", resource), ("state", state)):
+            if value is not None:
+                filters.append(field + "=?")
+                args.append(value)
+        if since is not None:
+            filters.append("created>=?")
+            args.append(since)
+        if before is not None:
+            filters.append("(created<? OR (created=? AND id<?))")
+            args.extend((before[0], before[0], before[1]))
+        self.probe._check_directory()
+        self.probe._check_file(self.db)
+        with closing(sqlite3.connect(self.db.as_uri() + "?mode=ro", uri=True, timeout=5)) as c:
+            c.row_factory = sqlite3.Row
+            c.execute("PRAGMA query_only=ON")
+            rows = c.execute("SELECT id,resource,workflow,state,created,updated FROM jobs WHERE "
+                             + " AND ".join(filters) + " ORDER BY created DESC,id DESC LIMIT 10001",
+                             args).fetchall()
+        if len(rows) > 10000:
+            raise ValueError("JOB_STORAGE_LIMIT")
+        return [dict(row) for row in rows]
+
     def get(self, principal, job_id):
         with self.transaction() as c:
             row = c.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone()
