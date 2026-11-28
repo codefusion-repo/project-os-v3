@@ -1463,11 +1463,11 @@ else:
             self.assertTrue(expired["wait_expired"])
             self.assertEqual(expired["job"]["state"], "QUEUED")
             self.assertTrue(call("tools/call", {"name": "wait_job", "arguments": {
-                "job_id": direct_job["job_id"], "timeout_seconds": 31}}).get("isError", False))
+                "job_id": direct_job["job_id"], "timeout_seconds": 91}}).get("isError", False))
             run_pending(jobs, workspace_backend=backend, enabled=verifier.enabled)
             direct_evidence = payload("get_job_evidence", job_id=direct_job["job_id"])
             self.assertEqual(direct_evidence["state"], "SUCCEEDED")
-            self.assertTrue(payload("wait_job", job_id=direct_job["job_id"], timeout_seconds=30)["terminal"])
+            self.assertTrue(payload("wait_job", job_id=direct_job["job_id"], timeout_seconds=90)["terminal"])
             self.assertEqual(direct_evidence["result"]["operation_sha256"], preview["operation_sha256"])
             revoked_args = {**direct_args, "request_key": "revoked-direct"}
             revoked_plan = payload("preview_workspace_execute", **revoked_args)

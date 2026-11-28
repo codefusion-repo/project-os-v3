@@ -46,15 +46,15 @@ class ObservationTests(unittest.TestCase):
         read = lambda: self.jobs.get("alice", ident)
         result = asyncio.run(wait_for_job(read, self.check, 0, max_seconds=WAIT_LIMIT_SECONDS))
         self.assertTrue(result["wait_expired"])
-        self.assertEqual(WAIT_LIMIT_SECONDS, 30)
+        self.assertEqual(WAIT_LIMIT_SECONDS, 90)
         with self.assertRaisesRegex(ValueError, "WAIT_DURATION_UNAVAILABLE"):
-            asyncio.run(wait_for_job(read, self.check, 31, max_seconds=WAIT_LIMIT_SECONDS))
+            asyncio.run(wait_for_job(read, self.check, 91, max_seconds=WAIT_LIMIT_SECONDS))
         expired = asyncio.run(wait_for_job(read, self.check, 1, max_seconds=WAIT_LIMIT_SECONDS))
         self.assertTrue(expired["wait_expired"])
         self.assertEqual(expired["job"]["state"], "QUEUED")
         self.assertEqual(read()["state"], "QUEUED")
         self.jobs.cancel("alice", ident)
-        result = asyncio.run(wait_for_job(read, self.check, 30, max_seconds=WAIT_LIMIT_SECONDS))
+        result = asyncio.run(wait_for_job(read, self.check, 90, max_seconds=WAIT_LIMIT_SECONDS))
         self.assertTrue(result["terminal"])
         self.assertFalse(result["wait_expired"])
 

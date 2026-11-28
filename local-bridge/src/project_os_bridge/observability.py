@@ -6,9 +6,9 @@ from datetime import datetime, timezone
 from .github_context import PROJECT
 
 TERMINAL = frozenset({"SUCCEEDED", "FAILED", "BLOCKED", "INTERRUPTED", "CANCELLED"})
-# Browser #67: 60 s server wait completed in 68.594 s end-to-end.
-# Use half the observed successful server wait, not an assumed transport ceiling.
-WAIT_LIMIT_SECONDS = 30
+# Browser #67: 90 s completed in 102.141 s; 120 s failed at 124.953 s.
+# Use the highest observed successful wait, ratified by PM; no universal timeout claim.
+WAIT_LIMIT_SECONDS = 90
 MEASUREMENT_SECONDS = (1, 5, 15, 30, 45, 60, 90, 120, 180, 240, 300, 450, 600)
 
 
