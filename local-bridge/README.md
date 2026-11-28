@@ -1,5 +1,8 @@
 # Project OS Local Bridge
 
+> **Decisión vigente de producto (28-11-2026):** [WSL local como único entorno de ejecución](https://github.com/codefusion-repo/project-os-v3/issues/8#issuecomment-7233893145). Las instrucciones OCI/Podman, certificaciones de infraestructura y alternativas de backend de este documento son históricas durante la migración y no constituyen requisitos vigentes. Retirar sus implementaciones y pruebas específicas, reutilizar AgentsUbuntu, el terminal y toolchains existentes. Conservar autenticación/transporte, operaciones tipadas y evidencia, firma y entrega. No interpretar esta nota como implementación efectiva de la nueva ruta.
+
+
 Optional single-user, self-hosted runtime. Browser Chat executes authorized GitHub operations directly and uses the bridge for registered local jobs. No automatic terminal-agent/Codex delegation. Read [MVP](MVP.md) for the current capability contract, [SECURITY](SECURITY.md) for gates and [WORKOS](WORKOS.md) for private OAuth setup.
 
 Historical B0 bootstrap. Stdio mode exposes only a fixed disposable SQLite marker over stdio MCP. It is NOT the completed remote development MVP. No caller identity is verified by this probe; do not expose real repositories, credentials, shell, builds or devices with it. Only use with the PM's dedicated tunnel and restricted caller access. The local opt-in authorizes this fixed probe operation, not arbitrary remote callers or other resources. A process running as the same OS user is outside this probe's trust boundary.

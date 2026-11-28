@@ -1,5 +1,8 @@
 # Independent self-hosted security model
 
+> **Decisión vigente de producto (28-11-2026):** [WSL local como único entorno de ejecución](https://github.com/codefusion-repo/project-os-v3/issues/8#issuecomment-7233893145). Las instrucciones OCI/Podman, certificaciones de infraestructura y alternativas de backend de este documento son históricas durante la migración y no constituyen requisitos vigentes. Retirar sus implementaciones y pruebas específicas, reutilizar AgentsUbuntu, el terminal y toolchains existentes. Conservar autenticación/transporte, operaciones tipadas y evidencia, firma y entrega. No interpretar esta nota como implementación efectiva de la nueva ruta.
+
+
 One local operator, one WorkOS identity per instance. Project OS distributes code, not hosted accounts, tokens, infrastructure or project data. Each operator owns the local installation, OAuth application/issuer configuration, tunnel, GitHub credentials, SQLite state and artifact store, separate from other operators. Never distribute an instance configuration or use the reference operator's accounts. Collaborative RBAC and centralized SaaS are out of scope. Public source is not a license grant; maintainers must explicitly select a redistribution license.
 
 ## Threat model

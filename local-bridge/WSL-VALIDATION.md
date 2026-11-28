@@ -1,5 +1,8 @@
 # Independent WSL production validation (operator runbook)
 
+> **Decisión vigente de producto (28-11-2026):** [WSL local como único entorno de ejecución](https://github.com/codefusion-repo/project-os-v3/issues/8#issuecomment-7233893145). Las instrucciones OCI/Podman, certificaciones de infraestructura y alternativas de backend de este documento son históricas durante la migración y no constituyen requisitos vigentes. Retirar sus implementaciones y pruebas específicas, reutilizar AgentsUbuntu, el terminal y toolchains existentes. Conservar autenticación/transporte, operaciones tipadas y evidencia, firma y entrega. No interpretar esta nota como implementación efectiva de la nueva ruta.
+
+
 Status: independent certification runbook. Do not modify the existing pilot or enable resources without the applicable capability gates and explicit authorization. The reference image remains rejected (historical run 45446812446); CI accepts only the locked fixture-only digest under the policy in SECURITY.md. No local binding or execution is approved. A separate image review is mandatory before any fixture execution with a replacement. Probe-only HTTPS validation can proceed independently once its own prerequisites pass.
 
 ## 1. Dedicated environment (explicit operator decision)

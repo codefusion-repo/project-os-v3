@@ -1,5 +1,10 @@
 # Project OS v3 — producto y dirección de desarrollo
 
+## Decisión vigente — ejecución exclusivamente en WSL local
+
+[Decisión ratificada del PM, 28-11-2026](https://github.com/codefusion-repo/project-os-v3/issues/8#issuecomment-7233893145). AgentsUbuntu (WSL dedicado del operador) es el entorno de confianza y la única vía de ejecución local de Project OS. Browser y Codex son ejecutores complementarios; GitHub Connector conserva las operaciones remotas y Local Bridge las capacidades locales autenticadas y tipadas. Reutilizar terminal, SDK, dependencias y Jobs existentes. Retirar OCI/Podman, fixtures de contenedor, imágenes, auditorías y certificaciones asociadas, sin backend alternativo ni nueva infraestructura de aislamiento. Los requisitos OCI anteriores de este documento y los runbooks quedan sustituidos; se conservan únicamente como historial durante la migración. No exigir certificación adicional del entorno WSL del operador; conservar OAuth/HTTPS y los controles propios de las operaciones (grants, SHA, exclusividad, evidencia, privacidad, firma y entrega). El presupuesto físico y Android Build v1 siguen vigentes. La migración de código aún está pendiente; no se afirma disponibilidad de ejecución local remota por esta decisión.
+
+
 Documento de producto para PM y desarrolladores del kit. La metodología obligatoria para cualquier agente es [PROJECT_OS.md](../PROJECT_OS.md); este documento no la sustituye. Los contratos técnicos viven junto al componente que gobiernan; GitHub conserva decisiones, estado vivo y evidencia. Base de consolidación: [75a392b63ed21a364fc8195ad5dbdd062532df2c](https://github.com/codefusion-repo/project-os-v3/commit/75a392b63ed21a364fc8195ad5dbdd062532df2c), issue [#21](https://github.com/codefusion-repo/project-os-v3/issues/21). Estado de referencia al consolidar, no un registro de ejecución paralelo.
 
 ## Propósito y resultados esperados
@@ -244,7 +249,7 @@ Resultado esperado: software implementado, compilado, probado y entregado sin qu
 | 5 | Android Attach y QA (#17) | Probar aplicaciones móviles |
 | 6 | Recuperación de artefactos (#17) | Entregar APK efectivamente probado |
 | 7 | Codex y routing automático (#18) | Eliminar handoffs manuales |
-| 8 | Certificación integral y benchmark (#8) | Verificar preparación para producción |
+| 8 | Validación funcional y benchmark (#8) | Verificar preparación para producción |
 
 Preservar la evidencia de LB-05: protege la infraestructura del producto, pero la imagen OCI fixture-only acredita solo un fixture Python fijo, no ejecución general de Flutter, Node.js, Django, Android o Codex. Cada perfil requiere controles proporcionales y evidencia propia. No ampliar certificaciones sin un riesgo concreto y entregable asociado ni repetir evidencia satisfecha salvo cambio material o caducidad.
 
@@ -269,13 +274,13 @@ Estado vivo en [coordinador #8](https://github.com/codefusion-repo/project-os-v3
 | Unidad | Estado de referencia | Requisito de producción |
 |---|---|---|
 | [LB-01 #10](https://github.com/codefusion-repo/project-os-v3/issues/10) | completed | Cadena segura; certificación host en LB-05 |
-| [LB-02 #11](https://github.com/codefusion-repo/project-os-v3/issues/11) | completed | OCI CI-only y control negativo; local separado |
+| [LB-02 #11](https://github.com/codefusion-repo/project-os-v3/issues/11) | completed | Histórico: OCI retirado por decisión posterior |
 | [LB-03 #12](https://github.com/codefusion-repo/project-os-v3/issues/12) | completed | Setup integrado, WSL2 real en CI, rollback descartable; [cierre -55](https://github.com/codefusion-repo/project-os-v3/issues/12#issuecomment-7151195379) |
 | [#21](https://github.com/codefusion-repo/project-os-v3/issues/21) | unidad de documentación antes de LB-04 | Dos documentos centrales, continuidad y CI |
 | [LB-04 #13](https://github.com/codefusion-repo/project-os-v3/issues/13) | parcial P0 | Lifecycle idempotente y observable: preparación, start/stop/status, autoarranque solo opt-in; readiness TLS/HTTP antes de túnel y dispatch, fallo worker/túnel detiene y preserva estado, restart acotado sin replay incierto, revocación, quiescencia y rollback |
-| [LB-05 #14](https://github.com/codefusion-repo/project-os-v3/issues/14) | pendiente P0 | Instalación limpia y evidencia independiente del piloto, identidad dedicada y boundary efectivo (perfil WSL existente condicional o entorno separado), WSL/HTTPS/OAuth/systemd, 200/401/403 sin job, replay, rollback y auditoría local autorizada |
+| [LB-05 #14](https://github.com/codefusion-repo/project-os-v3/issues/14) | pendiente P0 | WSL dedicado existente, HTTPS/OAuth/systemd, 200/401/403, replay y rollback; sin certificación OCI o de infraestructura adicional |
 | [LB-06 #15](https://github.com/codefusion-repo/project-os-v3/issues/15) | pendiente P0 | GitHub real read-only tipado, credencial dedicada, grants por principal/repo, revocación, batching y evidencia |
-| [LB-07 #16](https://github.com/codefusion-repo/project-os-v3/issues/16) | pendiente P0 | Cambios Git tipados sobre repos autorizados, HEAD/digest, backend explícito según confianza/riesgo, sin shell remoto libre ni fallback silencioso, exclusividad y reconciliación |
+| [LB-07 #16](https://github.com/codefusion-repo/project-os-v3/issues/16) | pendiente P0 | Cambios Git tipados sobre repos autorizados, HEAD/digest, ejecución local WSL, operaciones tipadas, sin backend alternativo, exclusividad y reconciliación |
 | [LB-08 #17](https://github.com/codefusion-repo/project-os-v3/issues/17) | pendiente P1 | Android QA Attach y entrega de APK exacto, según arquitectura ratificada abajo |
 | [LB-09 #18](https://github.com/codefusion-repo/project-os-v3/issues/18) | pendiente P1 | Router y Codex opt-in con disponibilidad/cuota verificadas, handoff y exclusividad, no doble ejecución |
 

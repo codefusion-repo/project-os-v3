@@ -1,5 +1,8 @@
 # MVP contract — one installation, one operator
 
+> **Decisión vigente de producto (28-11-2026):** [WSL local como único entorno de ejecución](https://github.com/codefusion-repo/project-os-v3/issues/8#issuecomment-7233893145). Las instrucciones OCI/Podman, certificaciones de infraestructura y alternativas de backend de este documento son históricas durante la migración y no constituyen requisitos vigentes. Retirar sus implementaciones y pruebas específicas, reutilizar AgentsUbuntu, el terminal y toolchains existentes. Conservar autenticación/transporte, operaciones tipadas y evidencia, firma y entrega. No interpretar esta nota como implementación efectiva de la nueva ruta.
+
+
 Project OS is a Markdown-first coordination kit, not a SaaS, IDE or agent fleet. Browser Chat implements directly using authorized tools. GitHub Connector handles remote GitHub changes and evidence independently; Local Bridge handles bounded local jobs; neither grants permissions to the other. The approved adaptive flow has two implementers: Codex running in the terminal, or ChatGPT Browser directly using Project OS v3 tools. Local Bridge is the controlled local-access tool; the terminal is an execution environment, not an implementer. Current MVP is browser-direct only.
 
 ## Production capability consolidation — technical contract
