@@ -1,7 +1,7 @@
 """Optional Resend terminal mail, sourced from existing durable records.
 
-No mail in a Job transaction, no new daemon/queue. One bounded attempt per
-service cycle; provider acceptance is not inbox delivery.
+No mail in a Job transaction, no new daemon/queue. One independent in-process
+I/O task; provider acceptance is not inbox delivery.
 """
 import hashlib
 import html
@@ -9,16 +9,20 @@ import http.client
 import json
 import logging
 import re
+import os
+from contextlib import closing
+import sqlite3
 import time
 from datetime import datetime, timezone
 
-from .maintenance import read_json, private_dir, validate_record
-from .observability import TERMINAL, utc_stamp
+from .maintenance import read_json, private_dir, private_bytes, validate_record, FLAG
+from .observability import utc_stamp
+from .github_context import PROJECT
 from .workspace_profiles import PROFILES, CODEX_PROFILE
 
 LOG = logging.getLogger("project_os.notifications")
 EMAIL = re.compile(r"[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,63}")
-ALIAS = re.compile(r"[a-z0-9][a-z0-9_-]{0,63}")
+ALIAS = PROJECT
 KEY = re.compile(r"re_[A-Za-z0-9_-]{8,200}")
 TERMINAL_MAINTENANCE = {"SUCCEEDED", "BLOCKED", "LOCAL_RECOVERY_REQUIRED"}
 MAX_AGE = 23 * 3600  # Margin within provider's 24h idempotency window.
@@ -54,6 +58,8 @@ def config(root):
     recipients = data["recipients"]
     if not isinstance(recipients, dict) or not 1 <= len(recipients) <= 10:
         raise ValueError("INVALID_RESEND_RECIPIENTS")
+    if len({address.casefold() for address in recipients}) != len(recipients):
+        raise ValueError("DUPLICATE_RESEND_RECIPIENT")
     for email, projects in recipients.items():
         if (not isinstance(email, str) or len(email) > 254 or not EMAIL.fullmatch(email)
                 or not isinstance(projects, list) or not 1 <= len(projects) <= 100
@@ -113,8 +119,13 @@ def send(api_key, key, payload):
         if response.status == 429:
             value = response.getheader("Retry-After", "")
             delay = min(86400, int(value)) if value.isascii() and value.isdecimal() and len(value) <= 6 else 60
-            return "RETRY", None, max(60, delay)
-        if response.status >= 500 or response.status in {408, 409}:
+            return "RATE_LIMITED", None, max(60, delay)
+        if response.status == 409:
+            raw = response.read(8193)
+            if len(raw) <= 8192 and json.loads(raw).get("name") == "concurrent_idempotent_requests":
+                return "RETRY", None, 60
+            return "UNCERTAIN", None, 0
+        if response.status >= 500 or response.status == 408:
             return "RETRY", None, 60
         if not 200 <= response.status < 300:
             return "FAILED", None, 0
@@ -143,11 +154,37 @@ class NotificationSender:
             c.execute("""CREATE TABLE IF NOT EXISTS notification_receipts (
                 key TEXT PRIMARY KEY, payload_sha256 TEXT NOT NULL,
                 state TEXT NOT NULL, first_attempt REAL NOT NULL, attempts INTEGER NOT NULL,
-                next_attempt REAL NOT NULL, provider_id TEXT)""")
+                next_attempt REAL NOT NULL, provider_id TEXT,
+                credential_sha256 TEXT NOT NULL, ambiguous INTEGER NOT NULL)""")
+
+    def authorized(self, item):
+        from .workspace_jobs import require_workspace_job
+        if not self.enabled():
+            return False
+        try:
+            if item["identity"].startswith("maintenance/"):
+                self.jobs.policy.require(self.actor, "maintenance", "installation")
+                return private_bytes(self.jobs.probe.root / FLAG, 0) == b""
+            request = require_workspace_job(self.jobs, self.actor, item["id"], allow_execute=True)
+            if request["project"] != item["project"]:
+                return False
+            if item["operation"] == "qa-delivery":
+                self.jobs.policy.require(self.actor, "workspace_delivery", item["project"])
+            elif item["operation"] not in {"qa-signing", "workspace-prepare", request["profile"]}:
+                return False
+            return True
+        except (OSError, ValueError, TypeError, KeyError):
+            return False
 
     def events(self, since):
         from .workspace_jobs import require_workspace_job
-        with self.jobs.transaction() as c:
+        # Read-only snapshot; do not reserve a writer lock while scanning history.
+        self.jobs.probe._check_directory()
+        self.jobs.probe._check_file(self.jobs.db)
+        with closing(sqlite3.connect(self.jobs.db.as_uri() + "?mode=ro", uri=True, timeout=1)) as c:
+            c.row_factory = sqlite3.Row
+            c.execute("PRAGMA query_only=ON")
+            c.execute("BEGIN")
             rows = [dict(row) for row in c.execute(
                 "SELECT j.id,j.created,j.result,j.workflow FROM jobs j "
                 "WHERE j.principal=? AND j.resource='workspace' "
@@ -165,7 +202,8 @@ class NotificationSender:
             result = json.loads(row["result"] or "{}")
             delivery_events = result.get("qa_delivery_events", [])
             finalized_at = result.get("qa_finalization_at")
-            if row["id"] not in by_job and not delivery_events and not finalized_at:
+            if (row["id"] not in by_job and not any(t["at"] >= since for t in delivery_events)
+                    and not (finalized_at and finalized_at >= since)):
                 continue
             try:
                 request = require_workspace_job(self.jobs, self.actor, row["id"], allow_execute=True)
@@ -174,8 +212,9 @@ class NotificationSender:
             project, profile = request["project"], request["profile"]
             if profile not in {*PROFILES, CODEX_PROFILE} and row["workflow"] != "workspace_prepare":
                 continue
+            operation = "workspace-prepare" if row["workflow"] == "workspace_prepare" else profile
             for t in by_job.get(row["id"], []):
-                yield event("job/" + row["id"] + "/" + str(t["id"]), project, profile,
+                yield event("job/" + row["id"] + "/" + str(t["id"]), project, operation,
                             t["state"], t["at"], row["id"], row["created"])
             if finalized_at and finalized_at >= since:
                 yield event("sign/" + row["id"], project, "qa-signing",
@@ -191,7 +230,9 @@ class NotificationSender:
                                     "qa-delivery", t["state"], t["at"], row["id"])
         try:
             self.jobs.policy.require(self.actor, "maintenance", "installation")
-        except PermissionError:
+            if private_bytes(self.jobs.probe.root / FLAG, 0) != b"":
+                return
+        except (OSError, ValueError):
             return
         directory = self.jobs.probe.root.parent / "service" / "maintenance"
         try:
@@ -212,40 +253,66 @@ class NotificationSender:
                         "maintenance-" + req["action"], record["state"], record["updated_at"], req["id"])
 
     def deliver(self, cfg, item, recipient):
-        key = digest("project-os/v1/" + item["identity"] + "/" + recipient)
+        if not self.authorized(item) or config(self.jobs.probe.root) != cfg:
+            return False
+        key = digest("project-os/v1/" + item["identity"] + "/" + recipient.casefold())
         payload = email_body(item, cfg["from"], recipient)
         payload_hash = digest(canonical(payload))
+        credential_hash = digest(cfg["api_key"])
         now = self.clock()
+        ambiguous = False
         with self.jobs.transaction() as c:
+            # A provider-wide rate limit applies to all recipients and events.
+            if c.execute("SELECT 1 FROM notification_receipts WHERE state='RATE_LIMITED' "
+                         "AND next_attempt>? LIMIT 1", (now,)).fetchone():
+                return False
             row = c.execute("SELECT * FROM notification_receipts WHERE key=?", (key,)).fetchone()
             if row:
                 if row["state"] in {"ACCEPTED", "FAILED", "UNCERTAIN"}:
                     return False
-                if (row["payload_sha256"] != payload_hash or now < row["first_attempt"]
+                ambiguous = bool(row["ambiguous"]) or row["state"] == "SENDING"
+                if (row["payload_sha256"] != payload_hash
+                        or row["credential_sha256"] != credential_hash
+                        or now < row["first_attempt"]
                         or now - row["first_attempt"] >= MAX_AGE or row["attempts"] >= MAX_ATTEMPTS):
-                    c.execute("UPDATE notification_receipts SET state='UNCERTAIN' WHERE key=?", (key,))
+                    c.execute("UPDATE notification_receipts SET state=? WHERE key=?",
+                              ("UNCERTAIN" if ambiguous else "FAILED", key))
                     return False
                 if row["next_attempt"] > now:
                     return False
-                c.execute("UPDATE notification_receipts SET state='SENDING',attempts=attempts+1 WHERE key=?", (key,))
+                c.execute("UPDATE notification_receipts SET state='SENDING',attempts=attempts+1,"
+                          "ambiguous=? WHERE key=?", (int(ambiguous), key))
             else:
-                c.execute("INSERT INTO notification_receipts VALUES(?,?, 'SENDING',?,1,?,NULL)",
-                          (key, payload_hash, now, now))
-        # Re-read config and global opt-in just before network, no DB lock.
-        if not self.enabled() or config(self.jobs.probe.root) != cfg:
-            return True  # reserved attempt, no external effect; safely reconciled next cycle
+                c.execute("INSERT INTO notification_receipts VALUES(?,?, 'SENDING',?,1,?,NULL,?,0)",
+                          (key, payload_hash, now, now, credential_hash))
+        # No DB lock or worker lock held across network. Recheck grants and
+        # exact recipient configuration, including revocation since collection.
+        if not self.authorized(item) or config(self.jobs.probe.root) != cfg:
+            return True
         status, provider_id, delay = self.transport(cfg["api_key"], key, payload)
+        ambiguous = ambiguous or status in {"RETRY", "UNCERTAIN"}
+        if status == "FAILED" and ambiguous:
+            status = "UNCERTAIN"
         with self.jobs.transaction() as c:
-            c.execute("UPDATE notification_receipts SET state=?,provider_id=?,next_attempt=? WHERE key=?",
-                      (status, provider_id, self.clock() + delay, key))
+            c.execute("UPDATE notification_receipts SET state=?,provider_id=?,next_attempt=?,ambiguous=? WHERE key=?",
+                      (status, provider_id, self.clock() + delay, int(ambiguous), key))
         return True
 
+    def run(self, ready, stop, stopping):
+        # Same service lifetime, no independent daemon or queue. This task never
+        # owns the Job worker lock; slow SMTP/API cannot stall Job dispatch.
+        while not stopping() and not ready.wait(0.25):
+            pass
+        while not stopping():
+            self.tick()
+            stop.wait(0.5)
+
     def tick(self):
-        now = self.clock()
-        if now < self.next_scan or not self.enabled():
-            return
-        self.next_scan = now + 5
         try:
+            now = self.clock()
+            if now < self.next_scan or not self.enabled():
+                return
+            self.next_scan = now + 5
             cfg = config(self.jobs.probe.root)
             self.schema()
             for item in self.events(cfg["enabled_since"]):

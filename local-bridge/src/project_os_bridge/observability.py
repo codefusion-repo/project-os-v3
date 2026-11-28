@@ -3,6 +3,7 @@ import asyncio
 import re
 import time
 from datetime import datetime, timezone
+from .github_context import PROJECT
 
 TERMINAL = frozenset({"SUCCEEDED", "FAILED", "BLOCKED", "INTERRUPTED", "CANCELLED"})
 # Set only after a successful real Browser measurement with documented margin.
@@ -24,7 +25,7 @@ def list_authorized(jobs, actor, access, check, *, project=None, resource=None,
     if type(limit) is not int or not 1 <= limit <= 50:
         raise ValueError("INVALID_JOB_LIMIT")
     if project is not None and (not isinstance(project, str) or
-                                not re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,63}", project)):
+                                not PROJECT.fullmatch(project)):
         raise ValueError("INVALID_JOB_PROJECT")
     if cursor is not None:
         if not isinstance(cursor, str) or len(cursor) > 80:
@@ -69,8 +70,9 @@ def list_authorized(jobs, actor, access, check, *, project=None, resource=None,
         check()
         jobs.policy.require(actor, "read", row["resource"])
         request = access(row["id"])
-        if isinstance(request, dict) and (request.get("project") != row["project"]
-                or request.get("profile") != row["operation"]):
+        alias = request.get("project") if isinstance(request, dict) else None
+        operation = request.get("profile") if isinstance(request, dict) else row["workflow"]
+        if alias != row["project"] or operation != row["operation"]:
             raise PermissionError("DENIED")
     check()
     return {"jobs": page, "next_cursor": (page[-1]["created"] + "|" + page[-1]["id"]

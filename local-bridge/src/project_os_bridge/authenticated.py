@@ -898,14 +898,17 @@ def serve_with_worker(server, jobs, verifier, *, readiness=None, workspace_backe
     # The existing service cycle observes durable terminal events; optional
     # notification failures must never stop HTTP or alter a Job.
     notifications = None
-    if workspace_backend is not None and type(jobs.policy) is SupervisedWorkspacePolicy:
-        from .notifications import NotificationSender
-        notifications = NotificationSender(jobs, verifier.subject, verifier.enabled)
     stop = threading.Event()
     failed = threading.Event()
+    notification_ready = threading.Event()
 
     def stopping():
         return stop.is_set() or server.should_exit
+
+    if workspace_backend is not None and type(jobs.policy) is SupervisedWorkspacePolicy:
+        from .notifications import NotificationSender
+        notifications = NotificationSender(jobs, verifier.subject,
+                                           lambda: verifier.enabled() and not stopping())
 
     def worker():
         try:
@@ -925,6 +928,7 @@ def serve_with_worker(server, jobs, verifier, *, readiness=None, workspace_backe
                         stop.wait(0.25)
             if delivery_worker is not None:
                 recover(jobs)
+            notification_ready.set()
             while not stopping():
                 try:
                     if verifier.enabled():
@@ -938,8 +942,6 @@ def serve_with_worker(server, jobs, verifier, *, readiness=None, workspace_backe
                 except WorkerBusy:
                     # Another exclusive worker owns the disposable queue.
                     pass
-                if notifications is not None and not stopping():
-                    notifications.tick()
                 stop.wait(0.5)
         except Exception:
             # Never log exceptions containing local paths or credentials.
@@ -948,13 +950,21 @@ def serve_with_worker(server, jobs, verifier, *, readiness=None, workspace_backe
             server.should_exit = True
 
     thread = threading.Thread(target=worker, daemon=False)
+    # A single bounded I/O task in this service, independent of job dispatch.
+    mail_thread = (threading.Thread(target=notifications.run,
+                   args=(notification_ready, stop, stopping), daemon=False)
+                   if notifications is not None else None)
     thread.start()
+    if mail_thread is not None:
+        mail_thread.start()
     try:
         server.run()
     finally:
         stop.set()
         # Let a registered fixture finish cleanup before exiting.
         thread.join()
+        if mail_thread is not None:
+            mail_thread.join()
     if failed.is_set():
         raise RuntimeError("DISPOSABLE_WORKER_FAILED")
     if not server.started:
