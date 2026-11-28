@@ -42,8 +42,16 @@ STAGES = {"accepted", "preflight", "quiescing", "stopped", "fenced",
           "installing", "restoring", "starting", "complete"}
 STATES = {"ACCEPTED", "RUNNING", "SUCCEEDED", "BLOCKED", "LOCAL_RECOVERY_REQUIRED"}
 DIAGNOSTIC_STEPS = frozenset(["admission","lifecycle","idle_jobs","checkout","install_guard","runtime_profile","github_run","github_rules","github_checks","wheel_evidence","github_main","git_fetch","git_ancestry","rollback_identity","opt_ins","final_admission","accepted","preflight","quiescing","stopped","fenced","installing","restoring","starting","complete"])
-DIAGNOSTIC_CODES = frozenset(["INSTANCE_INSIDE_GIT", "CHECK_FAILED","PERMISSION_DENIED","COMMAND_FAILED","COMMAND_TIMEOUT","COMMAND_UNAVAILABLE","GITHUB_HTTP_ERROR","GITHUB_EVIDENCE_INVALID","GITHUB_TRANSPORT_FAILED","INTERNAL_ERROR","IO_ERROR","INVALID_DATA"])
+DIAGNOSTIC_CODES = frozenset(["INSTANCE_INSIDE_GIT", "CHECK_FAILED","PERMISSION_DENIED","COMMAND_FAILED","COMMAND_TIMEOUT","COMMAND_UNAVAILABLE","GITHUB_HTTP_ERROR","GITHUB_RATE_LIMIT","GITHUB_AUTH_REQUIRED","GITHUB_CONFIG_UNAVAILABLE","GITHUB_EVIDENCE_INVALID","GITHUB_TRANSPORT_FAILED","INTERNAL_ERROR","IO_ERROR","INVALID_DATA"])
 LOG = logging.getLogger("project_os.maintenance")
+
+# Host Python -I runs this installed script outside the venv interpreter.
+# Load only the fixed sibling stdlib module; do not change sys.path.
+if __package__:
+    from .github_transport import gh_request
+else:
+    from runpy import run_path
+    gh_request = run_path(str(Path(__file__).with_name("github_transport.py")))["gh_request"]
 
 
 class CommandFailure(RuntimeError):
@@ -245,36 +253,38 @@ def git(kit, *args):
                    "-c", "submodule.recurse=false", *args, timeout=90).decode().strip()
 
 
-def api(path):
-    # Public canonical repository only. No token, redirects, caller URL or proxy.
-    conn = http.client.HTTPSConnection("api.github.com", timeout=10)
-    try:
-        conn.request("GET", "/repos/" + REPO + path, headers={
-            "Accept": "application/vnd.github+json", "User-Agent": "Project-OS-maintenance",
-            "X-GitHub-Api-Version": "2022-11-28"})
-        response = conn.getresponse()
-        if response.status != 200:
-            raise CommandFailure("GITHUB_HTTP_ERROR", response.status)
-        if response.getheader("Link"):
-            raise ValueError("Incomplete GitHub evidence")
-        raw = response.read(2 * 1024 * 1024 + 1)
-        if len(raw) > 2 * 1024 * 1024:
-            raise ValueError("Oversized GitHub evidence")
-        return json.loads(raw, object_pairs_hook=unique)
-    finally:
-        conn.close()
+def api(path, config_dir):
+    # Only canonical read-only verification endpoints. No caller URL,
+    # credential extraction, inherited token or anonymous fallback.
+    if not re.fullmatch(r"/(?:actions/runs/[1-9][0-9]*(?:/artifacts\?per_page=100)?|"
+                        r"rules/branches/main|commits/[0-9a-f]{40}/check-runs\?per_page=100|"
+                        r"git/ref/heads/main)", path):
+        raise ValueError("Invalid maintenance GitHub endpoint")
+    result = gh_request(config_dir, "repos/" + REPO + path, strict=True)
+    if result.get("complete") is not True:
+        code = {
+            "GH_RATE_LIMIT": "GITHUB_RATE_LIMIT",
+            "GH_AUTH_REQUIRED": "GITHUB_AUTH_REQUIRED",
+            "GH_CONFIG_UNAVAILABLE": "GITHUB_CONFIG_UNAVAILABLE",
+            "GH_HTTP_ERROR": "GITHUB_HTTP_ERROR",
+            "GH_INCOMPLETE_RESPONSE": "GITHUB_EVIDENCE_INVALID",
+            "INVALID_RESPONSE": "GITHUB_EVIDENCE_INVALID",
+            "RESPONSE_LIMIT": "GITHUB_EVIDENCE_INVALID",
+        }.get(result.get("error"), "GITHUB_TRANSPORT_FAILED")
+        raise CommandFailure(code, result.get("http_status"))
+    return result["data"]
 
 
-def approved_wheel(req, run):
+def approved_wheel(req, run, config_dir):
     # The successful probe publishes its validated install receipt under an
     # immutable artifact name containing the attempt and wheel digest.
-    # GitHub's public metadata is sufficient; no ZIP download, redirect,
-    # credentials or CI log parsing. The archive digest is NOT the wheel digest.
+    # Authenticated artifact metadata is sufficient; no ZIP download or CI
+    # log parsing. The archive digest is NOT the wheel digest.
     attempt = run["run_attempt"]
     if type(attempt) is not int or attempt < 1:
         raise ValueError("Invalid CI attempt")
     prefix = f"maintenance-wheel-{attempt}-"
-    evidence = api("/actions/runs/" + str(req["ci_run_id"]) + "/artifacts?per_page=100")
+    evidence = api("/actions/runs/" + str(req["ci_run_id"]) + "/artifacts?per_page=100", config_dir)
     artifacts = evidence["artifacts"]
     if evidence["total_count"] != len(artifacts):
         raise ValueError("Incomplete wheel evidence")
@@ -293,10 +303,10 @@ def approved_wheel(req, run):
         raise ValueError("Unapproved wheel digest")
 
 
-def approved_main(req):
+def approved_main(req, config_dir):
     sha = req["target_sha"]
     with diagnostic_step("github_run"):
-        run = api("/actions/runs/" + str(req["ci_run_id"]))
+        run = api("/actions/runs/" + str(req["ci_run_id"]), config_dir)
         if (run["id"] != req["ci_run_id"] or run["workflow_id"] != WORKFLOW_ID
                 or run["path"].split("@", 1)[0] != WORKFLOW_PATH
                 or run["repository"]["id"] != REPO_ID or run["head_repository"]["id"] != REPO_ID
@@ -304,7 +314,7 @@ def approved_main(req):
                 or run["status"] != "completed" or run["conclusion"] != "success"):
             raise ValueError("Unapproved CI run")
     with diagnostic_step("github_rules"):
-        rules = api("/rules/branches/main")
+        rules = api("/rules/branches/main", config_dir)
         required = set()
         if not isinstance(rules, list) or not any(r["type"] == "pull_request" for r in rules):
             raise ValueError("Missing branch protection")
@@ -316,7 +326,7 @@ def approved_main(req):
         if not {("tests", APP_ID), ("probe", APP_ID)} <= required:
             raise ValueError("Missing required CI checks")
     with diagnostic_step("github_checks"):
-        result = api("/commits/" + sha + "/check-runs?per_page=100")
+        result = api("/commits/" + sha + "/check-runs?per_page=100", config_dir)
         checks = result["check_runs"]
         if result["total_count"] != len(checks):
             raise ValueError("Incomplete checks")
@@ -326,9 +336,9 @@ def approved_main(req):
         if not required <= passed:
             raise ValueError("Required CI check failed")
     with diagnostic_step("wheel_evidence"):
-        approved_wheel(req, run)
+        approved_wheel(req, run, config_dir)
     with diagnostic_step("github_main"):
-        if api("/git/ref/heads/main")["object"]["sha"] != sha:
+        if api("/git/ref/heads/main", config_dir)["object"]["sha"] != sha:
             raise ValueError("Target is not current main")
 
 
@@ -559,7 +569,7 @@ class Maintenance:
                 raise ValueError("Fixture profile")
         target = req["target_sha"]
         if req["action"] == "update":
-            approved_main(req)
+            approved_main(req, self.root / "github-context-gh")
             with diagnostic_step("git_fetch"):
                 git(self.kit, "fetch", "--no-tags", "--no-recurse-submodules", ORIGIN, "refs/heads/main")
                 if git(self.kit, "rev-parse", "FETCH_HEAD") != target:
