@@ -193,7 +193,7 @@ class WorkerReadinessTests(unittest.TestCase):
     def test_invalid_tls_metadata_never_dispatches(self):
         self.assertEqual(self.exercise(failure=True), ["tls"])
 
-    def test_supervised_candidate_reuses_worker_after_tls_and_stops_on_pending_effects(self):
+    def test_supervised_candidate_reuses_worker_after_tls_and_retains_http_on_pending_effects(self):
         from project_os_bridge.core import Jobs, Policy
         from project_os_bridge.workspace_jobs import MARKER, RUNTIME
         from project_os_bridge.execution import WorkspaceWSL
@@ -225,11 +225,10 @@ class WorkerReadinessTests(unittest.TestCase):
                 entered.set()
             with patch("project_os_bridge.authenticated.run_pending", side_effect=dispatch), \
                  patch.object(jobs, "pending_effects", return_value=[{"synthetic": True}]):
-                with self.assertRaises(RuntimeError):
-                    serve_with_worker(server, jobs, verifier, readiness=ready,
-                                      workspace_backend=backend)
+                serve_with_worker(server, jobs, verifier, readiness=ready,
+                                  workspace_backend=backend)
             self.assertEqual(order, ["tls", "dispatch"])
-            self.assertTrue(server.should_exit)
+            self.assertFalse(server.should_exit)
 
             with self.assertRaises(ValueError):
                 serve_with_worker(server, jobs, verifier, workspace_backend=backend)

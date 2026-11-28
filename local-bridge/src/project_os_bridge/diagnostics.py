@@ -11,12 +11,13 @@ import re
 import sqlite3
 import ssl
 import stat
+import subprocess
 import sys
 import time
 from pathlib import Path
 from typing import Literal, get_args
 
-from .lifecycle import prepared_unit, snapshot, systemctl
+from .lifecycle import UNIT, prepared_unit, snapshot, systemctl
 from .readiness import read_metadata, verify_metadata
 from .workos_auth import load_config, private_directory, private_file
 from .security import MAX_AUDIT_BYTES
@@ -86,6 +87,86 @@ def process_observations(raw):
             "seccomp_mode": int(fields["Seccomp"])}
 
 
+def codex_process_observations(proc=Path("/proc"), *, uid=None, local_identities=False):
+    """Same-UID name observations only; never infer ownership or signal a PID."""
+    uid = os.getuid() if uid is None else uid
+    result = {"name_candidates": 0, "parent_one_candidates": 0,
+              "zombie_candidates": 0, "inventory_complete": True,
+              "job_attribution": "not_established"}
+    identities = []
+    with os.scandir(proc) as entries:
+        for index, entry in enumerate(entries):
+            if index >= 8192:
+                result["inventory_complete"] = False
+                break
+            if not entry.name.isascii() or not entry.name.isdecimal():
+                continue
+            try:
+                directory = Path(entry.path)
+                def start_ticks():
+                    # /proc/PID/stat field 22; comm may contain spaces or parentheses.
+                    return int(bounded_text(directory / "stat", 65536).rsplit(")", 1)[1].split()[19])
+                start = start_ticks() if local_identities else None
+                raw = bounded_text(directory / "status", 65536)
+                fields = dict(line.split(":", 1) for line in raw.splitlines()
+                              if ":" in line)
+                if int(fields["Uid"].split()[0]) != uid:
+                    continue
+                name = fields["Name"].strip()
+                if name != "codex" and not name.startswith("codex-"):
+                    continue
+                parent = int(fields["PPid"].strip())
+                state = fields["State"].split()[0]
+                if local_identities:
+                    if start != start_ticks():
+                        result["inventory_complete"] = False
+                        continue
+                    identities.append({"pid": int(entry.name), "ppid": parent,
+                                       "start_ticks": start, "zombie": state == "Z"})
+                result["name_candidates"] += 1
+                result["parent_one_candidates"] += int(parent == 1)
+                result["zombie_candidates"] += int(state == "Z")
+            except (OSError, ValueError, KeyError, IndexError):
+                result["inventory_complete"] = False
+    if local_identities:
+        result["local_identities"] = sorted(identities, key=lambda row: row["pid"])
+    return result
+
+
+_SUPERVISOR_PATTERNS = (
+    (r"BRIDGE_EXIT phase=(startup|running) code=(-?[0-9]{1,3})", "bridge_exit"),
+    (r"BRIDGE_TLS_READINESS_TIMEOUT", "tls_timeout"),
+    (r"TUNNEL_EXIT code=(-?[0-9]{1,3}); bridge retained", "tunnel_exit"),
+    (r"TUNNEL_START_FAILED errno=([0-9]{1,5}|None); bridge retained", "tunnel_start_failed"),
+    (r"BRIDGE_RECOVERY attempt=([12])", "bridge_recovery"),
+    (r"HTTPS_BRIDGE_READY; TUNNEL_STARTED \\(remote readiness unverified\\)", "tunnel_started"),
+    (r"SUPERVISOR_BLOCKED_OR_FAILED; inspect local configuration", "supervisor_failed"),
+)
+
+
+def supervisor_observations():
+    # Read only the exact user unit, current boot, and bounded known event lines.
+    # No arbitrary caller filters, paths, journal text, credentials or exceptions.
+    pattern = "^(" + "|".join(pattern for pattern, _ in _SUPERVISOR_PATTERNS) + ")$"
+    result = subprocess.run(["/usr/bin/journalctl", "--user", "--unit=" + UNIT,
+        "--boot", "--no-pager", "--output=cat", "--lines=30", "--grep=" + pattern],
+        stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+        timeout=3, check=False, env={"PATH": "/usr/bin:/bin", "HOME": str(Path.home()),
+            "LC_ALL": "C", "XDG_RUNTIME_DIR": f"/run/user/{os.getuid()}"})
+    if result.returncode != 0 or len(result.stdout) > 8192:
+        return {"status": "unavailable_or_no_events"}
+    counts = Counter()
+    last = None
+    for line in result.stdout.decode("utf-8").splitlines():
+        for pattern, kind in _SUPERVISOR_PATTERNS:
+            if re.fullmatch(pattern, line):
+                counts[kind] += 1
+                last = kind
+                break
+    return {"status": "observed", "counts": dict(counts), "last_event": last,
+            "scope": "current_boot_last_30_matching_events", "remote_readiness": "not_assessed"}
+
+
 def listener_counts(raw, *, ipv6=False):
     rows = raw.splitlines()
     if not rows or "local_address" not in rows[0]:
@@ -135,7 +216,8 @@ class Diagnostics:
         return {"platform": "linux", "wsl": "microsoft" in kernel or "wsl" in kernel,
                 "cpu_count": os.cpu_count(), "cgroup_v2": Path("/sys/fs/cgroup/cgroup.controllers").is_file(),
                 "interop_observed": Path("/proc/sys/fs/binfmt_misc/WSLInterop").exists()
-                    or bool(os.environ.get("WSL_INTEROP"))}
+                    or bool(os.environ.get("WSL_INTEROP")),
+                "codex_process_observations": codex_process_observations()}
 
     def subordinate_ids(self):
         import pwd
@@ -186,7 +268,13 @@ class Diagnostics:
     def service(self):
         # Reuse exact-unit validation; no lifecycle locks, mutations or raw status.
         unit = prepared_unit(self.root)
-        return snapshot(unit, lambda *args: systemctl(*args, timeout=3))
+        result = snapshot(unit, lambda *args: systemctl(*args, timeout=3))
+        if result["linked"]:
+            try:
+                result["supervisor"] = supervisor_observations()
+            except (OSError, ValueError, subprocess.SubprocessError):
+                result["supervisor"] = {"status": "unavailable"}
+        return result
 
     def network(self):
         lo, other = listener_counts(bounded_text(Path("/proc/net/tcp")))
@@ -268,7 +356,11 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--root", required=True, type=Path)
     parser.add_argument("--section", choices=(*SECTIONS, "all"), default="all")
+    parser.add_argument("--local-codex-identities", action="store_true",
+                        help="Local operator only: show PID, parent and start ticks; no signals")
     args = parser.parse_args()
+    if args.local_codex_identities and args.section != "host":
+        parser.error("Local Codex identities require --section host")
     try:
         if os.getuid() == 0:
             raise PermissionError("Unprivileged operator required")
@@ -282,7 +374,10 @@ def main():
         context.load_verify_locations(cafile=str(ca))
         diagnostics = Diagnostics(verifier, root, tls_context=context)
         sections = SECTIONS if args.section == "all" else (args.section,)
-        print(json.dumps([diagnostics.collect(section) for section in sections], sort_keys=True))
+        evidence = [diagnostics.collect(section) for section in sections]
+        if args.local_codex_identities and evidence[0]["status"] == "observed":
+            evidence[0]["data"]["codex_process_observations"] = codex_process_observations(local_identities=True)
+        print(json.dumps(evidence, sort_keys=True))
     except Exception:
         print("DIAGNOSTICS_UNAVAILABLE", file=sys.stderr)
         raise SystemExit(1)

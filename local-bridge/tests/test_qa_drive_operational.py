@@ -88,3 +88,26 @@ class AutomaticDeliveryTargetTests(unittest.TestCase):
             with self.assertRaises(PermissionError):
                 self.service._target("operator", "job", "demo", self.head, 4,
                                      check_session=self.check)
+
+
+class DirectDeliveryAuthorizationTests(unittest.TestCase):
+    def test_recheck_delivery_grant_in_exact_operation(self):
+        from project_os_bridge.workspace_jobs import SupervisedWorkspacePolicy, authorize_request
+        policy = object.__new__(SupervisedWorkspacePolicy)
+        policy.initial_entries = {"demo": {"repository_id": 123}}
+        request = {"project": "demo", "profile": "expo-apk-qa", "expected_sha": "a" * 40,
+                   "binding": "b" * 64, "execution_id": "c" * 64, "context_id": "c" * 64,
+                   "qa_plan_sha256": "d" * 64, "qa_signer_sha256": "e" * 64,
+                   "operation_sha256": "f" * 64, "delivery_target": {
+                       "project": "demo", "head": "a" * 40, "pr": 4,
+                       "repository_id": 123, "binding_sha256": "1" * 64}}
+        def require(actor, operation, project):
+            if operation == "workspace_delivery":
+                raise PermissionError("DENIED")
+        with patch.object(policy, "require", side_effect=require) as grant:
+            with self.assertRaises(PermissionError):
+                authorize_request(policy, "operator", request, execute=True,
+                                  request_key="approved", require_operation=True)
+            grant.assert_called_with("operator", "workspace_delivery", "demo")
+            # Historical evidence may still be read under its existing grants.
+            authorize_request(policy, "operator", request, execute=True)

@@ -9,6 +9,7 @@ from unittest.mock import patch
 
 from project_os_bridge.diagnostics import (
     Diagnostics, FLAG, bounded_text, listener_counts, mount_counts, process_observations,
+    codex_process_observations, supervisor_observations,
 )
 from project_os_bridge.core import Jobs, Policy
 
@@ -77,6 +78,52 @@ class DiagnosticsTests(unittest.TestCase):
         self.assertEqual(result["seccomp_mode"], 2)
         with self.assertRaises(ValueError):
             process_observations(raw + "\nCapEff: 0")
+
+    def test_codex_observations_do_not_attribute_or_expose_processes(self):
+        proc = self.root / "proc"
+        proc.mkdir()
+        for pid, name, uid, parent, state in (
+                (100, "codex", 123, 1, "S"),
+                (101, "codex", 123, 99, "Z"),
+                (102, "codex", 124, 1, "S"),
+                (103, "unrelated", 123, 1, "S")):
+            directory = proc / str(pid)
+            directory.mkdir()
+            (directory / "status").write_text(
+                f"Name:\t{name}\nUid:\t{uid} {uid} {uid} {uid}\nPPid:\t{parent}\nState:\t{state}\n")
+            (directory / "cmdline").write_text("private-command")
+        result = codex_process_observations(proc, uid=123)
+        self.assertEqual(result, {"name_candidates": 2, "parent_one_candidates": 1,
+                                  "zombie_candidates": 1, "inventory_complete": True,
+                                  "job_attribution": "not_established"})
+        self.assertNotIn("private-command", json.dumps(result))
+
+    def test_local_codex_identity_separate_from_remote_aggregate(self):
+        proc = self.root / "proc"
+        directory = proc / "123"
+        directory.mkdir(parents=True)
+        (directory / "status").write_text("Name:\tcodex\nUid:\t123 123 123 123\nPPid:\t1\nState:\tS\n")
+        (directory / "stat").write_text("123 (codex (fixture)) S " + "0 " * 18 + "98765")
+        remote = codex_process_observations(proc, uid=123)
+        local = codex_process_observations(proc, uid=123, local_identities=True)
+        self.assertNotIn("local_identities", remote)
+        self.assertEqual(local["local_identities"], [{"pid": 123, "ppid": 1,
+            "start_ticks": 98765, "zombie": False}])
+        self.assertEqual(local["job_attribution"], "not_established")
+
+    def test_supervisor_journal_filters_and_omits_untrusted_text(self):
+        with patch("project_os_bridge.diagnostics.subprocess.run") as run:
+            run.return_value = SimpleNamespace(returncode=0, stdout=(
+                b"TUNNEL_EXIT code=1; bridge retained\nprivate unexpected text\n"
+                b"BRIDGE_RECOVERY attempt=1\n"))
+            result = supervisor_observations()
+            self.assertEqual(result["counts"], {"tunnel_exit": 1, "bridge_recovery": 1})
+            self.assertEqual(result["last_event"], "bridge_recovery")
+            self.assertNotIn("private", json.dumps(result))
+            argv = run.call_args.args[0]
+            self.assertIn("--unit=project-os-bridge.service", argv)
+            self.assertIn("--lines=30", argv)
+            self.assertEqual(run.call_args.kwargs["timeout"], 3)
 
     def test_listener_scope_and_no_addresses(self):
         raw = ("sl local_address rem_address st\n"
@@ -158,8 +205,9 @@ class DiagnosticsTests(unittest.TestCase):
         from unittest.mock import Mock
         result = {"linked": True, "active": "active", "enabled": False, "pending_job": False}
         with patch("project_os_bridge.diagnostics.prepared_unit", return_value=Path("/fixed")) as prepare, \
-                patch("project_os_bridge.diagnostics.snapshot", return_value=result) as snap:
-            self.assertEqual(self.diagnostics.service(), result)
+                patch("project_os_bridge.diagnostics.snapshot", return_value=result) as snap, \
+             patch("project_os_bridge.diagnostics.supervisor_observations", return_value={"status": "observed"}):
+            self.assertEqual(self.diagnostics.service(), {**result, "supervisor": {"status": "observed"}})
             prepare.assert_called_once_with(self.root)
             with patch("project_os_bridge.diagnostics.systemctl", return_value=Mock()) as call:
                 snap.call_args.args[1]("show", "fixed")

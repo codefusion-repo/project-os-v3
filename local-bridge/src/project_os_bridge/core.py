@@ -121,7 +121,8 @@ class Jobs:
             raise ValueError("Unexpected revision parameter")
         if workflow in {"workspace_prepare", "workspace_execute"}:
             from .workspace_jobs import authorize_request
-            authorize_request(self.policy, principal, workspace, execute=workflow == "workspace_execute")
+            authorize_request(self.policy, principal, workspace, execute=workflow == "workspace_execute",
+                              request_key=request_key, require_operation=True)
             workspace = json.dumps(workspace, sort_keys=True, separators=(",", ":"))
         elif workspace is not None:
             raise ValueError("Unexpected workspace parameters")
@@ -239,7 +240,8 @@ class Jobs:
                         try:
                             workspace = json.loads(parameters["request"])
                             authorize_request(self.policy, row["principal"], workspace,
-                                              execute=row["workflow"] == "workspace_execute")
+                                              execute=row["workflow"] == "workspace_execute",
+                                              request_key=row["request_key"], require_operation=True)
                         except (ValueError, TypeError):
                             raise PermissionError("Invalid workspace request") from None
                     selected_context = None

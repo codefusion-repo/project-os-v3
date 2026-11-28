@@ -113,6 +113,10 @@ def stop_children(tunnel, bridge):
                 wait_child(bridge, 90)
 
 
+class BridgeExited(RuntimeError):
+    """A stopped bridge child, distinct from invalid configuration."""
+
+
 def supervise(bridge_cmd, tunnel_cmd, env, tunnel_env, context, verifier, stop):
     bridge = tunnel = None
     # Check the port before starting the child; never reuse an existing listener.
@@ -127,7 +131,12 @@ def supervise(bridge_cmd, tunnel_cmd, env, tunnel_env, context, verifier, stop):
                                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         deadline = time.monotonic()+30
         while not stop.is_set():
-            if bridge.poll() is not None or time.monotonic()>=deadline:
+            code = bridge.poll()
+            if code is not None:
+                print(f"BRIDGE_EXIT phase=startup code={code}", flush=True)
+                raise BridgeExited("Bridge exited during startup")
+            if time.monotonic() >= deadline:
+                print("BRIDGE_TLS_READINESS_TIMEOUT", flush=True)
                 raise RuntimeError("Local TLS readiness failed")
             try:
                 metadata = read_metadata(context)
@@ -137,14 +146,35 @@ def supervise(bridge_cmd, tunnel_cmd, env, tunnel_env, context, verifier, stop):
                 stop.wait(0.25)
         if stop.is_set():
             return
-        if bridge.poll() is not None:
-            raise RuntimeError("Bridge exited before tunnel launch")
-        tunnel = subprocess.Popen(tunnel_cmd,env=tunnel_env,stdin=subprocess.DEVNULL,
-                                  stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
-        print("HTTPS_BRIDGE_READY; TUNNEL_STARTED (remote readiness unverified)",flush=True)
-        while not stop.wait(0.5):
-            if bridge.poll() is not None or tunnel.poll() is not None:
-                raise RuntimeError("Child exited; both services stopping")
+        failures = 0
+        retry_at = 0.0
+        launched_at = 0.0
+        while not stop.is_set():
+            code = bridge.poll()
+            if code is not None:
+                print(f"BRIDGE_EXIT phase=running code={code}", flush=True)
+                raise BridgeExited("Bridge exited")
+            now = time.monotonic()
+            if tunnel is not None:
+                code = tunnel.poll()
+                if code is not None:
+                    print(f"TUNNEL_EXIT code={code}; bridge retained", flush=True)
+                    tunnel = None
+                    if now - launched_at >= 60:
+                        failures = 0
+                    failures += 1
+                    retry_at = now + (60 if failures >= 3 else 2)
+            if tunnel is None and now >= retry_at:
+                try:
+                    tunnel = subprocess.Popen(tunnel_cmd, env=tunnel_env, stdin=subprocess.DEVNULL,
+                                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                    launched_at = now
+                    print("HTTPS_BRIDGE_READY; TUNNEL_STARTED (remote readiness unverified)", flush=True)
+                except OSError as exc:
+                    print(f"TUNNEL_START_FAILED errno={exc.errno}; bridge retained", flush=True)
+                    failures += 1
+                    retry_at = now + (60 if failures >= 3 else 2)
+            stop.wait(0.5)
     finally:
         stop_children(tunnel, bridge)
 
@@ -167,7 +197,18 @@ def run(root):
         stop = threading.Event()
         for sig in (signal.SIGINT, signal.SIGTERM):
             signal.signal(sig, lambda *_:stop.set())
-        supervise(bridge_cmd, tunnel_cmd, env, tunnel_env, context, verifier, stop)
+        for attempt in range(3):
+            try:
+                supervise(bridge_cmd, tunnel_cmd, env, tunnel_env, context, verifier, stop)
+                return
+            except BridgeExited:
+                if stop.is_set():
+                    return
+                if attempt == 2:
+                    raise
+                print(f"BRIDGE_RECOVERY attempt={attempt + 1}", flush=True)
+                if stop.wait(2):
+                    return
     finally:
         os.close(fd)
 

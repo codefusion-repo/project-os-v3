@@ -393,6 +393,7 @@ class AuthTests(unittest.TestCase):
                 self.assertEqual(payload, {"status": "ready",
                     "caller_identity_verified": True, "repository_access": False,
                     "mode": "authenticated-disposable",
+                    "reconciliation_required": False,
                     "installation": {"status": "unavailable"}})
         self.assertEqual(trace, [
             ("int", 100, None, "recorded"),
@@ -1352,6 +1353,8 @@ class AuthTests(unittest.TestCase):
         git("remote", "add", "origin", "https://github.com/example/demo.git")
         git("checkout", "-qb", "work/18-codex")
         (repo / "AGENTS.md").write_text("Fixture instructions\n")
+        (repo / "package.json").write_text("{}\n")
+        (repo / "package-lock.json").write_text("{}\n")
         (repo / ".gitignore").write_text(".project-os/\n")
         git("add", ".")
         git("commit", "-qm", "fixture")
@@ -1369,12 +1372,16 @@ class AuthTests(unittest.TestCase):
                                          "repository": "example/demo", "repository_id": 123}}}))
         grants = state / SUPERVISED_GRANTS
         grants.touch(mode=0o600)
-        ops = ["workspace_prepare", "workspace_materialize", "workspace_execute", "codex-implement"]
+        ops = ["workspace_prepare", "workspace_materialize", "workspace_execute", "codex-implement", "expo-test"]
         grants.write_text(json.dumps({"demo": ops}))
         binding = state / SUPERVISED_EXECUTION
         binding.touch(mode=0o600)
-        binding.write_text(json.dumps({"demo": {"codex-implement": {
-            "toolchain": {"PATH": str(bin_dir) + ":/usr/bin:/bin"}}}}))
+        binding.write_text(json.dumps({"demo": {profile: {
+            "toolchain": {"PATH": str(bin_dir) + ":/usr/bin:/bin"}}
+            for profile in ("codex-implement", "expo-test")}}))
+        npm = bin_dir / "npm"
+        npm.write_text("#!" + sys.executable + "\nimport sys\nsys.exit(0)\n")
+        npm.chmod(0o700)
         # Synthetic CLI exercises the actual JSONL process boundary, not account access.
         executable = bin_dir / "codex"
         executable.write_text("#!" + sys.executable + "\n" + r'''
@@ -1429,6 +1436,39 @@ else:
                 return json.loads(result["content"][0]["text"])
             args = {"project": "demo", "expected_sha": sha, "branch": "work/18-codex",
                     "issue": 18, "prompt": "Fixture implementation", "request_key": "codex-first"}
+            direct_args = {"project": "demo", "expected_sha": sha, "profile": "expo-test",
+                           "request_key": "direct-exact"}
+            def denied(**kwargs):
+                result = call("tools/call", {"name": "submit_workspace_execute", "arguments": kwargs})
+                self.assertTrue(result.get("isError", False))
+            with jobs.transaction() as conn:
+                before_count = conn.execute("SELECT count(*) FROM jobs").fetchone()[0]
+            preview = payload("preview_workspace_execute", **direct_args)
+            self.assertEqual(preview["commands"][-1], {"argv": ["npm", "run", "test"], "cwd": "."})
+            denied(**direct_args)
+            approved = {**direct_args, "operation_sha256": preview["operation_sha256"]}
+            denied(**{**approved, "request_key": "changed-key"})
+            denied(**{**approved, "expected_sha": "0" * 40})
+            denied(**{**approved, "profile": "expo-typecheck"})
+            denied(**{**approved, "operation_sha256": "0" * 64})
+            with jobs.transaction() as conn:
+                self.assertEqual(conn.execute("SELECT count(*) FROM jobs").fetchone()[0], before_count)
+            direct_job = payload("submit_workspace_execute", **approved)
+            self.assertEqual(direct_job, payload("submit_workspace_execute", **approved))
+            run_pending(jobs, workspace_backend=backend, enabled=verifier.enabled)
+            direct_evidence = payload("get_job_evidence", job_id=direct_job["job_id"])
+            self.assertEqual(direct_evidence["state"], "SUCCEEDED")
+            self.assertEqual(direct_evidence["result"]["operation_sha256"], preview["operation_sha256"])
+            revoked_args = {**direct_args, "request_key": "revoked-direct"}
+            revoked_plan = payload("preview_workspace_execute", **revoked_args)
+            revoked_job = payload("submit_workspace_execute", **revoked_args,
+                                  operation_sha256=revoked_plan["operation_sha256"])
+            grants.write_text(json.dumps({"demo": [op for op in ops if op != "expo-test"]}))
+            denied(**revoked_args, operation_sha256=revoked_plan["operation_sha256"])
+            run_pending(jobs, workspace_backend=backend, enabled=verifier.enabled)
+            grants.write_text(json.dumps({"demo": ops}))
+            self.assertEqual(payload("get_job_status", job_id=revoked_job["job_id"])["state"], "BLOCKED")
+            self.assertEqual(jobs.pending_effects(), [])
             capabilities = payload("codex_capabilities", project="demo", expected_sha=sha)
             self.assertEqual(capabilities["models"][0]["model"], "fixture-model")
             self.assertEqual(capabilities["capacity"], "available")

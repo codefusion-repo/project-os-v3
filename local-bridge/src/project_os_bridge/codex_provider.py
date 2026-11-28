@@ -10,8 +10,8 @@ import os
 import re
 import selectors
 import shutil
-import signal
 import subprocess
+import sys
 import tempfile
 import time
 
@@ -37,13 +37,16 @@ def valid_branch(branch):
 
 def validate_task(task):
     if (not isinstance(task, dict) or not {"mode", "issue", "pr", "branch", "prompt"} <= set(task)
-            or set(task) - {"mode", "issue", "pr", "branch", "prompt", "target_branch", "model", "reasoning_effort"}
+            or set(task) - {"mode", "issue", "pr", "branch", "prompt", "target_branch", "target_base_sha", "model", "reasoning_effort"}
             or task["mode"] not in {"auto", "codex"}
             or type(task["issue"]) is not int or not 0 < task["issue"] <= 2147483647
             or (task["pr"] is not None and
                 (type(task["pr"]) is not int or not 0 < task["pr"] <= 2147483647))
             or not valid_branch(task["branch"])
             or ("target_branch" in task and not valid_branch(task["target_branch"]))
+            or ("target_base_sha" in task and ("target_branch" not in task
+                or task["target_branch"] == task["branch"]
+                or not isinstance(task["target_base_sha"], str) or not SHA.fullmatch(task["target_base_sha"])))
             or any(not isinstance(task[k], str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", task[k]) for k in ("model", "reasoning_effort") if k in task)
             or not isinstance(task["prompt"], str) or not task["prompt"].strip()
             or len(task["prompt"].encode("utf-8")) > 16384
@@ -101,11 +104,26 @@ def require_checkout(root, expected_sha, branch):
 
 
 class _Child:
-    """One local process group, bounded JSONL reads, no raw stream retention."""
+    """Own one CLI invocation and its descendants through a short-lived subreaper."""
     def __init__(self, argv, cwd, env, *, stdin=subprocess.PIPE):
-        self.process = subprocess.Popen(argv, cwd=cwd, env=env, stdin=stdin,
-                                        stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-                                        start_new_session=True, umask=0o077)
+        control_read, control_write = os.pipe()
+        status_read, status_write = os.pipe()
+        try:
+            self.process = subprocess.Popen(
+                [sys.executable, "-I", "-m", "project_os_bridge.codex_child",
+                 str(control_read), str(status_write), *argv],
+                cwd=cwd, env=env, stdin=stdin, stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL, start_new_session=True, umask=0o077,
+                pass_fds=(control_read, status_write))
+        except BaseException:
+            os.close(control_write)
+            os.close(status_read)
+            raise
+        finally:
+            os.close(control_read)
+            os.close(status_write)
+        self.control = control_write
+        self.status = status_read
         self.pending = b""
         self.total = 0
         self.eof = False
@@ -158,31 +176,26 @@ class _Child:
                 return event["result"]
 
     def stop(self):
-        from .execution import _group_exists
         process = self.process
         try:
-            if _group_exists(process.pid):
-                try:
-                    os.killpg(process.pid, signal.SIGTERM)
-                except ProcessLookupError:
-                    pass
-                try:
-                    process.wait(timeout=5)
-                except subprocess.TimeoutExpired:
-                    pass
-                if _group_exists(process.pid):
-                    try:
-                        os.killpg(process.pid, signal.SIGKILL)
-                    except ProcessLookupError:
-                        pass
-            try:
-                process.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                return False
-            return not _group_exists(process.pid)
-        finally:
+            os.close(self.control)
             if process.stdin is not None:
-                process.stdin.close()
+                try:
+                    process.stdin.close()
+                except BrokenPipeError:
+                    pass
+            try:
+                process.wait(timeout=12)
+            except subprocess.TimeoutExpired:
+                # Do not kill the owner before its descendants are reconciled.
+                return False
+            os.set_blocking(self.status, False)
+            try:
+                return os.read(self.status, 2) == b"1"
+            except BlockingIOError:
+                return False
+        finally:
+            os.close(self.status)
             process.stdout.close()
 
 
@@ -323,6 +336,9 @@ def execute_turn(executable, root, env, task, expected_sha, enabled):
         ("; PR #" + str(task["pr"]) if task["pr"] is not None else "") +
         (". Prepare and finish on the explicitly authorized branch " + task["target_branch"]
          if task.get("target_branch") else ". Stay on the entry branch") +
+        (". Start that branch at the explicitly authorized commit " + task["target_base_sha"]
+         + "; preserve the original branch and do not reset or overwrite existing branches"
+         if task.get("target_base_sha") else "") +
         ". Perform your own identity, branch, HEAD and existing-changes preflight before editing. "
         "Preserve preexisting changes and unrelated files, existing credentials, configuration and permissions. "
         "Do not create clones, worktrees, containers or installations. Never read or reveal "
@@ -335,7 +351,7 @@ def execute_turn(executable, root, env, task, expected_sha, enabled):
     try:
         if not enabled():
             return {"started": False, "exit_code": 130, "cleanup_verified": True,
-                    "reason": "CODEX_REVOKED_BEFORE_START"}
+                    "effects_reconciled": True, "reason": "CODEX_REVOKED_BEFORE_START"}
         with tempfile.TemporaryFile(mode="w+b") as prompt:
             prompt.write(task_text.encode("utf-8"))
             prompt.seek(0)
@@ -374,7 +390,8 @@ def execute_turn(executable, root, env, task, expected_sha, enabled):
     # Even if the group stopped, hold the existing reconciliation fence.
     verified = started and clean and complete and not failed and code == 0
     return {"started": started, "exit_code": code if verified else 125,
-            "cleanup_verified": verified, "process_group_stopped": clean,
+            "cleanup_verified": clean, "effects_reconciled": verified,
+            "process_group_stopped": clean, "descendants_stopped": clean,
             "turn_completed": complete, "reason": None if verified else "CODEX_EFFECT_UNCERTAIN",
             "agent_message": message if verified else None,
             "command_exit_codes": command_results if verified else []}
@@ -386,7 +403,12 @@ def run_codex(root, env, request, *, enabled):
     result = {"execution_id": request["execution_id"], "execution_environment": "wsl-direct",
               "before": before, "started": False, "cleanup_verified": True}
     executable = shutil.which("codex", path=env["PATH"])
-    capacity, clean = probe_capacity(executable, root, env, enabled) if executable else ("unavailable", True)
+    catalog = None
+    if executable and ("model" in task or "reasoning_effort" in task):
+        catalog, clean = provider_catalog(executable, root, env, enabled)
+        capacity = catalog["capacity"]
+    else:
+        capacity, clean = probe_capacity(executable, root, env, enabled) if executable else ("unavailable", True)
     selected = select_executor(task["mode"], capacity)
     result.update(capacity=capacity, executor=selected, exit_code=125)
     if not clean:
@@ -399,33 +421,71 @@ def run_codex(root, env, request, *, enabled):
         if observed != before:
             raise ValueError("CODEX_CHECKOUT_CHANGED")
     except (OSError, ValueError):
-        return {**result, "executor": "blocked", "reason": "CODEX_CHECKOUT_CHANGED"}
+        return {**result, "executor": "blocked", "effects_reconciled": False,
+                "reason": "CODEX_CHECKOUT_CHANGED"}
     if not enabled():
         return {**result, "executor": "blocked", "reason": "CODEX_AUTHORIZATION_REVOKED"}
     if selected != "codex":
         return {**result, "after": observed, "reason": "CODEX_NOT_SELECTED",
                 "handoff_verified": False}
-    if "model" in task or "reasoning_effort" in task:
-        catalog, catalog_clean = provider_catalog(executable, root, env, enabled)
-        if not catalog_clean:
-            return {**result, "executor": "blocked", "cleanup_verified": False, "reason": "CODEX_PROBE_UNCERTAIN"}
-        if not enabled() or catalog["capacity"] != "available" or not selection_valid(task, catalog["models"]):
-            return {**result, "executor": "blocked", "reason": "CODEX_SELECTION_UNAVAILABLE"}
+    if catalog is not None and not selection_valid(task, catalog["models"]):
+        return {**result, "executor": "blocked", "reason": "CODEX_SELECTION_UNAVAILABLE"}
+    base = task.get("target_base_sha", before["head"])
+    dispatch_task = task
+    dispatch_sha = request["expected_sha"]
+    if "target_base_sha" in task:
+        target = task["target_branch"]
+        try:
+            if before["dirty"] or git(root, "cat-file", "-t", base).strip() != b"commit":
+                raise ValueError("unsafe base")
+            existing = git(root, "for-each-ref", "--format=%(objectname) %(refname)", "refs/heads/" + target).decode().splitlines()
+            exact = [row.split(" ", 1)[0] for row in existing if row.endswith(" refs/heads/" + target)]
+            if exact and exact != [base]:
+                raise ValueError("target exists at different revision")
+        except (OSError, ValueError):
+            return {**result, "executor": "blocked", "reason": "CODEX_TARGET_BASE_UNAVAILABLE"}
+        if not enabled():
+            return {**result, "executor": "blocked", "reason": "CODEX_AUTHORIZATION_REVOKED"}
         try:
             if require_checkout(root, request["expected_sha"], task["branch"]) != before:
                 raise ValueError("changed")
+            if exact:
+                git(root, "switch", "--no-guess", target)
+            else:
+                git(root, "switch", "--no-guess", "-c", target, base)
+            prepared = require_checkout(root, base, target)
+            if prepared["dirty"]:
+                raise ValueError("unexpected changes")
         except (OSError, ValueError):
-            return {**result, "executor": "blocked", "reason": "CODEX_CHECKOUT_CHANGED"}
+            return {**result, "executor": "blocked", "effects_reconciled": False,
+                    "reason": "CODEX_BRANCH_PREPARATION_UNCERTAIN"}
+        result["prepared"] = prepared
+        dispatch_task = {k: v for k, v in task.items() if k not in {"target_branch", "target_base_sha"}}
+        dispatch_task["branch"] = target
+        dispatch_sha = base
+    if not enabled():
+        # A branch switch is already a local effect; keep its evidence and
+        # require reconciliation if authorization was revoked after preparation.
+        return {**result, "executor": "blocked", "effects_reconciled": "prepared" not in result,
+                "reason": "CODEX_AUTHORIZATION_REVOKED"}
     result["requested_model"] = task.get("model")
     result["effective_model"] = None
-    result.update(execute_turn(executable, root, env, task, request["expected_sha"], enabled))
+    try:
+        require_checkout(root, dispatch_sha, dispatch_task["branch"])
+    except (OSError, ValueError):
+        return {**result, "executor": "blocked", "effects_reconciled": False,
+                "reason": "CODEX_CHECKOUT_CHANGED"}
+    result.update(execute_turn(executable, root, env, dispatch_task, dispatch_sha, enabled))
+    result["effects_reconciled"] = result.get("effects_reconciled", result.get("cleanup_verified") is True and result.get("exit_code") == 0)
+    result["checkout_verified"] = False
     try:
         after = checkout_state(root)
         result["after"] = after
         if after["branch"] != task.get("target_branch", before["branch"]):
             raise ValueError("CODEX_BRANCH_CHANGED")
-        git(root, "merge-base", "--is-ancestor", before["head"], after["head"])
+        git(root, "merge-base", "--is-ancestor", base, after["head"])
+        result["checkout_verified"] = True
     except (OSError, ValueError):
-        result.update(cleanup_verified=False, exit_code=125, reason="CODEX_CHECKOUT_UNCERTAIN",
+        result.update(effects_reconciled=False, exit_code=125, reason="CODEX_CHECKOUT_UNCERTAIN",
                       agent_message=None)
     return result

@@ -33,17 +33,22 @@ class LifecycleTests(unittest.TestCase):
         bridge=Mock()
         tunnel=Mock()
         bridge.poll.return_value=None
-        tunnel.poll.return_value=1 if fail_tunnel else None
+        tunnel.poll.return_value=None
+        failed_tunnel=Mock()
+        failed_tunnel.poll.return_value=1
         def spawn(cmd, **kwargs):
             order.append(cmd[0])
-            if cmd[0]=="tunnel" and stop_after_launch:
-                stop.set()
+            if cmd[0]=="tunnel":
+                if fail_tunnel and order.count("tunnel")==1:
+                    return failed_tunnel
+                if stop_after_launch or fail_tunnel:
+                    stop.set()
             return bridge if cmd[0]=="bridge" else tunnel
         def cleanup(tunnel_child, bridge_child):
             order.append("stop-tunnel" if tunnel_child is tunnel else "stop-none")
             order.append("stop-bridge" if bridge_child is bridge else "stop-none")
         with patch("socket.socket"), patch("project_os_bridge.supervised.subprocess.Popen",side_effect=spawn), patch("project_os_bridge.supervised.read_metadata",return_value=metadata), patch("project_os_bridge.supervised.stop_children",side_effect=cleanup):
-            if fail_tunnel or metadata["resource"]!="expected":
+            if metadata["resource"]!="expected":
                 with self.assertRaises(RuntimeError):
                     supervise(["bridge"],["tunnel"],{}, {}, Mock(),SimpleNamespace(resource="expected",issuer="issuer"),stop)
             else:
@@ -53,8 +58,8 @@ class LifecycleTests(unittest.TestCase):
     def test_invalid_metadata_never_starts_tunnel(self):
         self.assertEqual(self.invoke({"resource":"wrong","authorization_servers":["issuer"]}),["bridge","stop-none","stop-bridge"])
 
-    def test_tunnel_exit_stops_both(self):
-        self.assertEqual(self.invoke({"resource":"expected","authorization_servers":["issuer"]},fail_tunnel=True),["bridge","tunnel","stop-tunnel","stop-bridge"])
+    def test_tunnel_exit_restarts_only_tunnel(self):
+        self.assertEqual(self.invoke({"resource":"expected","authorization_servers":["issuer"]},fail_tunnel=True),["bridge","tunnel","tunnel","stop-tunnel","stop-bridge"])
 
     def test_requested_stop_orders_cleanup(self):
         self.assertEqual(self.invoke({"resource":"expected","authorization_servers":["issuer"]},stop_after_launch=True),["bridge","tunnel","stop-tunnel","stop-bridge"])

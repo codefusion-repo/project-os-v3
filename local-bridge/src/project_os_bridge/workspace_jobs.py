@@ -3,6 +3,7 @@
 Registered workspace preparation and direct WSL execution use the same durable queue.
 """
 import os
+import hashlib
 import re
 import json
 import subprocess
@@ -174,7 +175,42 @@ def local_runtime(root, policy=None):
     return runtime
 
 
-def authorize_request(policy, principal, request, *, execute=False):
+def direct_operation(policy, principal, request, request_key):
+    from .execution import command_steps
+    if not isinstance(request_key, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,80}", request_key):
+        raise ValueError("INVALID_REQUEST_KEY")
+    profile, project = request["profile"], request["project"]
+    backend = policy.backend
+    if backend is None:
+        raise PermissionError("DENIED")
+    route = backend.route(profile, project)
+    plan = backend.qa_plans.get(route)
+    signer = backend.qa_signers.get(route)
+    identity, context = backend.binding(profile, project)
+    if (request.get("execution_id") != identity or request.get("context_id") != context
+            or request.get("qa_plan_sha256") != (plan.digest() if plan else None)
+            or request.get("qa_signer_sha256") != (signer.digest if signer else None)):
+        raise PermissionError("EXECUTION_BINDING_CHANGED")
+    steps = command_steps(profile, plan)
+    frozen = {k: v for k, v in request.items() if k != "operation_sha256"}
+    digest = hashlib.sha256(json.dumps(
+        ["supervised-direct-v1", principal, request_key, frozen, steps],
+        sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+    commands = [{"argv": ["--dart-define=[configured value]"
+                            if arg.startswith("--dart-define=") else arg for arg in argv],
+                 "cwd": relative} for argv, relative in steps]
+    return {"operation_sha256": digest, "project": project, "expected_sha": request["expected_sha"],
+            "profile": profile, "request_key": request_key, "commands": commands,
+            "configuration_bound": plan is not None, "saved_changes": "changes" in request,
+            "changes_sha256": hashlib.sha256(json.dumps(request["changes"], sort_keys=True,
+                separators=(",", ":")).encode()).hexdigest() if "changes" in request else None,
+            "delivery_pr": request.get("delivery_target", {}).get("pr"),
+            "impact": "Registered tools run against a committed Job snapshot; may write generated files and caches."
+                      + (" Includes signing and configured delivery." if request.get("delivery_target") else ""),
+            "evidence": "Durable Job state, exit code, cleanup, revision and artifact identity when applicable."}
+
+
+def authorize_request(policy, principal, request, *, execute=False, request_key=None, require_operation=False):
     fields = {"project", "profile", "expected_sha", "binding"}
     if execute:
         fields.update(("execution_id", "context_id"))
@@ -182,6 +218,8 @@ def authorize_request(policy, principal, request, *, execute=False):
             fields.add("qa_plan_sha256")
             if "qa_signer_sha256" in request or type(policy) is SupervisedWorkspacePolicy:
                 fields.add("qa_signer_sha256")
+    if isinstance(request, dict) and "operation_sha256" in request:
+        fields.add("operation_sha256")
     if isinstance(request, dict) and "codex_task" in request:
         fields.add("codex_task")
     if isinstance(request, dict) and "changes" in request:
@@ -219,6 +257,8 @@ def authorize_request(policy, principal, request, *, execute=False):
                 or not isinstance(target["binding_sha256"], str)
                 or not re.fullmatch(r"[0-9a-f]{64}", target["binding_sha256"])):
             raise ValueError("QA_DELIVERY_TARGET_INVALID")
+        if require_operation:
+            policy.require(principal, "workspace_delivery", project)
     if "changes" in request:
         policy.require(principal, "workspace_change", project)
         if normalize_changes(request["changes"]) != request["changes"]:
@@ -237,6 +277,14 @@ def authorize_request(policy, principal, request, *, execute=False):
         policy.require(principal, "workspace_execute", project)
     for op in ("workspace_prepare", "workspace_materialize", request["profile"]):
         policy.require(principal, op, project)
+    direct = execute and type(policy) is SupervisedWorkspacePolicy and request["profile"] != CODEX_PROFILE
+    if "operation_sha256" in request:
+        if not direct or not re.fullmatch(r"[0-9a-f]{64}", request["operation_sha256"]):
+            raise PermissionError("INVALID_OPERATION_BINDING")
+        if request_key is not None and direct_operation(policy, principal, request, request_key)["operation_sha256"] != request["operation_sha256"]:
+            raise PermissionError("OPERATION_CHANGED")
+    elif direct and require_operation:
+        raise PermissionError("OPERATION_APPROVAL_REQUIRED")
 
 
 def browser_route(jobs, principal, project, expected_sha, task, request_key, *, authorize):
@@ -397,7 +445,7 @@ def workspace_git_fetch(jobs, principal, project, expected_sha, *, authorize=lam
                 "sha_present": after_present, "repository_id": entry["repository_id"]}
 
 
-def submit_workspace(jobs, principal, project, expected_sha, profile, request_key, *, authorize=lambda: None, backend=None, changes=None, delivery_target=None, codex_task=None):
+def submit_workspace(jobs, principal, project, expected_sha, profile, request_key, *, authorize=lambda: None, backend=None, changes=None, delivery_target=None, codex_task=None, preview=False, operation_sha256=None):
     if (profile == CODEX_PROFILE) != (codex_task is not None):
         raise ValueError("INVALID_CODEX_TASK")
     runtime = local_runtime(jobs.probe.root, jobs.policy)
@@ -446,6 +494,16 @@ def submit_workspace(jobs, principal, project, expected_sha, profile, request_ke
     if binding_digest(current_entry, current_root) != request["binding"]:
         raise PermissionError("WORKSPACE_BINDING_CHANGED")
     authorize()
+    direct = execute and type(jobs.policy) is SupervisedWorkspacePolicy and profile != CODEX_PROFILE
+    if direct:
+        operation = direct_operation(jobs.policy, principal, request, request_key)
+        if preview:
+            return operation
+        if operation_sha256 != operation["operation_sha256"]:
+            raise PermissionError("OPERATION_APPROVAL_REQUIRED")
+        request["operation_sha256"] = operation_sha256
+    elif preview or operation_sha256 is not None:
+        raise ValueError("OPERATION_PREVIEW_UNAVAILABLE")
     return jobs.submit(principal, workspace_resource(jobs.policy), "workspace_execute" if execute else "workspace_prepare",
                        request_key, workspace=request)
 
@@ -544,11 +602,14 @@ def run_workspace(jobs, row, *, executor=None):
     request = row["workspace"]
     result = {"operation": "prepare", "profile": request["profile"],
               "head": request["expected_sha"], "execution_available": False}
+    if "operation_sha256" in request:
+        result["operation_sha256"] = request["operation_sha256"]
     dispatched = False
     try:
         runtime = local_runtime(jobs.probe.root, jobs.policy)
         execute = row["workflow"] == "workspace_execute"
-        authorize_request(jobs.policy, row["principal"], request, execute=execute)
+        authorize_request(jobs.policy, row["principal"], request, execute=execute,
+                          request_key=row.get("request_key"), require_operation=True)
         if execute and executor is None:
             return "BLOCKED", {**result, "reason": "EXECUTION_BACKEND_UNAVAILABLE"}
         if request["profile"] == CODEX_PROFILE:
@@ -564,6 +625,8 @@ def run_workspace(jobs, row, *, executor=None):
             dispatched = True
             execution = executor(root, row, snapshot)
             verified = (execution.get("cleanup_verified") is True
+                        and execution.get("effects_reconciled", True) is True
+                        and execution.get("checkout_verified", True) is True
                         and execution.get("execution_id") == request["execution_id"])
             state = ("SUCCEEDED" if verified and execution.get("exit_code") == 0
                      and execution.get("executor") == "codex" else "BLOCKED")
@@ -577,7 +640,8 @@ def run_workspace(jobs, row, *, executor=None):
         local_runtime(jobs.probe.root, jobs.policy)
         if not execute:
             return "SUCCEEDED", {**result, **snapshot}
-        authorize_request(jobs.policy, row["principal"], request, execute=True)
+        authorize_request(jobs.policy, row["principal"], request, execute=True,
+                          request_key=row.get("request_key"), require_operation=True)
         _, entry, root = _binding(runtime, jobs.policy, row["principal"], request["project"],
                                   request["expected_sha"], request["profile"])
         if binding_digest(entry, root) != request["binding"]:
