@@ -180,7 +180,10 @@ class _Child:
         try:
             os.close(self.control)
             if process.stdin is not None:
-                process.stdin.close()
+                try:
+                    process.stdin.close()
+                except BrokenPipeError:
+                    pass
             try:
                 process.wait(timeout=12)
             except subprocess.TimeoutExpired:
@@ -460,9 +463,17 @@ def run_codex(root, env, request, *, enabled):
         dispatch_task["branch"] = target
         dispatch_sha = base
     if not enabled():
-        return {**result, "executor": "blocked", "reason": "CODEX_AUTHORIZATION_REVOKED"}
+        # A branch switch is already a local effect; keep its evidence and
+        # require reconciliation if authorization was revoked after preparation.
+        return {**result, "executor": "blocked", "effects_reconciled": "prepared" not in result,
+                "reason": "CODEX_AUTHORIZATION_REVOKED"}
     result["requested_model"] = task.get("model")
     result["effective_model"] = None
+    try:
+        require_checkout(root, dispatch_sha, dispatch_task["branch"])
+    except (OSError, ValueError):
+        return {**result, "executor": "blocked", "effects_reconciled": False,
+                "reason": "CODEX_CHECKOUT_CHANGED"}
     result.update(execute_turn(executable, root, env, dispatch_task, dispatch_sha, enabled))
     result["effects_reconciled"] = result.get("effects_reconciled", result.get("cleanup_verified") is True and result.get("exit_code") == 0)
     result["checkout_verified"] = False

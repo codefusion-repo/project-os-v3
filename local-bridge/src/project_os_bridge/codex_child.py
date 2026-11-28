@@ -57,7 +57,10 @@ def own(control, status, argv):
         except ChildProcessError:
             # ECHILD after reaping is the evidence that all adopted children
             # are gone; a snapshot of a process group alone is not sufficient.
-            os.write(status, b"1")
+            try:
+                os.write(status, b"1")
+            except BrokenPipeError:
+                pass  # The provider may already have exited; no work is replayed.
             return 125 if code is None else (code if code >= 0 else 128 - code)
         if not stopping and select.select([control], [], [], 0.05)[0]:
             stopping = True
@@ -65,8 +68,9 @@ def own(control, status, argv):
             now = time.monotonic()
             if deadline is None:
                 deadline = now + 8
-            if now >= deadline:
-                return 125  # no clean marker; retain the durable effect fence
+            # The provider has a bounded wait and keeps the durable fence if
+            # cleanup is not observed. Do not voluntarily orphan children at
+            # that deadline: retain ownership until waitpid proves quiescence.
             sig = signal.SIGTERM if now < deadline - 5 else signal.SIGKILL
             # Only direct children of this private owner, not other Codex
             # sessions. A child cannot be PID-reused until we reap it.

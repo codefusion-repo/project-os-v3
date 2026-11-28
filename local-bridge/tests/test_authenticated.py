@@ -393,6 +393,7 @@ class AuthTests(unittest.TestCase):
                 self.assertEqual(payload, {"status": "ready",
                     "caller_identity_verified": True, "repository_access": False,
                     "mode": "authenticated-disposable",
+                    "reconciliation_required": False,
                     "installation": {"status": "unavailable"}})
         self.assertEqual(trace, [
             ("int", 100, None, "recorded"),

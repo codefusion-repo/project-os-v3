@@ -199,6 +199,21 @@ class CodexProviderTests(unittest.TestCase):
                 unrelated.terminate()
                 unrelated.wait(timeout=5)
 
+    @unittest.skipUnless(sys.platform == "linux", "Linux process ownership")
+    def test_stop_reaps_running_detached_descendant(self):
+        with tempfile.TemporaryDirectory() as folder:
+            child = _Child([sys.executable, "-c",
+                "import os,json,time; pid=os.fork(); "
+                "exec('if pid == 0:\\n os.setsid()\\n time.sleep(30)\\n os._exit(0)'); "
+                "print(json.dumps({'pid':pid}),flush=True); time.sleep(30)"],
+                folder, dict(os.environ))
+            try:
+                event = child.event(time.monotonic() + 5, lambda: True)
+            finally:
+                clean = child.stop()
+            self.assertTrue(clean)
+            self.assertFalse(Path("/proc", str(event["pid"])).exists())
+
     def test_explicit_target_base_after_divergence(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)

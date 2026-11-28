@@ -86,6 +86,38 @@ def process_observations(raw):
             "seccomp_mode": int(fields["Seccomp"])}
 
 
+def codex_process_observations(proc=Path("/proc"), *, uid=None):
+    """Same-UID name observations only; never infer ownership or signal a PID."""
+    uid = os.getuid() if uid is None else uid
+    result = {"name_candidates": 0, "parent_one_candidates": 0,
+              "zombie_candidates": 0, "inventory_complete": True,
+              "job_attribution": "not_established"}
+    with os.scandir(proc) as entries:
+        for index, entry in enumerate(entries):
+            if index >= 8192:
+                result["inventory_complete"] = False
+                break
+            if not entry.name.isascii() or not entry.name.isdecimal():
+                continue
+            try:
+                raw = bounded_text(Path(entry.path) / "status", 65536)
+                fields = dict(line.split(":", 1) for line in raw.splitlines()
+                              if ":" in line)
+                if int(fields["Uid"].split()[0]) != uid:
+                    continue
+                name = fields["Name"].strip()
+                if name != "codex" and not name.startswith("codex-"):
+                    continue
+                parent = int(fields["PPid"].strip())
+                state = fields["State"].split()[0]
+                result["name_candidates"] += 1
+                result["parent_one_candidates"] += int(parent == 1)
+                result["zombie_candidates"] += int(state == "Z")
+            except (OSError, ValueError, KeyError, IndexError):
+                result["inventory_complete"] = False
+    return result
+
+
 def listener_counts(raw, *, ipv6=False):
     rows = raw.splitlines()
     if not rows or "local_address" not in rows[0]:
@@ -135,7 +167,8 @@ class Diagnostics:
         return {"platform": "linux", "wsl": "microsoft" in kernel or "wsl" in kernel,
                 "cpu_count": os.cpu_count(), "cgroup_v2": Path("/sys/fs/cgroup/cgroup.controllers").is_file(),
                 "interop_observed": Path("/proc/sys/fs/binfmt_misc/WSLInterop").exists()
-                    or bool(os.environ.get("WSL_INTEROP"))}
+                    or bool(os.environ.get("WSL_INTEROP")),
+                "codex_process_observations": codex_process_observations()}
 
     def subordinate_ids(self):
         import pwd

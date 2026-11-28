@@ -9,6 +9,7 @@ from unittest.mock import patch
 
 from project_os_bridge.diagnostics import (
     Diagnostics, FLAG, bounded_text, listener_counts, mount_counts, process_observations,
+    codex_process_observations,
 )
 from project_os_bridge.core import Jobs, Policy
 
@@ -77,6 +78,25 @@ class DiagnosticsTests(unittest.TestCase):
         self.assertEqual(result["seccomp_mode"], 2)
         with self.assertRaises(ValueError):
             process_observations(raw + "\nCapEff: 0")
+
+    def test_codex_observations_do_not_attribute_or_expose_processes(self):
+        proc = self.root / "proc"
+        proc.mkdir()
+        for pid, name, uid, parent, state in (
+                (100, "codex", 123, 1, "S"),
+                (101, "codex", 123, 99, "Z"),
+                (102, "codex", 124, 1, "S"),
+                (103, "unrelated", 123, 1, "S")):
+            directory = proc / str(pid)
+            directory.mkdir()
+            (directory / "status").write_text(
+                f"Name:\t{name}\nUid:\t{uid} {uid} {uid} {uid}\nPPid:\t{parent}\nState:\t{state}\n")
+            (directory / "cmdline").write_text("private-command")
+        result = codex_process_observations(proc, uid=123)
+        self.assertEqual(result, {"name_candidates": 2, "parent_one_candidates": 1,
+                                  "zombie_candidates": 1, "inventory_complete": True,
+                                  "job_attribution": "not_established"})
+        self.assertNotIn("private-command", json.dumps(result))
 
     def test_listener_scope_and_no_addresses(self):
         raw = ("sl local_address rem_address st\n"
