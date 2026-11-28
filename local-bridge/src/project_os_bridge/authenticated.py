@@ -320,6 +320,24 @@ def build_server(verifier, jobs, fixture_reader=None, *, diagnostics=None, githu
                 return await asyncio.to_thread(submit)
 
         @mcp.tool(annotations=read)
+        async def workspace_git_status(project: StrictStr, expected_sha: StrictStr) -> dict:
+            """Inspect checkout identity, dirty evidence, SHA presence and recent commit IDs."""
+            from .workspace_jobs import workspace_git_status as inspect_git
+            actor = principal()
+            token = get_access_token()
+            def check():
+                if principal() != actor or token.expires_at is None or token.expires_at <= time.time():
+                    raise PermissionError("DENIED")
+            def collect():
+                try:
+                    return inspect_git(jobs, actor, project, expected_sha, authorize=check)
+                except PermissionError:
+                    raise PermissionError("DENIED") from None
+                except (OSError, ValueError, TypeError, KeyError):
+                    raise ValueError("WORKSPACE_GIT_UNAVAILABLE") from None
+            return await asyncio.to_thread(collect)
+
+        @mcp.tool(annotations=read)
         async def workspace_changes(job_id: StrictStr) -> dict:
             """Read a bounded historical diff of a caller's applied edits, not live files."""
             actor = principal()

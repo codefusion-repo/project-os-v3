@@ -22,7 +22,7 @@ RUNTIME = "workspace-runtime.json"
 SUPERVISED_GRANTS = "workspace-grants.json"
 SUPERVISED_EXECUTION = "workspace-execution.json"
 PREPARATION_OPS = frozenset({"workspace_prepare", "workspace_materialize",
-                             "workspace_change", "workspace_context", "workspace_dirty_context", *PROFILES, CODEX_PROFILE})
+                             "workspace_change", "workspace_context", "workspace_dirty_context", "workspace_git_read", *PROFILES, CODEX_PROFILE})
 WORKSPACE_OPS = PREPARATION_OPS | {"workspace_execute", "workspace_delivery"}
 
 
@@ -271,6 +271,42 @@ def browser_route(jobs, principal, project, expected_sha, task, request_key, *, 
         return {**blocked, "reason": "ACTIVE_WORKER"}
     except (OSError, ValueError, TypeError):
         return {**blocked, "reason": "HANDOFF_UNVERIFIED"}
+
+
+def workspace_git_status(jobs, principal, project, expected_sha, *, authorize=lambda: None):
+    """Observe the checkout and a bounded history while holding the worker fence."""
+    from .worker import exclusive_worker
+    from .codex_provider import checkout_state
+    from .methodology import git, commit
+    with exclusive_worker(jobs):
+        authorize()
+        runtime = local_runtime(jobs.probe.root, jobs.policy)
+        jobs.policy.require(principal, "workspace_git_read", project)
+        entry, root = project_checkout(runtime, jobs.policy, principal, project, expected_sha)
+        binding = binding_digest(entry, root)
+        with jobs.transaction() as conn:
+            if conn.execute("SELECT 1 FROM jobs WHERE state IN ('QUEUED','RUNNING') LIMIT 1").fetchone():
+                raise ValueError("ACTIVE_JOB")
+            if conn.execute("SELECT 1 FROM fixture_effects WHERE resolved_at IS NULL LIMIT 1").fetchone():
+                raise ValueError("RECONCILIATION_REQUIRED")
+            before = checkout_state(root)
+            try:
+                commit(root, expected_sha)
+                present = True
+            except ValueError:
+                present = False
+            history = git(root, "log", "--format=%H", "-n", "20", before["head"]).decode("ascii").splitlines()
+            if any(not SHA.fullmatch(item) for item in history):
+                raise ValueError("WORKSPACE_GIT_HISTORY_INVALID")
+            if checkout_state(root) != before:
+                raise ValueError("WORKSPACE_CHECKOUT_CHANGED")
+            current_entry, current_root = project_checkout(runtime, jobs.policy, principal, project, expected_sha)
+            if binding_digest(current_entry, current_root) != binding:
+                raise PermissionError("WORKSPACE_BINDING_CHANGED")
+            jobs.policy.require(principal, "workspace_git_read", project)
+            authorize()
+            return {**before, "requested_sha": expected_sha, "sha_present": present,
+                    "history": history, "repository_id": entry["repository_id"]}
 
 
 def submit_workspace(jobs, principal, project, expected_sha, profile, request_key, *, authorize=lambda: None, backend=None, changes=None, delivery_target=None, codex_task=None):

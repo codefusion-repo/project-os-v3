@@ -13,3 +13,5 @@ En el provider Codex, comprueba el SHA y rama de entrada y conserva cambios pree
 ## Referencias operativas
 
 Aplica obligatoriamente la [selección de templates](../PROJECT_OS.md#selección-de-templates), [adopción y versión](../PROJECT_OS.md#instalación-adopción-y-versión-del-proyecto) y [seguridad y límites](../PROJECT_OS.md#seguridad-transversal-y-límites). Comprueba exclusiones y seguimiento Git mediante git check-ignore y git ls-files antes de escribir archivos privados; no presupongas que el checkout pertenece al dispositivo del PM. Si faltan permisos de sandbox o herramientas, informa la capacidad ausente y conserva el trabajo seguro.
+
+La inspección Git candidata de Browser utiliza el grant independiente `workspace_git_read` además de `workspace_prepare`, y respeta la exclusividad y reconciliación existentes. El fetch directo aún no está implementado; una lectura no reserva el checkout ni acredita que un fetch haya ocurrido.

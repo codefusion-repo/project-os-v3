@@ -267,6 +267,38 @@ class WorkspacePreflightTests(unittest.TestCase):
                                                 for op in ("submit", "read", "cancel"))])
         return Jobs(state, policy, workflows=("workspace_prepare",))
 
+    def test_git_status_requires_grant_and_preserves_dirty_checkout(self):
+        from project_os_bridge.workspace_jobs import workspace_git_status
+        jobs = self.workspace_queue()
+        with self.assertRaises(PermissionError):
+            workspace_git_status(jobs, "operator", "demo", self.sha)
+        jobs.policy = Policy([*jobs.policy.grants, ("operator", "workspace_git_read", "demo")])
+        (self.project / "pubspec.yaml").write_text("dirty fixture\n")
+        self.git("add", "pubspec.yaml")
+        (self.project / "package.json").write_text("unstaged fixture\n")
+        before = self.git("status", "--porcelain")
+        result = workspace_git_status(jobs, "operator", "demo", self.sha)
+        self.assertTrue(result["dirty"])
+        self.assertTrue(result["sha_present"])
+        self.assertEqual(result["head"], self.sha)
+        self.assertEqual(result["history"][0], self.sha)
+        self.assertFalse(workspace_git_status(jobs, "operator", "demo", "0" * 40)["sha_present"])
+        self.assertEqual(self.git("status", "--porcelain"), before)
+        self.git("remote", "set-url", "origin", "https://github.com/example/other.git")
+        with self.assertRaises(ValueError):
+            workspace_git_status(jobs, "operator", "demo", self.sha)
+
+    def test_git_status_blocks_active_effect_and_worker(self):
+        from project_os_bridge.workspace_jobs import workspace_git_status
+        jobs = self.workspace_queue()
+        jobs.policy = Policy([*jobs.policy.grants, ("operator", "workspace_git_read", "demo")])
+        with exclusive_worker(jobs), self.assertRaises(BlockingIOError):
+            workspace_git_status(jobs, "operator", "demo", self.sha)
+        with jobs.transaction() as conn:
+            conn.execute("INSERT INTO fixture_effects(job_id) VALUES(?)", ("fixture",))
+        with self.assertRaises(ValueError):
+            workspace_git_status(jobs, "operator", "demo", self.sha)
+
     def test_durable_job_materializes_both_profiles(self):
         jobs = self.workspace_queue()
         ids = []
