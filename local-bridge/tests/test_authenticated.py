@@ -802,7 +802,7 @@ class AuthTests(unittest.TestCase):
                                                 "body": None, "state": "open", "comments": 0,
                                                 "repository_url": base, "url": base + "/issues/1"}}
 
-        def methodology(path, repository, workflow, skills, templates, expected_revision):
+        def methodology(path, repository, workflow, skills, templates, expected_revision, *, integrated_head=None):
             self.assertEqual(str(path), grants[repository.split("/")[1]]["config"])
             return {"complete": True, "documents": [{"content": repository + "-fixture-methodology"}]}
 

@@ -3,7 +3,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 from project_os_bridge.core import Policy
-from project_os_bridge.github import GitHubReader
+from project_os_bridge.github import GitHubReader, GitHubReadError
 
 
 class GitHubTests(unittest.TestCase):
@@ -56,3 +56,29 @@ class GitHubTests(unittest.TestCase):
         self.assertFalse(result["complete"])
         self.assertEqual(result["comments_error"],"AGGREGATE_LIMIT")
         self.assertEqual(len(result["comments"]),100)
+
+    def test_canonical_integrated_head_requires_exact_identity(self):
+        canonical = "codefusion-repo/project-os-v3"
+        reader = GitHubReader(Policy([("local", "github_read", "kit")]),
+                              {"kit": canonical}, self.reader.config_dir,
+                              repository_ids={"kit": 123})
+        identity = {"complete": True, "data": {"id": 123, "full_name": canonical}}
+        ref = {"complete": True, "data": {"ref": "refs/heads/main",
+               "object": {"type": "commit", "sha": "a" * 40}}}
+        with patch.object(reader, "_request", side_effect=[identity, ref]) as request:
+            self.assertEqual(reader.integrated_head("local", "kit"), "a" * 40)
+            self.assertEqual([call.args[0] for call in request.call_args_list],
+                             ["repos/" + canonical, "repos/" + canonical + "/git/ref/heads/main"])
+        with patch.object(reader, "_request", return_value={"complete": True,
+                          "data": {"id": 456, "full_name": canonical}}) as request:
+            with self.assertRaises(GitHubReadError):
+                reader.integrated_head("local", "kit")
+            self.assertEqual(request.call_count, 1)
+        wrong_ref = {"complete": True, "data": {**ref["data"], "ref": "refs/heads/work/candidate"}}
+        with patch.object(reader, "_request", side_effect=[identity, wrong_ref]):
+            with self.assertRaises(GitHubReadError):
+                reader.integrated_head("local", "kit")
+        with patch.object(self.reader, "_request") as request:
+            with self.assertRaises(PermissionError):
+                self.reader.integrated_head("local", "demo")
+            request.assert_not_called()
