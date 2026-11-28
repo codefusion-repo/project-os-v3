@@ -9,7 +9,7 @@ from unittest.mock import patch
 
 from project_os_bridge.diagnostics import (
     Diagnostics, FLAG, bounded_text, listener_counts, mount_counts, process_observations,
-    codex_process_observations,
+    codex_process_observations, supervisor_observations,
 )
 from project_os_bridge.core import Jobs, Policy
 
@@ -98,6 +98,33 @@ class DiagnosticsTests(unittest.TestCase):
                                   "job_attribution": "not_established"})
         self.assertNotIn("private-command", json.dumps(result))
 
+    def test_local_codex_identity_separate_from_remote_aggregate(self):
+        proc = self.root / "proc"
+        directory = proc / "123"
+        directory.mkdir(parents=True)
+        (directory / "status").write_text("Name:\tcodex\nUid:\t123 123 123 123\nPPid:\t1\nState:\tS\n")
+        (directory / "stat").write_text("123 (codex (fixture)) S " + "0 " * 18 + "98765")
+        remote = codex_process_observations(proc, uid=123)
+        local = codex_process_observations(proc, uid=123, local_identities=True)
+        self.assertNotIn("local_identities", remote)
+        self.assertEqual(local["local_identities"], [{"pid": 123, "ppid": 1,
+            "start_ticks": 98765, "zombie": False}])
+        self.assertEqual(local["job_attribution"], "not_established")
+
+    def test_supervisor_journal_filters_and_omits_untrusted_text(self):
+        with patch("project_os_bridge.diagnostics.subprocess.run") as run:
+            run.return_value = SimpleNamespace(returncode=0, stdout=(
+                b"TUNNEL_EXIT code=1; bridge retained\nprivate unexpected text\n"
+                b"BRIDGE_RECOVERY attempt=1\n"))
+            result = supervisor_observations()
+            self.assertEqual(result["counts"], {"tunnel_exit": 1, "bridge_recovery": 1})
+            self.assertEqual(result["last_event"], "bridge_recovery")
+            self.assertNotIn("private", json.dumps(result))
+            argv = run.call_args.args[0]
+            self.assertIn("--unit=project-os-bridge.service", argv)
+            self.assertIn("--lines=30", argv)
+            self.assertEqual(run.call_args.kwargs["timeout"], 3)
+
     def test_listener_scope_and_no_addresses(self):
         raw = ("sl local_address rem_address st\n"
                "0: 0100007F:223D 00000000:0000 0A\n"
@@ -178,8 +205,9 @@ class DiagnosticsTests(unittest.TestCase):
         from unittest.mock import Mock
         result = {"linked": True, "active": "active", "enabled": False, "pending_job": False}
         with patch("project_os_bridge.diagnostics.prepared_unit", return_value=Path("/fixed")) as prepare, \
-                patch("project_os_bridge.diagnostics.snapshot", return_value=result) as snap:
-            self.assertEqual(self.diagnostics.service(), result)
+                patch("project_os_bridge.diagnostics.snapshot", return_value=result) as snap, \
+             patch("project_os_bridge.diagnostics.supervisor_observations", return_value={"status": "observed"}):
+            self.assertEqual(self.diagnostics.service(), {**result, "supervisor": {"status": "observed"}})
             prepare.assert_called_once_with(self.root)
             with patch("project_os_bridge.diagnostics.systemctl", return_value=Mock()) as call:
                 snap.call_args.args[1]("show", "fixed")

@@ -214,6 +214,31 @@ class CodexProviderTests(unittest.TestCase):
             self.assertTrue(clean)
             self.assertFalse(Path("/proc", str(event["pid"])).exists())
 
+    @unittest.skipUnless(sys.platform == "linux", "Linux process ownership")
+    def test_parent_exit_closes_control_and_reaps_descendants(self):
+        with tempfile.TemporaryDirectory() as folder:
+            script = (
+                "import os,sys,time,json; from project_os_bridge.codex_provider import _Child; "
+                "child=_Child([sys.executable,'-c',"
+                + repr("import os,json,time; pid=os.fork(); exec('if pid == 0:\\n os.setsid()\\n time.sleep(30)\\n os._exit(0)'); print(json.dumps({'pid':pid}),flush=True); time.sleep(30)")
+                + "],sys.argv[1],dict(os.environ)); "
+                "print(json.dumps(child.event(time.monotonic()+5,lambda:True)),flush=True); os._exit(0)")
+            parent = subprocess.Popen([sys.executable, "-I", "-c", script, folder],
+                                      stdout=subprocess.PIPE, text=True)
+            try:
+                import json
+                out, _ = parent.communicate(timeout=10)
+                self.assertEqual(parent.returncode, 0)
+                pid = json.loads(out)["pid"]
+                deadline = time.monotonic() + 12
+                while Path("/proc", str(pid)).exists() and time.monotonic() < deadline:
+                    time.sleep(0.05)
+                self.assertFalse(Path("/proc", str(pid)).exists())
+            finally:
+                if parent.poll() is None:
+                    parent.kill()
+                    parent.wait(timeout=5)
+
     def test_explicit_target_base_after_divergence(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
