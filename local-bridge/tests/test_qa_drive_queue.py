@@ -6,6 +6,7 @@ from unittest.mock import Mock
 
 from project_os_bridge.core import Jobs, Policy
 from project_os_bridge.qa_drive_queue import submit, recover, process_one
+from project_os_bridge.android_qa import finalize_pending_locked
 
 
 class DriveQueueTests(unittest.TestCase):
@@ -26,6 +27,33 @@ class DriveQueueTests(unittest.TestCase):
         with self.jobs.transaction() as c:
             result = json.loads(c.execute("SELECT result FROM jobs WHERE id='job'").fetchone()[0])
         return result["qa_delivery_request"]["state"]
+
+    def test_finalization_queues_delivery_atomically_only_on_success(self):
+        # Exercise the actual finalizer transition and existing queue consumer.
+        with self.jobs.transaction() as c:
+            c.execute("CREATE TABLE IF NOT EXISTS workspace_inputs (job_id TEXT PRIMARY KEY, request TEXT)")
+            result = {"head": self.target["head"], "repository_id": 123}
+            c.execute("UPDATE jobs SET result=? WHERE id='job'", (json.dumps(result),))
+            request = {"project": "demo", "profile": "expo-apk-qa",
+                       "qa_signer_sha256": "c" * 64, "qa_plan_sha256": "d" * 64,
+                       "delivery_target": self.target}
+            c.execute("INSERT INTO workspace_inputs VALUES(?,?)", ("job", json.dumps(request)))
+        backend = Mock()
+        signer = Mock()
+        signer.digest = "c" * 64
+        signer.finalize_locked.return_value = {"signature_verified": True}
+        backend.qa_signers = {"route": signer}
+        backend.route.return_value = "route"
+        backend.plan_digest.return_value = "d" * 64
+        finalize_pending_locked(self.jobs, backend, enabled=lambda: True)
+        self.assertEqual(self.state(), "QUEUED")
+        finalize_pending_locked(self.jobs, backend, enabled=lambda: True)
+        signer.finalize_locked.assert_called_once()
+        delivery = Mock()
+        process_one(self.jobs, delivery, enabled=lambda: True)
+        self.assertEqual(self.state(), "SUCCEEDED")
+        process_one(self.jobs, delivery, enabled=lambda: True)
+        delivery.run_queued.assert_called_once()
 
     def test_submit_returns_before_effect_and_worker_runs_once(self):
         delivery = Mock()
