@@ -610,7 +610,7 @@ def build_server(verifier, jobs, fixture_reader=None, *, diagnostics=None, githu
 
     @mcp.tool(annotations=read)
     async def wait_job(job_id: StrictStr, timeout_seconds: StrictInt = 0) -> dict:
-        """Read existing Job with a bounded wait of 0–30 seconds; never cancel or replay."""
+        """Read existing Job with a bounded wait of 0–90 seconds; never cancel or replay."""
         actor = principal()
         check = live_reader(actor)
         def read_job():
