@@ -286,12 +286,19 @@ def run_codex(root, env, request, *, enabled):
     if not clean:
         return {**result, "executor": "blocked", "cleanup_verified": False,
                 "reason": "CODEX_PROBE_UNCERTAIN"}
-    if selected != "codex":
-        return {**result, "reason": "CODEX_NOT_SELECTED"}
+    if not enabled():
+        return {**result, "executor": "blocked", "reason": "CODEX_AUTHORIZATION_REVOKED"}
     try:
-        require_clean_checkout(root, request["expected_sha"], task["branch"])
+        observed = require_clean_checkout(root, request["expected_sha"], task["branch"])
+        if observed != before:
+            raise ValueError("CODEX_CHECKOUT_CHANGED")
     except (OSError, ValueError):
         return {**result, "executor": "blocked", "reason": "CODEX_CHECKOUT_CHANGED"}
+    if not enabled():
+        return {**result, "executor": "blocked", "reason": "CODEX_AUTHORIZATION_REVOKED"}
+    if selected != "codex":
+        return {**result, "after": observed, "reason": "CODEX_NOT_SELECTED",
+                "handoff_verified": False}
     result.update(execute_turn(executable, root, env, task, request["expected_sha"], enabled))
     try:
         after = checkout_state(root)

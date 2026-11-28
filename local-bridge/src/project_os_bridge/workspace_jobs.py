@@ -11,7 +11,7 @@ from .github_operational import _private_bytes, _unique_object, registry_entries
 from .core import Policy
 from .methodology import SHA
 from .workspace_preflight import (_binding, binding_digest, materialize_workspace,
-                                  prepare_workspace, normalize_changes, describe_changes, read_workspace_context)
+                                  prepare_workspace, normalize_changes, describe_changes, read_workspace_context, project_checkout)
 from .workspace_profiles import PROFILES, profile_for, execution_route, QA_PROFILES, artifact_identity, CODEX_PROFILE
 from .workos_auth import private_directory, private_file
 
@@ -235,6 +235,42 @@ def authorize_request(policy, principal, request, *, execute=False):
         policy.require(principal, "workspace_execute", project)
     for op in ("workspace_prepare", "workspace_materialize", request["profile"]):
         policy.require(principal, op, project)
+
+
+def browser_route(jobs, principal, project, expected_sha, task, request_key, *, authorize):
+    """Advisory route, not a lease across Browser/GitHub operations."""
+    from .worker import exclusive_worker, WorkerBusy
+    from .codex_provider import require_clean_checkout, validate_task
+    validate_task(task)
+    if not isinstance(request_key, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,80}", request_key):
+        raise ValueError("INVALID_REQUEST_KEY")
+    blocked = {"executor": "blocked", "handoff_verified": False}
+    try:
+        with exclusive_worker(jobs):
+            authorize()
+            runtime = local_runtime(jobs.probe.root, jobs.policy)
+            jobs.policy.require(principal, "submit", workspace_resource(jobs.policy))
+            entry, root = project_checkout(runtime, jobs.policy, principal, project, expected_sha)
+            binding = binding_digest(entry, root)
+            with jobs.transaction() as conn:
+                if conn.execute("SELECT 1 FROM jobs WHERE state IN ('QUEUED','RUNNING') LIMIT 1").fetchone():
+                    return {**blocked, "reason": "ACTIVE_JOB"}
+                if conn.execute("SELECT 1 FROM fixture_effects WHERE resolved_at IS NULL LIMIT 1").fetchone():
+                    return {**blocked, "reason": "RECONCILIATION_REQUIRED"}
+                if conn.execute("SELECT 1 FROM jobs WHERE principal=? AND resource=? AND request_key=?",
+                                (principal, workspace_resource(jobs.policy), request_key)).fetchone():
+                    return {**blocked, "reason": "EXISTING_REQUEST_RECONCILE"}
+                observed = require_clean_checkout(root, expected_sha, task["branch"])
+                current_entry, current_root = project_checkout(runtime, jobs.policy, principal, project, expected_sha)
+                if binding_digest(current_entry, current_root) != binding:
+                    return {**blocked, "reason": "WORKSPACE_BINDING_CHANGED"}
+                authorize()
+            return {"executor": "browser", "reason": "DIRECT_ROUTE_OBSERVED",
+                    "checkout": observed, "handoff_verified": True, "lease_held": False}
+    except WorkerBusy:
+        return {**blocked, "reason": "ACTIVE_WORKER"}
+    except (OSError, ValueError, TypeError):
+        return {**blocked, "reason": "HANDOFF_UNVERIFIED"}
 
 
 def submit_workspace(jobs, principal, project, expected_sha, profile, request_key, *, authorize=lambda: None, backend=None, changes=None, delivery_target=None, codex_task=None):

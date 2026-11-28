@@ -72,6 +72,20 @@ class CodexProviderTests(unittest.TestCase):
             self.assertEqual(result["executor"], "codex")
             self.assertFalse(result["cleanup_verified"])
 
+    def test_fallback_revalidates_checkout_and_revocation(self):
+        for changed, live, reason in ((True, True, "CODEX_CHECKOUT_CHANGED"),
+                                      (False, False, "CODEX_AUTHORIZATION_REVOKED")):
+            with self.subTest(changed=changed, live=live), \
+                 patch("project_os_bridge.codex_provider.require_clean_checkout",
+                       side_effect=[self.before, ValueError("changed") if changed else self.before]), \
+                 patch("project_os_bridge.codex_provider.shutil.which", return_value="/fixture/codex"), \
+                 patch("project_os_bridge.codex_provider.probe_capacity", return_value=("exhausted", True)), \
+                 patch("project_os_bridge.codex_provider.execute_turn") as turn:
+                result = run_codex(Path("/fixture"), {"PATH": "/fixture"}, self.request, enabled=lambda: live)
+                self.assertEqual(result["executor"], "blocked")
+                self.assertEqual(result["reason"], reason)
+                turn.assert_not_called()
+
     def test_message_sanitization(self):
         self.assertEqual(_summary("Updated the contract; tests passed."), "Updated the contract; tests passed.")
         for value in ("Bearer synthetic-value", "/home/operator/private", "x" * 4097):

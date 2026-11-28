@@ -287,20 +287,25 @@ def build_server(verifier, jobs, fixture_reader=None, *, diagnostics=None, githu
                 if mode not in MODES:
                     raise ValueError("INVALID_CODEX_ROUTE")
                 check()
-                if mode == "browser":
-                    return {"executor": "browser", "reason": "EXPLICIT_BROWSER"}
-                task = validate_task({"mode": mode, "issue": issue, "pr": pr,
-                                      "branch": branch, "prompt": prompt})
+                task = validate_task({"mode": "codex" if mode == "browser" else mode,
+                                      "issue": issue, "pr": pr, "branch": branch, "prompt": prompt})
+                from .workspace_jobs import browser_route
                 def submit():
                     check()
+                    if mode == "browser":
+                        return browser_route(jobs, actor, project, expected_sha, task, request_key,
+                                             authorize=check)
                     try:
                         jobs.policy.require(actor, "workspace_execute", project)
                         jobs.policy.require(actor, CODEX_PROFILE, project)
                         workspace_backend.route(CODEX_PROFILE, project)
                     except PermissionError:
-                        if mode == "auto":
-                            return {"executor": "browser", "reason": "CODEX_NOT_ENROLLED"}
-                        raise PermissionError("DENIED") from None
+                        # A revoked previously enrolled profile is not absence.
+                        if mode == "auto" and CODEX_PROFILE not in jobs.policy.initial.get(project, ()):
+                            return browser_route(jobs, actor, project, expected_sha, task, request_key,
+                                                 authorize=check)
+                        return {"executor": "blocked", "reason": "CODEX_GRANT_OR_BINDING_UNAVAILABLE",
+                                "handoff_verified": False}
                     try:
                         job = submit_workspace(jobs, actor, project, expected_sha, CODEX_PROFILE,
                                                request_key, authorize=check, backend=workspace_backend,
