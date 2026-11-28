@@ -59,6 +59,10 @@ jobs:
         # Ubuntu 24.04 supplies system Python 3.12; no toolcache override or
         # permission changes. The public coordinator enforces the same policy.
         run: env -u LD_LIBRARY_PATH -u PYTHONHOME -u PYTHONPATH PATH=/usr/bin:/bin /bin/bash local-bridge/scripts/ci-install.sh
+      - name: Exercise direct registered execution through durable Jobs
+        env:
+          PYTHONPATH: local-bridge/tests
+        run: local-bridge/.venv/bin/python -m unittest test_workspace_preflight.WorkspacePreflightTests.test_direct_wsl_profile_uses_durable_jobs_and_real_subprocess -v
       - name: Verify real Android QA signing and exact delivery input
         env:
           PYTHONPATH: local-bridge/tests

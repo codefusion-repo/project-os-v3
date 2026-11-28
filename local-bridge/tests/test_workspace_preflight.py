@@ -859,3 +859,40 @@ class WorkspacePreflightTests(unittest.TestCase):
         executor.assert_not_called()
         self.assertEqual(jobs.get("operator", job)["state"], "BLOCKED")
         self.assertEqual(jobs.pending_effects(), [])
+
+
+
+    def test_direct_wsl_profile_uses_durable_jobs_and_real_subprocess(self):
+        from project_os_bridge.execution import WorkspaceWSL
+        tools = self.root / "tools"
+        tools.mkdir(mode=0o700)
+        npm = tools / "npm"
+        npm.write_text("#!/bin/sh\\ncase \"$1\" in\\nci) exit 0;;\\nrun) test \"$2\" = test && printf success > result.txt;;\\n*) exit 9;;\\nesac\\n")
+        npm.chmod(0o700)
+        jobs = self.workspace_queue()
+        policy = Policy([*jobs.policy.grants, ("operator", "workspace_execute", "demo")])
+        jobs = Jobs(jobs.probe.root, policy, workflows=("workspace_execute",))
+        backend = WorkspaceWSL({"demo:expo-test": {"PATH": str(tools) + ":/usr/bin:/bin"}})
+        before = self.git("status", "--porcelain")
+        job = submit_workspace(jobs, "operator", "demo", self.sha, "expo-test", "direct", backend=backend)
+        run_pending(jobs, workspace_backend=backend)
+        evidence = jobs.evidence("operator", job)
+        self.assertEqual(evidence["state"], "SUCCEEDED", evidence)
+        result = evidence["result"]["execution"]
+        self.assertEqual(result["execution_environment"], "wsl-direct")
+        self.assertEqual(result["exit_code"], 0)
+        self.assertTrue(result["cleanup_verified"])
+        self.assertNotIn("image_id", result)
+        self.assertEqual((jobs.probe.root / ("workspace-" + job) / "result.txt").read_text(), "success")
+        self.assertEqual(jobs.pending_effects(), [])
+        self.assertEqual(self.git("status", "--porcelain"), before)
+        self.assertEqual(submit_workspace(jobs, "operator", "demo", self.sha,
+                                          "expo-test", "direct", backend=backend), job)
+        npm.write_text("#!/bin/sh\\nif test \"$1\" = ci; then printf changed > package-lock.json; fi\\n")
+        npm.chmod(0o700)
+        job = submit_workspace(jobs, "operator", "demo", self.sha, "expo-test", "changed", backend=backend)
+        run_pending(jobs, workspace_backend=backend)
+        evidence = jobs.evidence("operator", job)
+        self.assertEqual(evidence["state"], "FAILED", evidence)
+        self.assertEqual(evidence["result"]["execution"]["reason"], "LOCKFILE_CHANGED")
+        self.assertEqual(jobs.pending_effects(), [])
