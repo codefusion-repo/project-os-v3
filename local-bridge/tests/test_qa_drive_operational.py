@@ -1,7 +1,7 @@
 import unittest
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
-from project_os_bridge.qa_drive_operational import require_live_pr
+from project_os_bridge.qa_drive_operational import require_live_pr, SupervisedDriveDelivery
 from project_os_bridge.drive_delivery import DriveDeliveryError
 
 
@@ -48,3 +48,43 @@ class DrivePRGuardTests(unittest.TestCase):
         self.ctx.reader._authorized_request.return_value = {"complete": False}
         with self.assertRaises(DriveDeliveryError):
             self.guard()
+
+
+class AutomaticDeliveryTargetTests(unittest.TestCase):
+    def setUp(self):
+        self.service = object.__new__(SupervisedDriveDelivery)
+        self.service.jobs = Mock()
+        self.service.jobs.policy.initial_entries = {"demo": {"repository_id": 123}}
+        self.service._binding = Mock(return_value=(b"binding", "folder", "owner"))
+        self.service.preflight = Mock(return_value={"repository_id": 123})
+        self.check = Mock()
+        self.head = "a" * 40
+
+    def test_admission_freezes_live_target(self):
+        target = self.service.build_target("operator", "demo", self.head, 4,
+                                           check_session=self.check)
+        self.service.preflight.assert_called_once_with("operator", "demo", self.head, 4,
+                                                       check_session=self.check)
+        self.assertEqual(target["repository_id"], 123)
+        self.assertEqual(target["pr"], 4)
+        self.service._binding.side_effect = [(b"binding", "folder", "owner"),
+                                              (b"changed", "folder", "owner")]
+        with self.assertRaises(PermissionError):
+            self.service.build_target("operator", "demo", self.head, 4, check_session=self.check)
+
+    def test_existing_auto_target_cannot_be_retargeted(self):
+        target = self.service.build_target("operator", "demo", self.head, 4,
+                                           check_session=self.check)
+        request = {"project": "demo", "expected_sha": self.head,
+                   "qa_signer_sha256": "c" * 64, "delivery_target": target}
+        with patch("project_os_bridge.qa_drive_operational.require_workspace_job",
+                   return_value=request):
+            self.assertEqual(self.service._target("operator", "job", "demo", self.head, 4,
+                                                 check_session=self.check), target)
+            with self.assertRaises(PermissionError):
+                self.service._target("operator", "job", "demo", self.head, 5,
+                                     check_session=self.check)
+            self.service._binding.return_value = (b"changed", "folder", "owner")
+            with self.assertRaises(PermissionError):
+                self.service._target("operator", "job", "demo", self.head, 4,
+                                     check_session=self.check)

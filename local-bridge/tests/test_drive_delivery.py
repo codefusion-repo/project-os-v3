@@ -101,6 +101,10 @@ class DriveDeliveryTests(unittest.TestCase):
         self.assertEqual(again.binding, p.binding)
         self.assertEqual(self.folder_creates, 1)
         self.assertEqual(self.reserve_ids, [])
+        self.shared = True
+        with self.assertRaises(PermissionError):
+            again.require_folder()
+        self.shared = False
         self.folders["child"]["parents"] = ["wrong"]
         with self.assertRaises(PermissionError):
             again.require_folder()

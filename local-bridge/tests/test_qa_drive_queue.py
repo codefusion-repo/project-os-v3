@@ -28,7 +28,7 @@ class DriveQueueTests(unittest.TestCase):
             result = json.loads(c.execute("SELECT result FROM jobs WHERE id='job'").fetchone()[0])
         return result["qa_delivery_request"]["state"]
 
-    def test_finalization_queues_delivery_atomically_only_on_success(self):
+    def pending_finalization(self, *, auto=True, fails=False):
         # Exercise the actual finalizer transition and existing queue consumer.
         with self.jobs.transaction() as c:
             c.execute("CREATE TABLE IF NOT EXISTS workspace_inputs (job_id TEXT PRIMARY KEY, request TEXT)")
@@ -37,14 +37,22 @@ class DriveQueueTests(unittest.TestCase):
             request = {"project": "demo", "profile": "expo-apk-qa",
                        "qa_signer_sha256": "c" * 64, "qa_plan_sha256": "d" * 64,
                        "delivery_target": self.target}
+            if not auto:
+                del request["delivery_target"]
             c.execute("INSERT INTO workspace_inputs VALUES(?,?)", ("job", json.dumps(request)))
         backend = Mock()
         signer = Mock()
         signer.digest = "c" * 64
         signer.finalize_locked.return_value = {"signature_verified": True}
+        if fails:
+            signer.finalize_locked.side_effect = ValueError("synthetic failure")
         backend.qa_signers = {"route": signer}
         backend.route.return_value = "route"
         backend.plan_digest.return_value = "d" * 64
+        return backend, signer
+
+    def test_finalization_queues_delivery_atomically_only_on_success(self):
+        backend, signer = self.pending_finalization()
         finalize_pending_locked(self.jobs, backend, enabled=lambda: True)
         self.assertEqual(self.state(), "QUEUED")
         finalize_pending_locked(self.jobs, backend, enabled=lambda: True)
@@ -54,6 +62,26 @@ class DriveQueueTests(unittest.TestCase):
         self.assertEqual(self.state(), "SUCCEEDED")
         process_one(self.jobs, delivery, enabled=lambda: True)
         delivery.run_queued.assert_called_once()
+
+    def test_failed_signature_never_queues_delivery(self):
+        backend, signer = self.pending_finalization(fails=True)
+        finalize_pending_locked(self.jobs, backend, enabled=lambda: True)
+        with self.jobs.transaction() as c:
+            result = json.loads(c.execute("SELECT result FROM jobs WHERE id='job'").fetchone()[0])
+        self.assertEqual(result["qa_finalization"]["state"], "FAILED")
+        self.assertNotIn("qa_delivery_request", result)
+        delivery = Mock()
+        process_one(self.jobs, delivery, enabled=lambda: True)
+        delivery.run_queued.assert_not_called()
+
+    def test_historical_job_does_not_auto_deliver(self):
+        backend, signer = self.pending_finalization(auto=False)
+        finalize_pending_locked(self.jobs, backend, enabled=lambda: True)
+        with self.jobs.transaction() as c:
+            result = json.loads(c.execute("SELECT result FROM jobs WHERE id='job'").fetchone()[0])
+        self.assertEqual(result["qa_finalization"]["state"], "SUCCEEDED")
+        self.assertNotIn("qa_delivery_request", result)
+        self.assertEqual(submit(self.jobs, "owner", "job", self.target), "QUEUED")
 
     def test_submit_returns_before_effect_and_worker_runs_once(self):
         delivery = Mock()
