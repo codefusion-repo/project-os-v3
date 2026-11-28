@@ -392,7 +392,7 @@ class AuthTests(unittest.TestCase):
                 payload = json.loads(result["content"][0]["text"])
                 self.assertEqual(payload, {"status": "ready",
                     "caller_identity_verified": True, "repository_access": False,
-                    "mode": "authenticated-disposable", "git_fixture_available": False,
+                    "mode": "authenticated-disposable",
                     "installation": {"status": "unavailable"}})
         self.assertEqual(trace, [
             ("int", 100, None, "recorded"),
