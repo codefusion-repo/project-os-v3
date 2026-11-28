@@ -182,9 +182,9 @@ class WorkerReadinessTests(unittest.TestCase):
         with patch("project_os_bridge.authenticated.run_pending", side_effect=dispatch):
             if failure:
                 with self.assertRaises(RuntimeError):
-                    serve_with_worker(server, jobs, verifier, None, readiness=ready)
+                    serve_with_worker(server, jobs, verifier, readiness=ready)
             else:
-                serve_with_worker(server, jobs, verifier, None, readiness=ready)
+                serve_with_worker(server, jobs, verifier, readiness=ready)
         return order
 
     def test_tls_verified_before_dispatch(self):
@@ -196,8 +196,7 @@ class WorkerReadinessTests(unittest.TestCase):
     def test_supervised_candidate_reuses_worker_after_tls_and_stops_on_pending_effects(self):
         from project_os_bridge.core import Jobs, Policy
         from project_os_bridge.workspace_jobs import MARKER, RUNTIME
-        from project_os_bridge.workspace_podman import WorkspacePodman
-        from project_os_bridge.podman_context import PodmanContext
+        from project_os_bridge.execution import WorkspaceWSL
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp).resolve()
             state = root / "workspace"
@@ -206,10 +205,7 @@ class WorkerReadinessTests(unittest.TestCase):
             (state / RUNTIME).touch(mode=0o600)
             jobs = Jobs(state, Policy([]), workflows=("workspace_prepare", "workspace_execute"))
             verifier = SimpleNamespace(state_dir=root / "auth", enabled=lambda: True)
-            context = Mock(spec=PodmanContext)
-            context.identity.return_value = "c" * 64
-            backend = WorkspacePodman(context, {"flutter-test":
-                "localhost/project-os-mobile-ci@sha256:" + "a" * 64})
+            backend = WorkspaceWSL({"demo:flutter-test": {"PATH": "/usr/bin:/bin"}})
             entered = threading.Event()
             order = []
             class Server:
@@ -230,20 +226,20 @@ class WorkerReadinessTests(unittest.TestCase):
             with patch("project_os_bridge.authenticated.run_pending", side_effect=dispatch), \
                  patch.object(jobs, "pending_effects", return_value=[{"synthetic": True}]):
                 with self.assertRaises(RuntimeError):
-                    serve_with_worker(server, jobs, verifier, None, readiness=ready,
+                    serve_with_worker(server, jobs, verifier, readiness=ready,
                                       workspace_backend=backend)
             self.assertEqual(order, ["tls", "dispatch"])
             self.assertTrue(server.should_exit)
 
             with self.assertRaises(ValueError):
-                serve_with_worker(server, jobs, verifier, None, workspace_backend=backend)
+                serve_with_worker(server, jobs, verifier, workspace_backend=backend)
             with self.assertRaises(ValueError):
-                serve_with_worker(server, jobs, verifier, "fixture", readiness=ready,
-                                  workspace_backend=backend)
+                serve_with_worker(server, jobs, verifier, readiness=ready,
+                                  workspace_backend=object())
             with self.assertRaises(ValueError):
-                serve_with_worker(server, jobs, SimpleNamespace(state_dir=state), None,
+                serve_with_worker(server, jobs, SimpleNamespace(state_dir=state),
                                   readiness=ready, workspace_backend=backend)
             (state / MARKER).unlink()
             with self.assertRaises(PermissionError):
-                serve_with_worker(server, jobs, verifier, None, readiness=ready,
+                serve_with_worker(server, jobs, verifier, readiness=ready,
                                   workspace_backend=backend)

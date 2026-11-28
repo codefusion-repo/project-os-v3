@@ -392,7 +392,7 @@ class AuthTests(unittest.TestCase):
                 payload = json.loads(result["content"][0]["text"])
                 self.assertEqual(payload, {"status": "ready",
                     "caller_identity_verified": True, "repository_access": False,
-                    "mode": "authenticated-disposable", "git_fixture_available": False,
+                    "mode": "authenticated-disposable",
                     "installation": {"status": "unavailable"}})
         self.assertEqual(trace, [
             ("int", 100, None, "recorded"),
@@ -1265,7 +1265,6 @@ class AuthTests(unittest.TestCase):
     def test_supervised_execution_binding_is_local_and_revocable(self):
         from project_os_bridge.workspace_jobs import (SUPERVISED_GRANTS, SUPERVISED_EXECUTION,
             load_supervised_workspace_policy, load_supervised_workspace_backend)
-        from project_os_bridge.podman_context import PodmanContext
         root = self.root / "execution"
         root.mkdir(mode=0o700)
         state, service = root / "state", root / "service"
@@ -1289,48 +1288,43 @@ class AuthTests(unittest.TestCase):
             policy.require(SUBJECT, "workspace_execute", "demo")
         config = state / SUPERVISED_EXECUTION
         config.touch(mode=0o600)
-        identity = "c" * 64
-        data = {"demo": {"expo-test": {"context": "/tmp/fixture-context", "context_id": identity,
-                             "image": "localhost/project-os-mobile-ci@sha256:" + "a" * 64}}}
+        data = {"demo": {"expo-test": {"toolchain": {"PATH": "/usr/bin:/bin"}}}}
         config.write_text(json.dumps(data))
-        with patch.object(PodmanContext, "identity", return_value=identity), \
-             patch.object(PodmanContext, "require_import") as imported:
-            backend = load_supervised_workspace_backend(policy)
-            imported.assert_called()
-            self.assertEqual(backend.binding("expo-test", "demo")[1], identity)
+        backend = load_supervised_workspace_backend(policy)
+        self.assertEqual(backend.binding("expo-test", "demo")[1], backend.identities()["demo:expo-test"])
+        with self.assertRaises(PermissionError):
+            backend.binding("expo-test", "other")
+        policy.require(SUBJECT, "workspace_execute", "demo")
+        jobs = Jobs(state, policy, workflows=("probe_check", "workspace_prepare", "workspace_execute"))
+        app = build_http_app(verifier, jobs, workspace_candidate=True, workspace_backend=backend)
+        headers = {"Accept": "application/json, text/event-stream", "Authorization": "Bearer " + self.token()}
+        with TestClient(app, base_url="http://127.0.0.1:8765") as client:
+            def call(method, params):
+                response = client.post("/mcp", headers=headers,
+                    json={"jsonrpc": "2.0", "id": 1, "method": method, "params": params})
+                self.assertEqual(response.status_code, 200)
+                return response.json()["result"]
+            init = call("initialize", {"protocolVersion": "2025-11-25", "capabilities": {},
+                "clientInfo": {"name": "test", "version": "1"}})
+            headers["MCP-Protocol-Version"] = init["protocolVersion"]
+            self.assertIn("submit_workspace_execute",
+                {item["name"] for item in call("tools/list", {})["tools"]})
+            def health():
+                result = call("tools/call", {"name": "health", "arguments": {}})
+                return json.loads(result["content"][0]["text"])
+            self.assertTrue(health()["workspace_execution_available"])
+            config.unlink()
+            self.assertFalse(health()["workspace_execution_available"])
             with self.assertRaises(PermissionError):
-                backend.binding("expo-test", "other")
-            policy.require(SUBJECT, "workspace_execute", "demo")
-            jobs = Jobs(state, policy, workflows=("probe_check", "workspace_prepare", "workspace_execute"))
-            app = build_http_app(verifier, jobs, workspace_candidate=True, workspace_backend=backend)
-            headers = {"Accept": "application/json, text/event-stream", "Authorization": "Bearer " + self.token()}
-            with TestClient(app, base_url="http://127.0.0.1:8765") as client:
-                def call(method, params):
-                    response = client.post("/mcp", headers=headers,
-                        json={"jsonrpc": "2.0", "id": 1, "method": method, "params": params})
-                    self.assertEqual(response.status_code, 200)
-                    return response.json()["result"]
-                init = call("initialize", {"protocolVersion": "2025-11-25", "capabilities": {},
-                    "clientInfo": {"name": "test", "version": "1"}})
-                headers["MCP-Protocol-Version"] = init["protocolVersion"]
-                self.assertIn("submit_workspace_execute",
-                    {item["name"] for item in call("tools/list", {})["tools"]})
-                def health():
-                    result = call("tools/call", {"name": "health", "arguments": {}})
-                    return json.loads(result["content"][0]["text"])
-                self.assertTrue(health()["workspace_execution_available"])
-                config.unlink()
-                self.assertFalse(health()["workspace_execution_available"])
-                with self.assertRaises(PermissionError):
-                    policy.require(SUBJECT, "workspace_execute", "demo")
-                policy.require(SUBJECT, "workspace_prepare", "demo")
-                config.touch(mode=0o600)
-                config.write_text(json.dumps(data))
-                self.assertTrue(health()["workspace_execution_available"])
-                grants.write_text(json.dumps({"demo": [op for op in ops if op != "workspace_execute"]}))
-                self.assertFalse(health()["workspace_execution_available"])
-                with self.assertRaises(PermissionError):
-                    policy.require(SUBJECT, "workspace_execute", "demo")
+                policy.require(SUBJECT, "workspace_execute", "demo")
+            policy.require(SUBJECT, "workspace_prepare", "demo")
+            config.touch(mode=0o600)
+            config.write_text(json.dumps(data))
+            self.assertTrue(health()["workspace_execution_available"])
+            grants.write_text(json.dumps({"demo": [op for op in ops if op != "workspace_execute"]}))
+            self.assertFalse(health()["workspace_execution_available"])
+            with self.assertRaises(PermissionError):
+                policy.require(SUBJECT, "workspace_execute", "demo")
 
     def test_workspace_candidate_cannot_register_on_active_state_or_execution_queue(self):
         jobs = Jobs(self.root, Policy([]), workflows=("workspace_prepare",))
@@ -1421,40 +1415,6 @@ class AuthTests(unittest.TestCase):
         self.assertEqual(observations, [{**e, "auth_outcome": "TOKEN_MALFORMED"}
                                         for e in events if e["status"] == 401])
 
-    def test_opt_in_fixture_and_evidence(self):
-        from project_os_bridge.vertical import OPERATIONS, bind_image
-        from project_os_bridge.worker import run_pending
-        image="example/python@sha256:"+"a"*64
-        jobs=Jobs(self.root,Policy((SUBJECT,op,"disposable") for op in OPERATIONS),
-                  workflows=("probe_check","git_fixture_check"))
-        jobs.submit(SUBJECT,"disposable","probe_check","old-probe")
-        context=Mock(identity=Mock(return_value="1"*64))
-        bind_image(jobs,image,context.identity())
-        app=build_http_app(self.verifier,jobs,fixture_image=image,context_id="1"*64)
-        headers={"Accept":"application/json, text/event-stream","Authorization":"Bearer "+self.token()}
-        def call(client,method,params):
-            return client.post("/mcp",headers=headers,json={"jsonrpc":"2.0","id":1,"method":method,"params":params}).json()["result"]
-        def tool(client,name,**args):
-            return call(client,"tools/call",{"name":name,"arguments":args})
-        with TestClient(app,base_url="http://127.0.0.1:8765") as client:
-            init=call(client,"initialize",{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"test","version":"1"}})
-            headers["MCP-Protocol-Version"]=init["protocolVersion"]
-            first=tool(client,"submit_git_fixture",request_key="new-fixture")
-            self.assertFalse(first.get("isError",False))
-            job=json.loads(first["content"][0]["text"])["job_id"]
-            self.assertEqual(first,tool(client,"submit_git_fixture",request_key="new-fixture"))
-            (self.root/"fixture-image").unlink()
-            self.assertTrue(tool(client,"submit_git_fixture",request_key="denied").get("isError"))
-            with patch("project_os_bridge.vertical.run_git_fixture") as run:
-                run_pending(jobs,fixture_image=image,podman_context=context,context_id="1"*64,
-                            fixture_allowed=lambda:False)
-                run.assert_not_called()
-            evidence=json.loads(tool(client,"get_job_evidence",job_id=job)["content"][0]["text"])
-            self.assertEqual(evidence["state"],"BLOCKED")
-            self.assertEqual([e["state"] for e in evidence["events"]],["QUEUED","BLOCKED"])
-            self.assertFalse(jobs.pending_effects())
-
-
     def test_operational_diagnostics_auth_and_revocation(self):
         from unittest.mock import Mock
         from project_os_bridge.diagnostics import Diagnostics, FLAG
@@ -1521,28 +1481,25 @@ class AuthTests(unittest.TestCase):
         from unittest.mock import Mock
         diagnostics = Mock()
         jobs = Jobs(self.root, Policy([]))
-        for fixture in (None, "example/python@sha256:" + "a" * 64):
-            app = build_http_app(self.verifier, jobs, diagnostics=diagnostics, fixture_image=fixture)
-            headers = {"Accept": "application/json, text/event-stream", "Authorization": "Bearer " + self.token()}
-            def call(client, method, params):
-                return client.post("/mcp", headers=headers, json={"jsonrpc": "2.0", "id": 1,
-                                                                 "method": method, "params": params}).json()
-            with TestClient(app, base_url="http://127.0.0.1:8765") as client:
-                init = call(client, "initialize", {"protocolVersion": "2025-11-25", "capabilities": {},
-                                                 "clientInfo": {"name": "test", "version": "1"}})
-                headers["MCP-Protocol-Version"] = init["result"]["protocolVersion"]
-                names = {t["name"] for t in call(client, "tools/list", {})["result"]["tools"]}
-                if fixture:
-                    self.assertNotIn("operational_diagnostics", names)
-                else:
-                    self.assertIn("operational_diagnostics", names)
-                    result = call(client, "tools/call", {"name": "operational_diagnostics",
-                                                          "arguments": {"section": "host"}})
-                    self.assertTrue(result["result"]["isError"])
+        app = build_http_app(self.verifier, jobs, diagnostics=diagnostics)
+        headers = {"Accept": "application/json, text/event-stream", "Authorization": "Bearer " + self.token()}
+        def call(client, method, params):
+            return client.post("/mcp", headers=headers, json={"jsonrpc": "2.0", "id": 1,
+                                                             "method": method, "params": params}).json()
+        with TestClient(app, base_url="http://127.0.0.1:8765") as client:
+            init = call(client, "initialize", {"protocolVersion": "2025-11-25", "capabilities": {},
+                                             "clientInfo": {"name": "test", "version": "1"}})
+            headers["MCP-Protocol-Version"] = init["result"]["protocolVersion"]
+            names = {t["name"] for t in call(client, "tools/list", {})["result"]["tools"]}
+            self.assertIn("operational_diagnostics", names)
+            self.assertNotIn("submit_git_fixture", names)
+            result = call(client, "tools/call", {"name": "operational_diagnostics",
+                                                  "arguments": {"section": "host"}})
+            self.assertTrue(result["result"]["isError"])
         diagnostics.collect.assert_not_called()
 
 def execute_workspace_http_fixture(jobs, backend, project, revision, profiles):
-    """Reuse the signed synthetic auth fixture for real disposable Podman CI."""
+    """Reuse the signed synthetic auth fixture for direct local execution tests."""
     from project_os_bridge.worker import run_pending
     AuthTests.setUpClass()
     fixture = AuthTests()

@@ -199,7 +199,14 @@ def materialize_workspace(runtime, policy, principal, project, expected_sha, pro
     if not entries or len(entries) > MAX_FILES:
         raise ValueError("WORKSPACE_LIMIT")
     planned = {}
+    excluded = []
     for path, mode, blob in entries:
+        # A conventional root-level environment template is not build input.
+        # Never inspect its content: examples can also contain real secrets.
+        # Keep all other private-path and unsupported-entry checks fail-closed.
+        if path == ".env.example":
+            excluded.append(path)
+            continue
         if path in planned:
             raise ValueError("WORKSPACE_PATH_COLLISION")
         planned[path] = (mode, blob, int(git(root, "cat-file", "-s", blob)), None)
@@ -271,6 +278,8 @@ def materialize_workspace(runtime, policy, principal, project, expected_sha, pro
         raise FileExistsError("Workspace already exists")
     os.rename(stage, target)
     _sync_directory(private_parent)
+    if excluded:
+        result["excluded_paths"] = excluded
     if changes is not None:
         result.update(changes_sha256=changes_digest(changes), changes=edits)
     result.update(workspace_materialized=True, files=len(manifest), bytes=total,

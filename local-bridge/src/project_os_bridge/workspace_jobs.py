@@ -1,7 +1,6 @@
 """Durable preparation jobs for the dedicated disposable workspace profile.
 
-Not registered by the authenticated service. A trusted internal CI caller may
-supply a fixed executor for a single disposable execution job.
+Registered workspace preparation and direct WSL execution use the same durable queue.
 """
 import os
 import re
@@ -51,7 +50,7 @@ class SupervisedWorkspacePolicy(Policy):
                     continue
                 ops = initial & current.get(alias, frozenset())
                 if {"workspace_prepare", "workspace_materialize", "workspace_execute"} <= ops:
-                    if any(execution_route(profile, alias) in self.backend.images
+                    if any(execution_route(profile, alias) in self.backend.routes
                            for profile in PROFILES if profile in ops):
                         return True
             return False
@@ -116,15 +115,9 @@ def load_supervised_workspace_policy(verifier, base_grants, *, supervised, multi
 
 
 def load_supervised_workspace_backend(policy):
-    """Register only operator-enrolled exact profile/context/image bindings.
-
-    This loader validates identity and local admission, not image review or host
-    certification. The local operator must complete those gates before creating
-    the private configuration. No acquisition, import or grant is performed here.
-    """
-    from pathlib import Path
-    from .podman_context import PodmanContext
-    from .workspace_podman import WorkspacePodman
+    """Load only the private direct WSL profile bindings; no legacy fallback."""
+    from .execution import WorkspaceWSL
+    from .android_qa import QASignerBinding
     if type(policy) is not SupervisedWorkspacePolicy:
         return None
     path = policy.root / SUPERVISED_EXECUTION
@@ -134,32 +127,22 @@ def load_supervised_workspace_backend(policy):
     data = json.loads(raw, object_pairs_hook=_unique_object)
     if not isinstance(data, dict) or not data or not set(data) <= set(policy.initial):
         raise ValueError("Invalid workspace execution bindings")
-    contexts, images, expected, plans, signers = {}, {}, {}, {}, {}
-    from .android_qa import QASignerBinding
+    toolchains, plans, signers = {}, {}, {}
     for project, profiles in data.items():
         if not isinstance(profiles, dict) or not profiles or not set(profiles) <= set(PROFILES):
             raise ValueError("Invalid workspace execution profiles")
         for profile, entry in profiles.items():
-            fields = {"context", "context_id", "image"} | ({"qa", "qa_signing"} if profile in QA_PROFILES else set())
+            fields = {"toolchain"} | ({"qa", "qa_signing"} if profile in QA_PROFILES else set())
             if (not isinstance(entry, dict) or set(entry) != fields
-                    or not all(isinstance(entry[key], str) for key in ("context", "context_id", "image"))
-                    or not re.fullmatch(r"[0-9a-f]{64}", entry["context_id"])
                     or not {"workspace_prepare", "workspace_materialize", "workspace_execute", profile}
                            <= policy.initial[project]):
                 raise ValueError("Invalid workspace execution binding")
-            key = execution_route(profile, project)
-            context = PodmanContext(Path(entry["context"]))
-            if context.identity(entry["context_id"]) != entry["context_id"]:
-                raise PermissionError("WORKSPACE_CONTEXT_CHANGED")
-            contexts[key], images[key], expected[key] = context, entry["image"], entry["context_id"]
+            route = execution_route(profile, project)
+            toolchains[route] = entry["toolchain"]
             if profile in QA_PROFILES:
-                plans[key] = entry["qa"]
-                signers[key] = QASignerBinding(entry["qa_signing"])
-    backend = WorkspacePodman(contexts, images, qa_plans=plans, qa_signers=signers)
-    for key, identity in expected.items():
-        project, profile = key.split(":", 1)
-        if backend.binding(profile, project)[1] != identity:
-            raise PermissionError("WORKSPACE_CONTEXT_CHANGED")
+                plans[route] = entry["qa"]
+                signers[route] = QASignerBinding(entry["qa_signing"])
+    backend = WorkspaceWSL(toolchains, qa_plans=plans, qa_signers=signers)
     if _private_bytes(path, 65536) != raw:
         raise PermissionError("WORKSPACE_BINDING_CHANGED")
     policy.execution_binding, policy.backend = raw, backend
@@ -192,9 +175,7 @@ def local_runtime(root, policy=None):
 def authorize_request(policy, principal, request, *, execute=False):
     fields = {"project", "profile", "expected_sha", "binding"}
     if execute:
-        fields.add("image_id")
-        if isinstance(request, dict) and "context_id" in request:
-            fields.add("context_id")
+        fields.update(("execution_id", "context_id"))
         if isinstance(request, dict) and request.get("profile") in QA_PROFILES:
             fields.add("qa_plan_sha256")
             if "qa_signer_sha256" in request or type(policy) is SupervisedWorkspacePolicy:
@@ -215,8 +196,9 @@ def authorize_request(policy, principal, request, *, execute=False):
         if normalize_changes(request["changes"]) != request["changes"]:
             raise ValueError("INVALID_WORKSPACE_CHANGES")
     if execute:
-        if not re.fullmatch(r"sha256:[0-9a-f]{64}", request["image_id"]):
-            raise ValueError("INVALID_EXECUTION_IMAGE")
+        if (not re.fullmatch(r"[0-9a-f]{64}", request["execution_id"])
+                or request["context_id"] != request["execution_id"]):
+            raise ValueError("INVALID_EXECUTION_BINDING")
         if "context_id" in request and not re.fullmatch(r"[0-9a-f]{64}", request["context_id"]):
             raise ValueError("INVALID_EXECUTION_CONTEXT")
         if request["profile"] in QA_PROFILES and (not re.fullmatch(r"[0-9a-f]{64}", request["qa_plan_sha256"])
@@ -229,19 +211,20 @@ def authorize_request(policy, principal, request, *, execute=False):
         policy.require(principal, op, project)
 
 
-def submit_workspace(jobs, principal, project, expected_sha, profile, request_key, *, image_id=None,
-                     authorize=lambda: None, backend=None, changes=None):
+def submit_workspace(jobs, principal, project, expected_sha, profile, request_key, *, authorize=lambda: None, backend=None, changes=None):
     runtime = local_runtime(jobs.probe.root, jobs.policy)
     jobs.policy.require(principal, "submit", workspace_resource(jobs.policy))
     jobs.policy.require(principal, "workspace_materialize", project)
+    execution_id = None
     if backend is not None:
-        if image_id is not None:
-            raise ValueError("Use backend-selected image only")
         jobs.policy.require(principal, "workspace_execute", project)
         jobs.policy.require(principal, profile, project)
         if type(jobs.policy) is SupervisedWorkspacePolicy and jobs.policy.backend is not backend:
             raise PermissionError("DENIED")
-        image_id, context_id = backend.binding(profile, project)
+        from .execution import WorkspaceWSL
+        if type(backend) is not WorkspaceWSL:
+            raise ValueError("DIRECT_WSL_BACKEND_REQUIRED")
+        execution_id, context_id = backend.binding(profile, project)
     else:
         context_id = None
     args = (runtime, jobs.policy, principal, project, expected_sha, profile)
@@ -251,11 +234,10 @@ def submit_workspace(jobs, principal, project, expected_sha, profile, request_ke
     if changes is not None:
         jobs.policy.require(principal, "workspace_change", project)
         request["changes"] = normalize_changes(changes)
-    execute = image_id is not None
+    execute = execution_id is not None
     if execute:
-        request["image_id"] = image_id
-        if context_id is not None:
-            request["context_id"] = context_id
+        request["execution_id"] = execution_id
+        request["context_id"] = context_id
         if profile in QA_PROFILES:
             if backend is None:
                 raise ValueError("QA_BACKEND_REQUIRED")
@@ -317,7 +299,7 @@ def workspace_changes(jobs, principal, job_id, *, allow_execute=False):
 
 def verified_qa_build_input(jobs, principal, job_id, *, expected_project, expected_sha):
     """Local finalizer input only: unfinalized bytes of an authorized successful build."""
-    from .workspace_podman import apk_path, read_apk_bytes
+    from .workspace_profiles import apk_path, read_apk_bytes
     request = require_workspace_job(jobs, principal, job_id, allow_execute=True)
     if (request["project"] != expected_project or request["expected_sha"] != expected_sha
             or request["profile"] not in QA_PROFILES or "qa_plan_sha256" not in request):
@@ -328,7 +310,7 @@ def verified_qa_build_input(jobs, principal, job_id, *, expected_project, expect
     if (evidence["state"] != "SUCCEEDED" or result.get("operation") != "execute"
             or result.get("head") != expected_sha or result.get("workspace_materialized") is not True
             or execution.get("cleanup_verified") is not True or execution.get("exit_code") != 0
-            or execution.get("image_id") != request.get("image_id")
+            or execution.get("execution_id") != request.get("execution_id")
             or execution.get("workspace_sha256") != result.get("workspace_sha256")
             or execution.get("qa_plan_sha256") != request["qa_plan_sha256"]
             or execution.get("artifact_stage") != "unfinalized"
@@ -358,6 +340,7 @@ def run_workspace(jobs, row, *, executor=None):
     request = row["workspace"]
     result = {"operation": "prepare", "profile": request["profile"],
               "head": request["expected_sha"], "execution_available": False}
+    dispatched = False
     try:
         runtime = local_runtime(jobs.probe.root, jobs.policy)
         execute = row["workflow"] == "workspace_execute"
@@ -375,18 +358,25 @@ def run_workspace(jobs, row, *, executor=None):
                                   request["expected_sha"], request["profile"])
         if binding_digest(entry, root) != request["binding"]:
             raise PermissionError("WORKSPACE_BINDING_CHANGED")
-        # Only the registered backend (or the pre-existing disposable CI test executor).
+        # Only the registered direct backend.
+        dispatched = True
         execution = executor(jobs.probe.root / ("workspace-" + row["id"]), row, snapshot)
         if "context_id" in request and (execution.get("cleanup_verified") is not True
-                or execution.get("image_id") != request["image_id"]):
+                or execution.get("execution_id") != request.get("execution_id")):
             return "BLOCKED", {**result, **snapshot, "operation": "execute",
-                               "reason": "CLEANUP_OR_EXECUTION_UNVERIFIED"}
+                               "reason": "CLEANUP_OR_EXECUTION_UNVERIFIED", "execution": execution}
         if type(execution.get("exit_code")) is not int:
             raise ValueError("EXECUTION_EVIDENCE_INVALID")
         return ("SUCCEEDED" if execution["exit_code"] == 0 else "FAILED",
                 {**result, **snapshot, "operation": "execute", "execution_available": True,
                  "reason": None, "execution": execution})
     except (PermissionError, ValueError, FileExistsError, FileNotFoundError):
+        if not dispatched and row.get("effect_context") is not None:
+            result["execution"] = {"cleanup_verified": True, "execution_id": request["execution_id"],
+                                   "started": False}
         return "BLOCKED", {**result, "reason": "WORKSPACE_PREFLIGHT_BLOCKED"}
     except (OSError, RuntimeError):
+        if not dispatched and row.get("effect_context") is not None:
+            result["execution"] = {"cleanup_verified": True, "execution_id": request["execution_id"],
+                                   "started": False}
         return "FAILED", {**result, "reason": "WORKSPACE_PREPARATION_FAILED"}

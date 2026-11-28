@@ -20,8 +20,7 @@ from .github_operational import _private_bytes, _unique_object
 from .worker import exclusive_worker
 from .workos_auth import private_directory, private_file
 from .workspace_jobs import verified_qa_build_input
-from .workspace_podman import read_apk_bytes
-from .workspace_profiles import artifact_identity
+from .workspace_profiles import artifact_identity, read_apk_bytes
 
 PACKAGE = re.compile(r"[A-Za-z][A-Za-z0-9_]*(?:\.[A-Za-z][A-Za-z0-9_]*)+")
 CERT = re.compile(r"[0-9a-f]{64}")

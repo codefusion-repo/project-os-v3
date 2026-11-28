@@ -116,20 +116,7 @@ class SetupTests(unittest.TestCase):
                                 capture_output=True, text=True, timeout=10)
         self.assertEqual(result.returncode, 0)
         self.assertIn("--prepare-service", result.stdout)
-        self.assertIn("--no-fixture", result.stdout)
-
-    def test_no_fixture_requires_prepare_service(self):
-        import subprocess
-        import sys
-        with tempfile.TemporaryDirectory() as folder:
-            root = Path(folder) / "never-created"
-            result = subprocess.run(
-                [sys.executable, "-I", "-m", "project_os_bridge.setup_instance",
-                 "--root", str(root), "--no-fixture"],
-                stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=10)
-            self.assertEqual(result.returncode, 2)
-            self.assertIn("--no-fixture requires --prepare-service", result.stderr)
-            self.assertFalse(root.exists())
+        self.assertNotIn("--no-fixture", result.stdout)
 
     @unittest.skipIf(os.getuid() == 0, "Requires unprivileged user")
     def test_no_fixture_preparation_and_partial_recovery(self):
@@ -154,7 +141,7 @@ class SetupTests(unittest.TestCase):
 
             def prepare(instance):
                 with patch.object(sys, "argv", ["project-os-bridge-init", "--root",
-                            str(instance), "--prepare-service", "--no-fixture"]), patch(
+                            str(instance), "--prepare-service"]), patch(
                     "builtins.input", side_effect=[str(tunnel)]
                 ) as prompt, patch("sys.stdin.isatty", return_value=True), patch(
                     "sys.stderr.isatty", return_value=True

@@ -34,7 +34,7 @@ class Jobs:
         self.probe = Probe(root)
         self.policy = policy
         self.workflows = frozenset(workflows)
-        if not self.workflows <= {"probe_check", "git_fixture_check", "fixture_package", "workspace_prepare", "workspace_execute"}:
+        if not self.workflows <= {"probe_check", "fixture_package", "workspace_prepare", "workspace_execute"}:
             raise ValueError("Unknown workflow configuration")
         self.db = root / "jobs.sqlite3"
         import os
@@ -113,8 +113,6 @@ class Jobs:
             expected_resource = workspace_resource(self.policy)
         if resource != expected_resource or workflow not in self.workflows:
             raise ValueError("Unknown workflow or resource")
-        if workflow == "git_fixture_check":
-            self.policy.require(principal, "git_workflow", resource)
         if workflow == "fixture_package":
             self.policy.require(principal, "fixture_package", resource)
             if not isinstance(expected_sha, str) or not re.fullmatch(r"[0-9a-f]{40}", expected_sha):
@@ -154,15 +152,9 @@ class Jobs:
             if c.execute("SELECT count(*) FROM jobs WHERE principal=? AND state IN ('QUEUED','RUNNING')",
                          (principal,)).fetchone()[0] >= 32:
                 raise QueueLimitError("ACTIVE_JOB_LIMIT")
-            if workflow == "git_fixture_check" and c.execute(
-                    "SELECT count(*) FROM jobs WHERE workflow='git_fixture_check'").fetchone()[0] >= 8:
-                raise QueueLimitError("FIXTURE_STORAGE_LIMIT")
             if workflow == "fixture_package" and c.execute(
                     "SELECT count(*) FROM jobs WHERE workflow='fixture_package'").fetchone()[0] >= 8:
                 raise QueueLimitError("FIXTURE_STORAGE_LIMIT")
-            if workflow == "workspace_execute" and "context_id" not in json.loads(workspace) and c.execute(
-                    "SELECT 1 FROM jobs WHERE workflow='workspace_execute' LIMIT 1").fetchone():
-                raise QueueLimitError("DISPOSABLE_EXECUTION_ALREADY_USED")
             if workflow in {"workspace_prepare", "workspace_execute"} and c.execute(
                     "SELECT count(*) FROM jobs WHERE workflow IN ('workspace_prepare','workspace_execute')").fetchone()[0] >= 8:
                 raise QueueLimitError("WORKSPACE_STORAGE_LIMIT")
@@ -198,19 +190,13 @@ class Jobs:
                     "result":json.loads(row["result"]) if row["result"] else None,
                     "events":[dict(event) for event in events]}
 
-    def claim(self, *, fixture_context=None, workspace_context=None, workspace_contexts=None):
+    def claim(self, *, workspace_contexts=None):
         if workspace_contexts is not None:
-            if (workspace_context is not None or not isinstance(workspace_contexts, dict)
+            if (not isinstance(workspace_contexts, dict)
                     or any(not isinstance(key, str) or not isinstance(value, str)
                            or not re.fullmatch(r"[0-9a-f]{64}", value)
                            for key, value in workspace_contexts.items())):
                 raise ValueError("Invalid workspace contexts")
-        if workspace_context is not None and (not isinstance(workspace_context, str)
-                or not re.fullmatch(r"[0-9a-f]{64}", workspace_context)):
-            raise ValueError("Invalid workspace context")
-        if fixture_context is not None and (not isinstance(fixture_context, str)
-                or not re.fullmatch(r"[0-9a-f]{64}", fixture_context)):
-            raise ValueError("Invalid fixture context")
         with self.transaction() as c:
             if c.execute("SELECT 1 FROM fixture_effects WHERE resolved_at IS NULL LIMIT 1").fetchone():
                 return None
@@ -240,26 +226,16 @@ class Jobs:
                                               execute=row["workflow"] == "workspace_execute")
                         except (ValueError, TypeError):
                             raise PermissionError("Invalid workspace request") from None
-                    selected_context = workspace_context
+                    selected_context = None
                     if row["workflow"] == "workspace_execute":
                         if workspace_contexts is not None:
                             from .workspace_profiles import execution_route
                             key = execution_route(workspace["profile"], workspace["project"])
                             selected_context = workspace_contexts.get(key)
-                            # Profile-only bindings are limited to the dedicated
-                            # disposable candidate, never supervised workspace jobs.
-                            if (selected_context is None and row["resource"] == "disposable"
-                                    and all(":" not in item for item in workspace_contexts)):
-                                selected_context = workspace_contexts.get(workspace["profile"])
                             if selected_context is None:
                                 raise PermissionError("Workspace profile context unavailable")
                         if workspace.get("context_id") != selected_context:
                             raise PermissionError("Workspace context unavailable")
-                    if row["workflow"] == "git_fixture_check":
-                        self.policy.require(row["principal"], "git_workflow", row["resource"])
-                        if fixture_context is None:
-                            self.transition(c,row["id"],"QUEUED","BLOCKED",{"reason":"PODMAN_CONTEXT_REQUIRED"})
-                            continue
                 except PermissionError:
                     self.transition(c,row["id"],"QUEUED","BLOCKED")
                     continue
@@ -269,9 +245,8 @@ class Jobs:
                     claimed["workspace"] = workspace
                 if row["workflow"] == "fixture_package":
                     claimed["expected_sha"] = parameters["expected_sha"]
-                if row["workflow"] == "git_fixture_check" or (
-                        row["workflow"] == "workspace_execute" and selected_context is not None):
-                    effect_context = fixture_context if row["workflow"] == "git_fixture_check" else selected_context
+                if row["workflow"] == "workspace_execute" and selected_context is not None:
+                    effect_context = selected_context
                     token = uuid.uuid4().hex
                     c.execute("INSERT INTO fixture_effects(job_id,token,context_id) VALUES(?,?,?)",
                               (row["id"],token,effect_context))

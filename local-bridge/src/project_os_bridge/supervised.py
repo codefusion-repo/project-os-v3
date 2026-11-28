@@ -15,9 +15,6 @@ from pathlib import Path
 
 from .workos_auth import load_config, private_directory, private_file
 from .authenticated import tls_options
-from .isolated import IMAGE
-from .podman_context import PodmanContext
-from .vertical import bound_context
 from .service_setup import checked_path
 from .readiness import read_metadata, verify_metadata
 
@@ -37,7 +34,8 @@ def commands(root):
     config = json.loads(read_private(service / "runtime.json", 64 * 1024))
     required = {"tunnel", "tunnel_id", "image"}
     if (not isinstance(config, dict) or not required <= set(config)
-            or set(config) - required - {"podman_context", "project_config", "github_projects"}
+            or set(config) - required - {"project_config", "github_projects"}
+            or config["image"] is not None
             or ("project_config" in config and "github_projects" in config)):
         raise ValueError("Invalid service configuration")
     tunnel = checked_path(Path(config["tunnel"]))
@@ -46,14 +44,6 @@ def commands(root):
         raise PermissionError("Trusted executable required")
     if config["tunnel_id"] != verifier.resource.rsplit("/", 1)[-1]:
         raise ValueError("Tunnel identity mismatch")
-    image = config["image"]
-    context_path = config.get("podman_context")
-    if (image is None) != (context_path is None):
-        raise PermissionError("Fixture image and Podman context must be supplied together")
-    if image is not None:
-        if not isinstance(image, str) or not IMAGE.fullmatch(image):
-            raise ValueError("Invalid fixture image")
-        PodmanContext(Path(context_path)).identity(bound_context(root / "state", image))
     key = read_private(service / "runtime-key", 4096)
     if not re.fullmatch(r"[!-~]{16,4096}", key):
         raise ValueError("Invalid runtime key")
@@ -71,15 +61,13 @@ def commands(root):
               "--config",str(root/"oauth.json"),"--state-dir",str(root/"state"),
               "--port","8765","--tls-cert",str(cert),"--tls-key",str(cert_key),
               "--supervised-ca",str(ca)]
-    if image:
-        bridge += ["--fixture-image", image, "--podman-context", context_path]
     if "project_config" in config:
-        if image is not None or not isinstance(config["project_config"], str):
+        if not isinstance(config["project_config"], str):
             raise ValueError("Project configuration requires non-fixture profile")
         project_config = checked_path(Path(config["project_config"]))
         bridge += ["--project-config", str(project_config)]
     if "github_projects" in config:
-        if image is not None or not isinstance(config["github_projects"], dict):
+        if not isinstance(config["github_projects"], dict):
             raise ValueError("Project grants require non-fixture profile")
         bridge += ["--github-projects"]
     tunnel_cmd = [str(tunnel),"run","--config",str(service/"tunnel.yaml"),
