@@ -14,6 +14,8 @@ En el provider Codex, comprueba el SHA y rama de entrada y conserva cambios pree
 
 Aplica obligatoriamente la [selección de templates](../PROJECT_OS.md#selección-de-templates), [adopción y versión](../PROJECT_OS.md#instalación-adopción-y-versión-del-proyecto) y [seguridad y límites](../PROJECT_OS.md#seguridad-transversal-y-límites). Comprueba exclusiones y seguimiento Git mediante git check-ignore y git ls-files antes de escribir archivos privados; no presupongas que el checkout pertenece al dispositivo del PM. Si faltan permisos de sandbox o herramientas, informa la capacidad ausente y conserva el trabajo seguro.
 
-La inspección Git candidata de Browser utiliza el grant independiente `workspace_git_read` además de `workspace_prepare`, y respeta la exclusividad y reconciliación existentes. El fetch tipado exige el grant independiente `workspace_git_fetch`; una lectura no reserva el checkout ni acredita que un fetch haya ocurrido.
+La inspección Git de Browser utiliza el grant independiente `workspace_git_read` además de `workspace_prepare`, y respeta la exclusividad y reconciliación existentes. El fetch tipado exige el grant independiente `workspace_git_fetch`; una lectura no reserva el checkout ni acredita que un fetch haya ocurrido.
 
 Codex por Job acepta modelo y esfuerzo opcionales del catálogo autorizado; sin ellos conserva defaults. El modelo efectivo desconocido no se infiere del solicitado.
+
+Un pin metodológico posterior al receipt exige procedencia integrada de main canónico verificada; no reinstalar por un cambio documental. El diff seleccionado distingue index y worktree. Reconcilia consultas de capacidad interrumpidas sin repetir efectos.

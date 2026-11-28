@@ -309,9 +309,12 @@ def build_server(verifier, jobs, fixture_reader=None, *, diagnostics=None, githu
                                 return False
                         effect_id, effect_token = uuid.uuid4().hex, uuid.uuid4().hex
                         with jobs.transaction() as conn:
+                            if conn.execute("SELECT count(*) FROM jobs").fetchone()[0] >= 10000:
+                                raise ValueError("JOB_STORAGE_LIMIT")
                             stamp = now()
                             conn.execute("INSERT INTO jobs(id,principal,resource,workflow,request_key,state,created,updated) VALUES(?,?,?,?,?,?,?,?)",
                                          (effect_id, actor, workspace_resource(jobs.policy), "codex_capabilities", effect_id, "RUNNING", stamp, stamp))
+                            jobs.event(conn, effect_id, "RUNNING")
                             conn.execute("INSERT INTO fixture_effects(job_id,token,context_id) VALUES(?,?,?)", (effect_id, effect_token, binding))
                         result, clean = provider_catalog(executable, root, env, enabled)
                         if not clean:
@@ -322,7 +325,7 @@ def build_server(verifier, jobs, fixture_reader=None, *, diagnostics=None, githu
                         check()
                         with jobs.transaction() as conn:
                             conn.execute("UPDATE fixture_effects SET resolved_at=? WHERE job_id=? AND token=? AND resolved_at IS NULL", (now(), effect_id, effect_token))
-                            conn.execute("UPDATE jobs SET state='SUCCEEDED',updated=? WHERE id=?", (now(), effect_id))
+                            jobs.transition(conn, effect_id, "RUNNING", "SUCCEEDED")
                         return result
                 try:
                     return await asyncio.to_thread(collect)
@@ -662,7 +665,22 @@ def build_server(verifier, jobs, fixture_reader=None, *, diagnostics=None, githu
                             raise PermissionError("DENIED")
 
                     check()
-                    result = installed_context(path, repository, workflow, skills, templates, expected_revision)
+                    def integrated_head():
+                        from .github_operational import registry_entries
+                        from .methodology import CANONICAL
+                        aliases = [alias for alias, entry in registry_entries(github_provider.runtime).items()
+                                   if entry["repository"].casefold() == CANONICAL]
+                        if len(aliases) != 1:
+                            raise PermissionError("DENIED")
+                        canonical, _ = github_provider.open_project(actor, aliases[0])
+                        def canonical_check():
+                            check()
+                            if canonical.require(actor, aliases[0]).casefold() != CANONICAL:
+                                raise PermissionError("DENIED")
+                        canonical_check()
+                        return canonical.reader.integrated_head(actor, aliases[0], check_access=canonical_check)
+                    result = installed_context(path, repository, workflow, skills, templates, expected_revision,
+                                               integrated_head=integrated_head)
                     check()
                     observe("complete")
                     check()

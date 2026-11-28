@@ -367,9 +367,12 @@ def workspace_git_fetch(jobs, principal, project, expected_sha, *, authorize=lam
             jobs.policy.require(principal, "workspace_git_fetch", project)
             if binding_digest(*project_checkout(runtime, jobs.policy, principal, project, expected_sha)) != binding:
                 raise PermissionError("WORKSPACE_BINDING_CHANGED")
+            if conn.execute("SELECT count(*) FROM jobs").fetchone()[0] >= 10000:
+                raise ValueError("JOB_STORAGE_LIMIT")
             stamp = now()
             conn.execute("INSERT INTO jobs(id,principal,resource,workflow,request_key,state,created,updated) VALUES(?,?,?,?,?,?,?,?)",
                          (effect_id, principal, workspace_resource(jobs.policy), "workspace_git_fetch", effect_id, "RUNNING", stamp, stamp))
+            jobs.event(conn, effect_id, "RUNNING")
             conn.execute("INSERT INTO fixture_effects(job_id,token,context_id) VALUES(?,?,?)", (effect_id, token, binding))
         # Never replay after an interruption or error: the durable effect remains pending.
         result = _run_git_network(["git", "-C", str(root), "-c", "core.fsmonitor=false", "-c", "remote.origin.uploadpack=git-upload-pack",
@@ -389,7 +392,7 @@ def workspace_git_fetch(jobs, principal, project, expected_sha, *, authorize=lam
         authorize()
         with jobs.transaction() as conn:
             conn.execute("UPDATE fixture_effects SET resolved_at=? WHERE job_id=? AND token=? AND resolved_at IS NULL", (now(), effect_id, token))
-            conn.execute("UPDATE jobs SET state='SUCCEEDED',updated=? WHERE id=?", (now(), effect_id))
+            jobs.transition(conn, effect_id, "RUNNING", "SUCCEEDED")
         return {**before, "requested_sha": expected_sha, "sha_present_before": already_present,
                 "sha_present": after_present, "repository_id": entry["repository_id"]}
 

@@ -412,6 +412,13 @@ def read_workspace_context(runtime, policy, principal, project, expected_sha, pr
     sha = commit(root, expected_sha)
     if include_dirty and git(root, "rev-parse", "--verify", "HEAD").decode().strip() != sha:
         raise ValueError("WORKSPACE_CONTEXT_HEAD_CHANGED")
+    def staged_diff():
+        raw = git(root, "--literal-pathspecs", "diff", "--cached", "--no-ext-diff",
+                  "--no-textconv", "--no-renames", "--no-color", sha, "--", *paths)
+        if len(raw) > MAX_DIFF_BYTES:
+            raise ValueError("WORKSPACE_DIFF_LIMIT")
+        return raw
+    staged = staged_diff() if include_dirty else b""
     total, files, diffs = 0, [], []
     for path in paths:
         found = list(_entries(git(root, "ls-tree", "-z", sha, "--", path)))
@@ -445,7 +452,7 @@ def read_workspace_context(runtime, policy, principal, project, expected_sha, pr
     result = {"head": sha, "files": files, "source": "committed"}
     if include_dirty:
         diff = "".join(diffs)
-        if len(diff.encode("utf-8")) > MAX_DIFF_BYTES:
+        if len(diff.encode("utf-8")) + len(staged) > MAX_DIFF_BYTES:
             raise ValueError("WORKSPACE_DIFF_LIMIT")
         # Verify the observed content identities again; no atomic worktree claim.
         for item in files:
@@ -455,8 +462,11 @@ def read_workspace_context(runtime, policy, principal, project, expected_sha, pr
                 raise ValueError("WORKSPACE_CONTEXT_CHANGED")
         if git(root, "rev-parse", "--verify", "HEAD").decode().strip() != sha:
             raise ValueError("WORKSPACE_CONTEXT_HEAD_CHANGED")
+        if staged_diff() != staged:
+            raise ValueError("WORKSPACE_CONTEXT_CHANGED")
         policy.require(principal, "workspace_dirty_context", project)
-        result.update(source="committed-and-selected-worktree", diff=diff)
+        result.update(source="committed-and-selected-worktree", diff=diff,
+                      staged_diff=staged.decode("utf-8"))
     policy.require(principal, "workspace_context", project)
     if (_binding(*args) != (descriptor, entry, root)
             or binding_digest(entry, root) != binding):

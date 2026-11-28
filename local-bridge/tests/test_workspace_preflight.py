@@ -80,11 +80,15 @@ class WorkspacePreflightTests(unittest.TestCase):
             return read_workspace_context(self.runtime, policy, "operator", "demo", self.sha,
                                           "flutter-test", list(paths), **kwargs)
         file = self.project / "pubspec.yaml"
+        file.write_text("name: staged change\n")
+        self.git("add", "pubspec.yaml")
         file.write_text("name: local change\n")
         status = self.git("status", "--porcelain")
         self.assertNotIn("diff", read("pubspec.yaml"))
         result = read("pubspec.yaml", include_dirty=True)
         self.assertIn("+name: local change", result["diff"])
+        self.assertIn("+name: staged change", result["staged_diff"])
+        self.assertNotIn("+name: local change", result["staged_diff"])
         self.assertEqual(self.git("status", "--porcelain"), status)
         self.assertEqual(file.read_text(), "name: local change\n")
         file.unlink()
@@ -335,6 +339,28 @@ class WorkspacePreflightTests(unittest.TestCase):
             workspace_git_fetch(jobs, "operator", "demo", self.sha)
         reconcile(jobs, effect["job_id"], quiescent=True)
         self.assertFalse(jobs.pending_effects())
+
+    def test_codex_capability_interruption_reconciles_without_replay(self):
+        from project_os_bridge.core import now
+        from project_os_bridge.reconcile import reconcile
+        jobs = self.workspace_queue()
+        job_id = "capability-fixture"
+        with jobs.transaction() as conn:
+            stamp = now()
+            conn.execute("INSERT INTO jobs(id,principal,resource,workflow,request_key,state,created,updated) VALUES(?,?,?,?,?,?,?,?)",
+                         (job_id, "operator", "disposable", "codex_capabilities", job_id, "RUNNING", stamp, stamp))
+            jobs.event(conn, job_id, "RUNNING")
+            conn.execute("INSERT INTO fixture_effects(job_id,token,context_id) VALUES(?,?,?)",
+                         (job_id, "fixture-token", "a" * 64))
+        with self.assertRaises(PermissionError):
+            reconcile(jobs, job_id)
+        self.assertEqual(len(jobs.pending_effects()), 1)
+        reconcile(jobs, job_id, quiescent=True)
+        self.assertEqual(jobs.pending_effects(), [])
+        with jobs.transaction() as conn:
+            self.assertEqual(conn.execute("SELECT state FROM jobs WHERE id=?", (job_id,)).fetchone()[0], "INTERRUPTED")
+            self.assertEqual([row[0] for row in conn.execute("SELECT state FROM events WHERE job_id=? ORDER BY rowid", (job_id,))],
+                             ["RUNNING", "INTERRUPTED"])
 
     def test_durable_job_materializes_both_profiles(self):
         jobs = self.workspace_queue()
