@@ -49,7 +49,7 @@ Apply the [capability gate sequence](WSL-VALIDATION.md#capability-gate-sequence-
 | LB-07 local execution | Trusted owned project, exact revision/lock, profile grant, existing WSL toolchains, bounded process lifecycle, resource reuse and durable evidence. |
 
 
-Apply [resource reuse](../PROJECT_OS.md#seguridad-transversal-y-límites): existing checkout and branches, installed SDKs and caches; no extra copies, worktrees or unnecessary downloads. Reuse the scoped network disposition only under unchanged conditions; not LAN isolation PASS.
+Apply [resource reuse](../PROJECT_OS.md#simplicidad-y-proporcionalidad--evitar-sobreingeniería): existing checkout and branches, installed SDKs and caches; no extra copies, worktrees or unnecessary downloads. Reuse the scoped network disposition only under unchanged conditions; not LAN isolation PASS.
 
 1. Live OAuth and local revocation/restore (401 vs 403), including persistence across restart.
 2. Exact-subject denial and ownership checks; no real access in probe-only mode, and deny ungranted resources in an authorized read-only profile.
@@ -120,7 +120,7 @@ AgentsUbuntu is the sole local execution environment. Use the installed toolchai
 
 ### LB-07 bounded single-operator functional acceptance
 
-Apply [resource reuse](../PROJECT_OS.md#seguridad-transversal-y-límites): existing checkout and branches, installed SDKs and caches; no extra copies, worktrees or unnecessary downloads. An unresolved effect fences later jobs. Stop the existing service, verify the exact job's processes/effects are quiescent locally, then use the existing reconciliation command. No automatic replay or removal of unrelated resources.
+Apply [resource reuse](../PROJECT_OS.md#simplicidad-y-proporcionalidad--evitar-sobreingeniería): existing checkout and branches, installed SDKs and caches; no extra copies, worktrees or unnecessary downloads. An unresolved effect fences later jobs. Stop the existing service, verify the exact job's processes/effects are quiescent locally, then use the existing reconciliation command. No automatic replay or removal of unrelated resources.
 
 
 ### Android Build v1 — QA default and explicit Production

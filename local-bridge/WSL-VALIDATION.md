@@ -206,4 +206,4 @@ AgentsUbuntu is the sole local execution environment. Use the installed toolchai
 
 ### LB-07 bounded single-operator functional acceptance
 
-Apply [resource reuse](../PROJECT_OS.md#seguridad-transversal-y-límites). Reuse existing SDKs, caches and sequential Jobs; do not create extra copies, worktrees or unnecessary downloads. Preserve evidence and reconcile before cleaning job-owned regenerable outputs. Verify bounded functional evidence and actual QA delivery when authorized.
+Apply [resource reuse](../PROJECT_OS.md#simplicidad-y-proporcionalidad--evitar-sobreingeniería). Reuse existing SDKs, caches and sequential Jobs; do not create extra copies, worktrees or unnecessary downloads. Preserve evidence and reconcile before cleaning job-owned regenerable outputs. Verify bounded functional evidence and actual QA delivery when authorized.

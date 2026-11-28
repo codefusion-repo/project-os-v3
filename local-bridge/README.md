@@ -286,7 +286,7 @@ The materializer excludes only a regular root-level `.env.example` from the comm
 
 AgentsUbuntu is the sole local execution environment. Use the installed toolchains and registered Jobs; GitHub Connector handles remote writes, and MCP provides grouped context and typed local execution. Trusted project processes run with the local account's authority, not a sandbox. Keep private grants, scoped credentials, exact revision and lockfile, bounded process lifecycle and durable evidence.
 
-Apply [resource reuse](../PROJECT_OS.md#seguridad-transversal-y-límites): work in branches of the existing checkout, without extra copies, clones, worktrees or unnecessary downloads. Reuse installed SDKs and caches. Preserve the existing job-owned snapshot, artifact and rollback mechanisms without duplicating them. The worker checks authorization and stop signals; reconcile before cleaning job-owned temporary outputs.
+Apply [resource reuse](../PROJECT_OS.md#simplicidad-y-proporcionalidad--evitar-sobreingeniería): work in branches of the existing checkout, without extra copies, clones, worktrees or unnecessary downloads. Reuse installed SDKs and caches. Preserve the existing job-owned snapshot, artifact and rollback mechanisms without duplicating them. The worker checks authorization and stop signals; reconcile before cleaning job-owned temporary outputs.
 
 ### LB-07 bounded single-operator functional acceptance
 
