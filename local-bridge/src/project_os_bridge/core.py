@@ -167,9 +167,13 @@ class Jobs:
             if workflow == "fixture_package" and c.execute(
                     "SELECT count(*) FROM jobs WHERE workflow='fixture_package'").fetchone()[0] >= 8:
                 raise QueueLimitError("FIXTURE_STORAGE_LIMIT")
+            # Operational workspaces share the existing durable history. Limit
+            # active admissions, not completed work; the global retained-row
+            # bound and unresolved-effect fence above still apply.
             if workflow in {"workspace_prepare", "workspace_execute"} and c.execute(
-                    "SELECT count(*) FROM jobs WHERE workflow IN ('workspace_prepare','workspace_execute')").fetchone()[0] >= 8:
-                raise QueueLimitError("WORKSPACE_STORAGE_LIMIT")
+                    "SELECT count(*) FROM jobs WHERE workflow IN ('workspace_prepare','workspace_execute') "
+                    "AND state IN ('QUEUED','RUNNING')").fetchone()[0] >= 8:
+                raise QueueLimitError("WORKSPACE_ACTIVE_LIMIT")
             job_id = uuid.uuid4().hex
             stamp = now()
             c.execute("INSERT INTO jobs VALUES(?,?,?,?,?,?,?,?,?)",
