@@ -476,7 +476,10 @@ class WorkspacePreflightTests(unittest.TestCase):
         self.assertEqual(effect["job_id"], first)
         self.assertEqual(effect["context_id"], backend.identities()["demo:expo-test"])
         # The persistence primitive is called only after local quiescence is verified.
-        reopened.resolve_effect(first, effect["token"], effect["context_id"])
+        from project_os_bridge.reconcile import reconcile
+        with self.assertRaises(PermissionError):
+            reconcile(reopened, first)
+        reconcile(reopened, first, quiescent=True)
         with patch("project_os_bridge.execution._command", return_value=(0, True)):
             run_pending(reopened, workspace_backend=backend)
         self.assertEqual(reopened.get("operator", other)["state"], "SUCCEEDED")
@@ -706,9 +709,7 @@ class WorkspacePreflightTests(unittest.TestCase):
         jobs = Jobs(jobs.probe.root, policy, workflows=("workspace_execute",))
         backend = WorkspaceWSL({"demo:flutter-test": {"PATH": "/usr/bin:/bin"}})
         job = submit_workspace(jobs, "operator", "demo", self.sha, "flutter-test", "one", backend=backend)
-        executor = Mock()
-        run_pending(jobs, workspace_executor=executor)
-        executor.assert_not_called()
+        run_pending(jobs)
         self.assertEqual(jobs.get("operator", job)["state"], "BLOCKED")
         self.assertEqual(jobs.pending_effects(), [])
 

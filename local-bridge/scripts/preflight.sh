@@ -13,12 +13,7 @@ check() {
 }
 check git git --version
 check gh gh --version
-check podman /usr/bin/podman --version
-if [ "$(id -u)" -ne 0 ] && [ "$(timeout 10s /usr/bin/podman info --format '{{.Host.Security.Rootless}}' 2>/dev/null)" = true ]; then
-  printf 'podman_rootless: AVAILABLE\n'
-else
-  printf 'podman_rootless: UNAVAILABLE_OR_FAILED\n'
-fi
+
 # Inventory only. A failed group lookup must not produce PASS.
 if groups="$(id -Gn 2>/dev/null)" && [ -n "$groups" ] && [ "$(id -u)" -ne 0 ]; then
   if printf '%s\n' "$groups" | tr ' ' '\n' | grep -Eq '^(sudo|wheel|docker|lxd|libvirt|disk|root|adm|podman)$'; then
