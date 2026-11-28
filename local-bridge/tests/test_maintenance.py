@@ -290,12 +290,43 @@ class MaintenanceTests(unittest.TestCase):
             self.assertFalse(self.service.run(result["id"]))
         self.assertNotIn("secret-fixture-payload", json.dumps(self.service.status("request-1")))
         self.assertNotIn("secret-fixture-payload", self.service.active.read_text())
+        self.assertNotIn("secret-fixture-payload", (self.service.store / (result["id"] + ".diagnostic.json")).read_text())
         self.assertNotIn("secret-fixture-payload", " ".join(logs.output))
         with patch.object(m.subprocess, "run", return_value=subprocess.CompletedProcess([], 23, b"secret")):
             with self.assertRaises(m.CommandFailure) as caught:
                 m.command("/private/path", "secret-fixture-payload")
         self.assertEqual(caught.exception.exit_code, 23)
         self.assertNotIn("secret", str(caught.exception))
+
+    def test_diagnostics_preserve_legacy_record_schema_and_history(self):
+        result = self.submit()
+        with patch.object(self.service, "lifecycle", side_effect=m.CommandFailure("COMMAND_FAILED", 17)):
+            self.assertFalse(self.service.run(result["id"]))
+        record = m.read_json(self.service.active)
+        # Exact schema used by the previous runtime, including rollback readers.
+        self.assertEqual(set(record), {"request", "state", "stage", "flags", "previous", "updated_at"})
+        diagnostic = self.service.status("request-1")["diagnostic"]
+        self.submit("next")
+        self.assertEqual(self.service.status("request-1")["diagnostic"], diagnostic)
+        self.assertNotIn("diagnostic", self.service.status("next"))
+        path = self.service.store / (result["id"] + ".diagnostic.json")
+        evidence = m.read_json(path)
+        evidence["updated_at"] = "stale"
+        m.save(path, evidence)
+        self.assertNotIn("diagnostic", self.service.status("request-1"))
+        self.assertEqual(self.service.status("request-1")["state"], "BLOCKED")
+
+    def test_empty_git_ancestor_reports_specific_cause_without_mutation(self):
+        result = self.submit()
+        git_marker = self.root.parent / ".git"
+        git_marker.mkdir()
+        with patch.object(self.service, "lifecycle") as lifecycle:
+            self.assertFalse(self.service.run(result["id"]))
+        lifecycle.assert_not_called()
+        self.assertEqual(self.service.status("request-1")["diagnostic"],
+                         {"step": "lifecycle", "code": "INSTANCE_INSIDE_GIT", "exit_code": None})
+        self.assertTrue(git_marker.is_dir())
+        self.assertEqual(m.receipt(self.service.venv), PREVIOUS)
 
     def test_corrupt_status_is_sanitized(self):
         self.submit()

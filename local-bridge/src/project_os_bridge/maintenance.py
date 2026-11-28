@@ -42,7 +42,7 @@ STAGES = {"accepted", "preflight", "quiescing", "stopped", "fenced",
           "installing", "restoring", "starting", "complete"}
 STATES = {"ACCEPTED", "RUNNING", "SUCCEEDED", "BLOCKED", "LOCAL_RECOVERY_REQUIRED"}
 DIAGNOSTIC_STEPS = frozenset(["admission","lifecycle","idle_jobs","checkout","install_guard","runtime_profile","github_run","github_rules","github_checks","wheel_evidence","github_main","git_fetch","git_ancestry","rollback_identity","opt_ins","final_admission","accepted","preflight","quiescing","stopped","fenced","installing","restoring","starting","complete"])
-DIAGNOSTIC_CODES = frozenset(["CHECK_FAILED","PERMISSION_DENIED","COMMAND_FAILED","COMMAND_TIMEOUT","COMMAND_UNAVAILABLE","GITHUB_HTTP_ERROR","GITHUB_EVIDENCE_INVALID","GITHUB_TRANSPORT_FAILED","INTERNAL_ERROR","IO_ERROR","INVALID_DATA"])
+DIAGNOSTIC_CODES = frozenset(["INSTANCE_INSIDE_GIT", "CHECK_FAILED","PERMISSION_DENIED","COMMAND_FAILED","COMMAND_TIMEOUT","COMMAND_UNAVAILABLE","GITHUB_HTTP_ERROR","GITHUB_EVIDENCE_INVALID","GITHUB_TRANSPORT_FAILED","INTERNAL_ERROR","IO_ERROR","INVALID_DATA"])
 LOG = logging.getLogger("project_os.maintenance")
 
 
@@ -189,11 +189,7 @@ def request(action, expected, target, wheel, run_id, ident):
 
 
 def validate_record(record):
-    fields = {"request", "state", "stage", "flags", "previous", "updated_at"}
-    if (not isinstance(record, dict) or not fields <= set(record)
-            or set(record) - fields - {"diagnostic"}
-            or ("diagnostic" in record and (not valid_diagnostic(record["diagnostic"])
-                or record["state"] not in {"BLOCKED", "LOCAL_RECOVERY_REQUIRED", "ACCEPTED"}))):
+    if not isinstance(record, dict) or set(record) != {"request", "state", "stage", "flags", "previous", "updated_at"}:
         raise ValueError("Invalid maintenance record")
     req = record["request"]
     if req != request(req["action"], req["expected_sha"], req["target_sha"],
@@ -217,8 +213,6 @@ def public(record):
     result = {**record["request"], "state": record["state"], "stage": record["stage"],
             "updated_at": record["updated_at"],
             "readiness_basis": "local_tls_and_anonymous_401" if record["state"] == "SUCCEEDED" else None}
-    if "diagnostic" in record:
-        result["diagnostic"] = record["diagnostic"]
     return result
 
 
@@ -388,21 +382,50 @@ class Maintenance:
             return result
         return None
 
+    def public_status(self, record):
+        result = public(record)
+        if record["state"] not in {"BLOCKED", "LOCAL_RECOVERY_REQUIRED", "ACCEPTED"}:
+            return result
+        path = self.store / (record["request"]["id"] + ".diagnostic.json")
+        if not os.path.lexists(path):
+            return result
+        try:
+            evidence = read_json(path, 1024)
+            if (not isinstance(evidence, dict)
+                    or set(evidence) != {"state", "stage", "updated_at", "diagnostic"}
+                    or not valid_diagnostic(evidence["diagnostic"])):
+                raise ValueError("Invalid diagnostic")
+            if all(evidence[key] == record[key] for key in ("state", "stage", "updated_at")):
+                result["diagnostic"] = evidence["diagnostic"]
+        except (OSError, ValueError, TypeError, KeyError):
+            LOG.warning("maintenance_diagnostic outcome=UNAVAILABLE")
+        return result
+
     def status(self, key):
         ident = request_id(key)
         try:
             with self.locked():
                 record = self.lookup(ident)
-                return public(record) if record else {"state": "NOT_FOUND"}
+                return self.public_status(record) if record else {"state": "NOT_FOUND"}
         except (OSError, ValueError, KeyError, TypeError, RuntimeError):
             raise ValueError("MAINTENANCE_STATUS_UNAVAILABLE") from None
 
     def transition(self, record, state, stage, diagnostic=None):
-        record.pop("diagnostic", None)
-        if diagnostic is not None:
-            record["diagnostic"] = diagnostic
         record.update(state=state, stage=stage, updated_at=datetime.now(timezone.utc).isoformat())
-        save(self.active, validate_record(record))
+        validate_record(record)
+        if diagnostic is not None:
+            # Keep the authoritative state record byte-schema compatible with
+            # older runners. Publish the optional evidence first; status only
+            # joins the exact recorded transition, never an orphan/stale write.
+            path = self.store / (record["request"]["id"] + ".diagnostic.json")
+            if not valid_diagnostic(diagnostic):
+                raise ValueError("Invalid diagnostic")
+            try:
+                save(path, {"state": state, "stage": stage,
+                            "updated_at": record["updated_at"], "diagnostic": diagnostic})
+            except (OSError, ValueError):
+                LOG.warning("maintenance_diagnostic outcome=UNAVAILABLE")
+        save(self.active, record)
 
     def launch(self, ident):
         # This is a transient SERVICE, never a scope of the MCP service.
@@ -430,7 +453,7 @@ class Maintenance:
                 if existing:
                     if existing["request"] != req:
                         raise ValueError("REQUEST_KEY_CONFLICT")
-                    return public(existing)
+                    return self.public_status(existing)
                 old = self.current()
                 if old and old["state"] not in TERMINAL:
                     raise RuntimeError("MAINTENANCE_BUSY_OR_UNCONFIRMED")
@@ -450,7 +473,7 @@ class Maintenance:
                     authorize()
                     if not self.enabled():
                         self.transition(record, "BLOCKED", "accepted")
-                        return public(record)
+                        return self.public_status(record)
                 except PermissionError:
                     self.transition(record, "BLOCKED", "accepted")
                     raise
@@ -460,7 +483,7 @@ class Maintenance:
                     self.launch(req["id"])
                 except (OSError, RuntimeError, ValueError, subprocess.SubprocessError) as exc:
                     self.transition(record, "ACCEPTED", "accepted", failure("accepted", exc))
-                return public(record)
+                return self.public_status(record)
         except PermissionError:
             raise PermissionError("DENIED") from None
         except (OSError, ValueError, KeyError, TypeError, RuntimeError, subprocess.SubprocessError):
@@ -519,6 +542,9 @@ class Maintenance:
                 raise PermissionError("Maintenance admission changed")
             # Only the exact running, linked, disabled non-fixture instance.
         with diagnostic_step("lifecycle"):
+            # Same conservative boundary as lifecycle; report the cause without a path.
+            if any(os.path.lexists(path / ".git") for path in (self.root, *self.root.parents)):
+                raise DiagnosticFailure({"step": "lifecycle", "code": "INSTANCE_INSIDE_GIT", "exit_code": None})
             self.lifecycle("status")
         with diagnostic_step("idle_jobs"):
             self.idle_jobs()

@@ -249,8 +249,8 @@ class WorkspaceWSL:
                 return {**result, "exit_code": 125, "reason": "LOCKFILE_CHANGED"}
             if code != 0:
                 return {**result, "exit_code": code, "reason": {130: "EXECUTION_STOPPED",
-                        124: "EXECUTION_TIMEOUT", 127: "EXECUTABLE_UNAVAILABLE",
-                        125: "PROCESS_GROUP_REMAINED"}.get(code, "COMMAND_FAILED")}
+                        124: "EXECUTION_TIMEOUT_OR_EXIT_124", 127: "EXECUTABLE_UNAVAILABLE_OR_EXIT_127",
+                        125: "PROCESS_GROUP_REMAINED_OR_EXIT_125"}.get(code, "COMMAND_FAILED")}
         if not enabled():
             return {**result, "exit_code": 130, "reason": "EXECUTION_STOPPED"}
         result["exit_code"] = 0
