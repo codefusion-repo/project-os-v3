@@ -111,10 +111,14 @@ class AndroidQATools:
                                     stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                                     stderr=subprocess.DEVNULL, timeout=180, check=False,
                                     umask=0o077)
+        except subprocess.TimeoutExpired:
+            raise ValueError("QA_TOOL_TIMEOUT") from None
         except (OSError, subprocess.SubprocessError):
-            raise ValueError("QA_TOOL_FAILED") from None
-        if result.returncode or len(result.stdout) > 2 * 1024 * 1024:
+            raise ValueError("QA_TOOL_UNAVAILABLE") from None
+        if result.returncode:
             raise ValueError("QA_TOOL_FAILED")
+        if len(result.stdout) > 2 * 1024 * 1024:
+            raise ValueError("QA_TOOL_OUTPUT_LIMIT")
         return result.stdout.decode("utf-8", "strict")
 
     def generate(self, directory, password):
@@ -316,6 +320,17 @@ class QASignerBinding:
             expected_sha=request["expected_sha"], expected_package=self.package, tools=self.tools)
 
 
+
+
+_QA_ERROR_CODE = frozenset(["QA_TOOL_TIMEOUT","QA_TOOL_UNAVAILABLE","QA_TOOL_OUTPUT_LIMIT","DENIED","QA_APK_METADATA_INVALID","QA_APK_SIGNER_INVALID","QA_ARTIFACT_IDENTITY_MISMATCH","QA_BACKEND_REQUIRED","QA_BUILD_EVIDENCE_UNAVAILABLE","QA_BUILD_IDENTITY_CHANGED","QA_CERTIFICATE_CHANGED","QA_CERTIFICATE_UNAVAILABLE","QA_DELIVERY_BINDING_CHANGED","QA_DELIVERY_BINDING_INVALID","QA_DELIVERY_EVIDENCE_UNAVAILABLE","QA_EFFECTS_PENDING","QA_FINALIZATION_RECORD_CONFLICT","QA_HISTORY_INVALID","QA_IDENTITY_INVALID","QA_IDENTITY_UNAVAILABLE","QA_PACKAGE_BINDING_INVALID","QA_RECEIPT_IDENTITY_MISMATCH","QA_REPOSITORY_IDENTITY_INVALID","QA_SIGNER_BINDING_CHANGED","QA_SIGNER_BINDING_INVALID","QA_TOOLCHAIN_UNAVAILABLE","QA_TOOL_FAILED","QA_ZIP_APK_MISMATCH","QA_ZIP_DIGEST_MISMATCH","QA_ZIP_INVALID","QA_ZIP_LAYOUT_INVALID","QA_ZIP_SIZE_MISMATCH","WORKSPACE_BINDING_CHANGED","WORKSPACE_CHANGES_UNAVAILABLE","WORKSPACE_GRANTS_UNAVAILABLE"])
+
+
+def qa_error_code(exc, fallback):
+    # Only known fixed literals, never arbitrary exception text.
+    value = exc.args[0] if len(exc.args) == 1 else None
+    return value if type(value) is str and value in _QA_ERROR_CODE else fallback
+
+
 def finalize_pending_locked(jobs, backend, *, enabled):
     """Resume only successful builds with a frozen signer, before the next build.
 
@@ -344,10 +359,12 @@ def finalize_pending_locked(jobs, backend, *, enabled):
                 raise PermissionError("QA_SIGNER_BINDING_CHANGED")
             receipt = signer.finalize_locked(jobs, row["principal"], row["id"], request)
             outcome = {"state": "SUCCEEDED", "receipt": receipt}
-        except PermissionError:
-            outcome = {"state": "BLOCKED", "reason": "QA_FINALIZATION_DENIED"}
-        except (OSError, ValueError, TypeError, KeyError, RuntimeError):
-            outcome = {"state": "FAILED", "reason": "QA_FINALIZATION_FAILED"}
+        except PermissionError as exc:
+            outcome = {"state": "BLOCKED", "reason": "QA_FINALIZATION_DENIED",
+                       "error_code": qa_error_code(exc, "QA_FINALIZATION_DENIED")}
+        except (OSError, ValueError, TypeError, KeyError, RuntimeError) as exc:
+            outcome = {"state": "FAILED", "reason": "QA_FINALIZATION_FAILED",
+                       "error_code": qa_error_code(exc, "QA_FINALIZATION_FAILED")}
         result["qa_finalization"] = outcome
         with jobs.transaction() as conn:
             changed = conn.execute("UPDATE jobs SET result=? WHERE id=? AND state='SUCCEEDED' AND result=?",

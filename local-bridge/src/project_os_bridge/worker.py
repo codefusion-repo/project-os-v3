@@ -85,8 +85,10 @@ def run_pending(jobs: Jobs, *, enabled=lambda: True, workspace_backend=None):
                     state, result = run_package(jobs, row)
                 else:
                     raise ValueError("Unknown handler")
-            except Exception:
-                jobs.finish(row["id"], "FAILED", {"error": "HANDLER_FAILED"})
+            except Exception as exc:
+                from .workspace_jobs import workspace_error_code
+                jobs.finish(row["id"], "FAILED", {"error": "HANDLER_FAILED",
+                    "error_code": workspace_error_code(exc, "HANDLER_FAILED")})
             else:
                 jobs.finish(row["id"], state, result, fixture_absent=fixture_absent,
                             fixture_context=row.get("effect_context"))

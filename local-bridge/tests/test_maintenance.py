@@ -91,6 +91,7 @@ class MaintenanceTests(unittest.TestCase):
         git.assert_not_called()
         self.assertEqual(self.service.status("request-1")["state"], "BLOCKED")
         self.assertEqual(self.service.status("request-1")["stage"], "preflight")
+        self.assertEqual(self.service.status("request-1")["diagnostic"]["step"], "wheel_evidence")
         self.assertEqual(m.receipt(self.service.venv), PREVIOUS)
         for name, before in markers.items():
             self.assertEqual((self.service.state / name).read_bytes(), before)
@@ -270,6 +271,31 @@ class MaintenanceTests(unittest.TestCase):
         self.assertIn("/usr/bin/python3", args)
         self.assertNotIn("--scope", args)
         self.assertNotIn("request-1", args)
+
+    def test_preflight_failure_persists_safe_code_and_exit_status(self):
+        result = self.submit()
+        with patch.object(self.service, "lifecycle", side_effect=m.CommandFailure("COMMAND_FAILED", 17)), \
+                self.assertLogs(m.LOG, "WARNING") as logs:
+            self.assertFalse(self.service.run(result["id"]))
+        status = self.service.status("request-1")
+        self.assertEqual(status["diagnostic"], {"step": "lifecycle", "code": "COMMAND_FAILED", "exit_code": 17})
+        self.assertIn("step=lifecycle", " ".join(logs.output))
+        self.assertEqual(m.Maintenance(self.root, self.kit).status("request-1"), status)
+        self.assertEqual(m.receipt(self.service.venv), PREVIOUS)
+
+    def test_failure_does_not_disclose_exception_or_raw_command(self):
+        result = self.submit()
+        with patch.object(self.service, "lifecycle", side_effect=RuntimeError("secret-fixture-payload")), \
+                self.assertLogs(m.LOG, "WARNING") as logs:
+            self.assertFalse(self.service.run(result["id"]))
+        self.assertNotIn("secret-fixture-payload", json.dumps(self.service.status("request-1")))
+        self.assertNotIn("secret-fixture-payload", self.service.active.read_text())
+        self.assertNotIn("secret-fixture-payload", " ".join(logs.output))
+        with patch.object(m.subprocess, "run", return_value=subprocess.CompletedProcess([], 23, b"secret")):
+            with self.assertRaises(m.CommandFailure) as caught:
+                m.command("/private/path", "secret-fixture-payload")
+        self.assertEqual(caught.exception.exit_code, 23)
+        self.assertNotIn("secret", str(caught.exception))
 
     def test_corrupt_status_is_sanitized(self):
         self.submit()

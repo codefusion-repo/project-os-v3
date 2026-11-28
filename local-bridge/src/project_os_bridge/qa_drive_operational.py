@@ -121,6 +121,8 @@ class SupervisedDriveDelivery:
         if not request or request["target"] != target:
             raise PermissionError("QA_DELIVERY_REQUEST_UNAVAILABLE")
         reply = {"job_id": job_id, "state": request["state"]}
+        if request["state"] == "FAILED" and "error_code" in request:
+            reply["error_code"] = request["error_code"]
         if request["state"] == "SUCCEEDED":
             # Remote bytes were verified by the worker. Before disclosure,
             # recheck the current live PR and local grants, not a large download.
