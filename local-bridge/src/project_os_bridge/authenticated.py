@@ -102,6 +102,12 @@ def build_server(verifier, jobs, fixture_reader=None, *, diagnostics=None, githu
         def collect():
             actor = principal()
             result = {"status":"ready","caller_identity_verified":True,"repository_access":False,"mode":"authenticated-disposable"}
+            with jobs.transaction() as conn:
+                pending = conn.execute("SELECT 1 FROM fixture_effects e LEFT JOIN jobs j ON j.id=e.job_id "
+                                       "WHERE e.resolved_at IS NULL AND (j.state IS NULL OR j.state != 'RUNNING') LIMIT 1").fetchone() is not None
+            result["reconciliation_required"] = pending
+            if pending:
+                result["status"] = "degraded"
             result["installation"] = {"status": "unavailable"}
             if fixture_reader is None or diagnostics is not None:
                 try:
@@ -119,7 +125,7 @@ def build_server(verifier, jobs, fixture_reader=None, *, diagnostics=None, githu
                         local_runtime(jobs.probe.root, jobs.policy)
                         if not supervised_workspace or jobs.policy.execution_available():
                             workspace_backend.identities()
-                            result["workspace_execution_available"] = True
+                            result["workspace_execution_available"] = not pending
                     except (OSError, ValueError):
                         pass
                     result["workspace_execution_scope"] = ("supervised-local-binding" if supervised_workspace
@@ -341,7 +347,8 @@ def build_server(verifier, jobs, fixture_reader=None, *, diagnostics=None, githu
                                        pr: StrictInt | None = None,
                                        target_branch: StrictStr | None = None,
                                        model: StrictStr | None = None,
-                                       reasoning_effort: StrictStr | None = None) -> dict:
+                                       reasoning_effort: StrictStr | None = None,
+                                       target_base_sha: StrictStr | None = None) -> dict:
                 """Route an authorized implementation task to Codex on its existing checkout.
                 Browser mode does not queue anything. No caller executable, environment or shell."""
                 from .codex_provider import validate_task, MODES
@@ -357,6 +364,7 @@ def build_server(verifier, jobs, fixture_reader=None, *, diagnostics=None, githu
                 task = validate_task({"mode": "codex" if mode == "browser" else mode,
                                       "issue": issue, "pr": pr, "branch": branch, "prompt": prompt,
                                       **({"target_branch": target_branch} if target_branch is not None else {}),
+                                      **({"target_base_sha": target_base_sha} if target_base_sha is not None else {}),
                                       **({"model": model} if model is not None else {}),
                                       **({"reasoning_effort": reasoning_effort} if reasoning_effort is not None else {})})
                 from .workspace_jobs import browser_route
@@ -845,11 +853,11 @@ def serve_with_worker(server, jobs, verifier, *, readiness=None, workspace_backe
                     if verifier.enabled():
                         run_pending(jobs, enabled=lambda: verifier.enabled() and not stopping(),
                                     workspace_backend=workspace_backend)
-                        if delivery_worker is not None:
+                        if delivery_worker is not None and not jobs.pending_effects():
                             process_one(jobs, delivery_worker,
                                         enabled=lambda: verifier.enabled() and not stopping())
-                    if jobs.pending_effects():
-                        raise RuntimeError("RECONCILIATION_REQUIRED")
+                    # Existing worker and admission fences still block uncertain effects.
+                    # Do not take authenticated read access offline.
                 except WorkerBusy:
                     # Another exclusive worker owns the disposable queue.
                     pass
@@ -935,8 +943,6 @@ def main():
         if workspace_backend is not None:
             workflows = (*workflows, "workspace_execute")
         jobs = Jobs(args.state_dir, workspace_policy or Policy(grants), workflows=workflows)
-        if jobs.pending_effects():
-            parser.error("RECONCILIATION_REQUIRED; stop and use local reconciliation")
         try:
             github_provider = load_operational_provider(verifier, supervised=diagnostics is not None,
                                                         project_config=args.project_config, multi=args.github_projects)

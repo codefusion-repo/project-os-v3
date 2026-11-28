@@ -564,6 +564,8 @@ def run_workspace(jobs, row, *, executor=None):
             dispatched = True
             execution = executor(root, row, snapshot)
             verified = (execution.get("cleanup_verified") is True
+                        and execution.get("effects_reconciled", True) is True
+                        and execution.get("checkout_verified", True) is True
                         and execution.get("execution_id") == request["execution_id"])
             state = ("SUCCEEDED" if verified and execution.get("exit_code") == 0
                      and execution.get("executor") == "codex" else "BLOCKED")

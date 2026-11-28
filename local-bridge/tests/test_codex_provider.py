@@ -127,7 +127,9 @@ class CodexProviderTests(unittest.TestCase):
                  patch("project_os_bridge.codex_provider.probe_capacity", return_value=("available", True)), \
                  patch("project_os_bridge.codex_provider.execute_turn", return_value={"started": True, "exit_code": 0, "cleanup_verified": True}):
                 wrong = run_codex(root, {"PATH": "/bin"}, {**request, "codex_task": {**task, "branch": "work/authorized", "target_branch": "work/other"}}, enabled=lambda: True)
-            self.assertFalse(wrong["cleanup_verified"])
+            self.assertTrue(wrong["cleanup_verified"])
+            self.assertFalse(wrong["effects_reconciled"])
+            self.assertFalse(wrong["checkout_verified"])
             self.assertEqual(wrong["reason"], "CODEX_CHECKOUT_UNCERTAIN")
 
     def test_catalog_allowlist_and_selection(self):

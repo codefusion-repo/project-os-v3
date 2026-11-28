@@ -79,7 +79,9 @@ def run_pending(jobs: Jobs, *, enabled=lambda: True, workspace_backend=None):
                                                              enabled=execution_enabled)
                     state, result = run_workspace(jobs, row, executor=executor)
                     if row.get("effect_context") is not None:
-                        fixture_absent = result.get("execution", {}).get("cleanup_verified") is True
+                        evidence = result.get("execution", {})
+                        fixture_absent = (evidence.get("cleanup_verified") is True
+                                          and evidence.get("effects_reconciled", True) is True)
                 elif row["workflow"] == "fixture_package":
                     from .workspace_fixture import run_package
                     state, result = run_package(jobs, row)
