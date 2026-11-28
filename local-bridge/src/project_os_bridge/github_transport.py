@@ -43,8 +43,8 @@ def _http_result(raw, exit_code, *, strict=False):
         return error("GH_RATE_LIMIT")
     if code == 403:
         try:
-            error = json.loads(body)
-            message = error.get("message", "") if isinstance(error, dict) else ""
+            payload = json.loads(body)
+            message = payload.get("message", "") if isinstance(payload, dict) else ""
             if isinstance(message, str) and "secondary rate limit" in message.lower():
                 return error("GH_RATE_LIMIT")
         except (ValueError, UnicodeError):

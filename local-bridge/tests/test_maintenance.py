@@ -372,6 +372,15 @@ def approval_evidence():
 
 
 class TransportTests(unittest.TestCase):
+    def test_standalone_host_python_loads_shared_transport(self):
+        import sys
+        script = Path(m.__file__).resolve()
+        result = subprocess.run([sys.executable, "-I", "-B", str(script), "--help"],
+                                stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                stderr=subprocess.PIPE, timeout=15, check=False)
+        self.assertEqual(result.returncode, 0)
+        self.assertIn(b"--run", result.stdout)
+
     def test_canonical_authenticated_get_and_no_anonymous_fallback(self):
         config = Path("/fixture/gh")
         with patch.object(m, "gh_request", return_value={"complete": True, "data": {"ok": True}}) as call:
