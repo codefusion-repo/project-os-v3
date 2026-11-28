@@ -67,7 +67,8 @@ def run_pending(jobs: Jobs, *, enabled=lambda: True, workspace_backend=None):
                         try:
                             if not enabled():
                                 return False
-                            authorize_request(jobs.policy, row["principal"], row["workspace"], execute=True)
+                            authorize_request(jobs.policy, row["principal"], row["workspace"], execute=True,
+                                              request_key=row["request_key"], require_operation=True)
                             return True
                         except (OSError, ValueError, TypeError):
                             return False

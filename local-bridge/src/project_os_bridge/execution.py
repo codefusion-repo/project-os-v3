@@ -143,6 +143,30 @@ def _adopt_apk(workspace, source, job_id, name):
     return read_apk(output, (info.st_dev, info.st_ino), name=name)
 
 
+def command_steps(profile, plan=None):
+    """One command plan used for both preview and dispatch; relative workdirs only."""
+    if profile == CODEX_PROFILE:
+        raise ValueError("CODEX_NOT_DIRECT_COMMAND")
+    flutter = profile.startswith("flutter-")
+    descriptor = profile_for(profile)
+    install = (("flutter", "pub", "get", "--offline") if flutter else
+               ("npm", "ci", "--offline", "--no-audit", "--no-fund"))
+    if not flutter and profile != "expo-apk-qa":
+        install += ("--ignore-scripts",)
+    steps = [(install, ".")]
+    if plan is not None and plan.native == "managed-script":
+        steps.append((("npm", "run", "prebuild", "--", "--platform", "android",
+                       "--no-install"), "."))
+    elif plan is not None and plan.native == "managed-expo":
+        steps.append((("./node_modules/.bin/expo", "prebuild", "--platform",
+                       "android", "--no-install"), "."))
+    argv = plan.argv if plan is not None else descriptor.argv
+    if profile == "expo-apk-debug":
+        argv += ("--no-daemon",)
+    steps.append((argv, "android" if profile.startswith("expo-apk-") else "."))
+    return steps
+
+
 class WorkspaceWSL:
     """Registered direct profiles, using the existing Jobs effect fence."""
 
@@ -216,22 +240,7 @@ class WorkspaceWSL:
         lock = workspace / ("pubspec.lock" if flutter else "package-lock.json")
         before = _lock_digest(lock)
         descriptor = profile_for(profile)
-        install = (("flutter", "pub", "get", "--offline") if flutter else
-                   ("npm", "ci", "--offline", "--no-audit", "--no-fund"))
-        if not flutter and profile != "expo-apk-qa":
-            install += ("--ignore-scripts",)
-        steps = [(install, workspace)]
-        if plan is not None and plan.native == "managed-script":
-            steps.append((("npm", "run", "prebuild", "--", "--platform", "android",
-                           "--no-install"), workspace))
-        elif plan is not None and plan.native == "managed-expo":
-            steps.append((("./node_modules/.bin/expo", "prebuild", "--platform",
-                           "android", "--no-install"), workspace))
-        argv = plan.argv if plan is not None else descriptor.argv
-        build_dir = workspace / "android" if profile.startswith("expo-apk-") else workspace
-        if profile == "expo-apk-debug":
-            argv += ("--no-daemon",)
-        steps.append((argv, build_dir))
+        steps = [(argv, workspace / relative) for argv, relative in command_steps(profile, plan)]
         result = {"execution_id": identity, "execution_environment": "wsl-direct",
                   "workspace_sha256": snapshot["workspace_sha256"],
                   "lock_sha256": before, "cleanup_verified": True}
