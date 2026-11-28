@@ -270,11 +270,78 @@ def build_server(verifier, jobs, fixture_reader=None, *, diagnostics=None, githu
                                                       execute=True, changes=changes, pr=pr)
 
         if supervised_workspace and workspace_backend is not None:
+            @mcp.tool(annotations=read)
+            async def codex_capabilities(project: StrictStr, expected_sha: StrictStr) -> dict:
+                """Read the authorized local Codex catalog and observable quota windows."""
+                from .workspace_jobs import local_runtime, project_checkout, binding_digest
+                from .worker import exclusive_worker
+                from .codex_provider import provider_catalog
+                import shutil
+                import uuid
+                from .core import now
+                from .workspace_jobs import workspace_resource
+                actor = principal()
+                token = get_access_token()
+                def check():
+                    if principal() != actor or token.expires_at is None or token.expires_at <= time.time():
+                        raise PermissionError("DENIED")
+                    jobs.policy.require(actor, "workspace_execute", project)
+                    jobs.policy.require(actor, CODEX_PROFILE, project)
+                def collect():
+                    with exclusive_worker(jobs):
+                        check()
+                        runtime = local_runtime(jobs.probe.root, jobs.policy)
+                        entry, root = project_checkout(runtime, jobs.policy, actor, project, expected_sha)
+                        binding = binding_digest(entry, root)
+                        with jobs.transaction() as conn:
+                            if conn.execute("SELECT 1 FROM jobs WHERE state IN ('QUEUED','RUNNING') LIMIT 1").fetchone() or conn.execute("SELECT 1 FROM fixture_effects WHERE resolved_at IS NULL LIMIT 1").fetchone():
+                                raise ValueError("WORKSPACE_BUSY")
+                        key = workspace_backend.route(CODEX_PROFILE, project)
+                        env = dict(workspace_backend.toolchains[key])
+                        executable = shutil.which("codex", path=env["PATH"])
+                        if executable is None:
+                            return {"capacity": "unavailable", "models": None, "windows": None, "model_windows": None}
+                        def enabled():
+                            try:
+                                check()
+                                return True
+                            except PermissionError:
+                                return False
+                        effect_id, effect_token = uuid.uuid4().hex, uuid.uuid4().hex
+                        with jobs.transaction() as conn:
+                            if conn.execute("SELECT count(*) FROM jobs").fetchone()[0] >= 10000:
+                                raise ValueError("JOB_STORAGE_LIMIT")
+                            stamp = now()
+                            conn.execute("INSERT INTO jobs(id,principal,resource,workflow,request_key,state,created,updated) VALUES(?,?,?,?,?,?,?,?)",
+                                         (effect_id, actor, workspace_resource(jobs.policy), "codex_capabilities", effect_id, "RUNNING", stamp, stamp))
+                            jobs.event(conn, effect_id, "RUNNING")
+                            conn.execute("INSERT INTO fixture_effects(job_id,token,context_id) VALUES(?,?,?)", (effect_id, effect_token, binding))
+                        result, clean = provider_catalog(executable, root, env, enabled)
+                        if not clean:
+                            raise ValueError("CODEX_PROBE_UNCERTAIN")
+                        current, current_root = project_checkout(runtime, jobs.policy, actor, project, expected_sha)
+                        if binding_digest(current, current_root) != binding:
+                            raise PermissionError("DENIED")
+                        check()
+                        with jobs.transaction() as conn:
+                            conn.execute("UPDATE fixture_effects SET resolved_at=? WHERE job_id=? AND token=? AND resolved_at IS NULL", (now(), effect_id, effect_token))
+                            jobs.transition(conn, effect_id, "RUNNING", "SUCCEEDED")
+                        return result
+                try:
+                    return await asyncio.to_thread(collect)
+                except PermissionError:
+                    raise PermissionError("DENIED") from None
+                except (OSError, ValueError, TypeError):
+                    raise ValueError("CODEX_CAPABILITIES_UNAVAILABLE") from None
+
             @mcp.tool(annotations=write)
             async def submit_codex_job(project: StrictStr, expected_sha: StrictStr,
                                        branch: StrictStr, issue: StrictInt, prompt: StrictStr,
                                        request_key: StrictStr, mode: StrictStr = "auto",
-                                       pr: StrictInt | None = None) -> dict:
+                                       pr: StrictInt | None = None,
+                                       target_branch: StrictStr | None = None,
+                                       model: StrictStr | None = None,
+                                       reasoning_effort: StrictStr | None = None) -> dict:
                 """Route an authorized implementation task to Codex on its existing checkout.
                 Browser mode does not queue anything. No caller executable, environment or shell."""
                 from .codex_provider import validate_task, MODES
@@ -288,7 +355,10 @@ def build_server(verifier, jobs, fixture_reader=None, *, diagnostics=None, githu
                     raise ValueError("INVALID_CODEX_ROUTE")
                 check()
                 task = validate_task({"mode": "codex" if mode == "browser" else mode,
-                                      "issue": issue, "pr": pr, "branch": branch, "prompt": prompt})
+                                      "issue": issue, "pr": pr, "branch": branch, "prompt": prompt,
+                                      **({"target_branch": target_branch} if target_branch is not None else {}),
+                                      **({"model": model} if model is not None else {}),
+                                      **({"reasoning_effort": reasoning_effort} if reasoning_effort is not None else {})})
                 from .workspace_jobs import browser_route
                 def submit():
                     check()
@@ -316,6 +386,43 @@ def build_server(verifier, jobs, fixture_reader=None, *, diagnostics=None, githu
                     except (OSError, ValueError, TypeError):
                         raise ValueError("CODEX_SUBMISSION_FAILED") from None
                 return await asyncio.to_thread(submit)
+
+        @mcp.tool(annotations=read)
+        async def workspace_git_status(project: StrictStr, expected_sha: StrictStr) -> dict:
+            """Inspect checkout identity, dirty evidence, SHA presence and recent commit IDs."""
+            from .workspace_jobs import workspace_git_status as inspect_git
+            actor = principal()
+            token = get_access_token()
+            def check():
+                if principal() != actor or token.expires_at is None or token.expires_at <= time.time():
+                    raise PermissionError("DENIED")
+            def collect():
+                try:
+                    return inspect_git(jobs, actor, project, expected_sha, authorize=check)
+                except PermissionError:
+                    raise PermissionError("DENIED") from None
+                except (OSError, ValueError, TypeError, KeyError):
+                    raise ValueError("WORKSPACE_GIT_UNAVAILABLE") from None
+            return await asyncio.to_thread(collect)
+
+        @mcp.tool(annotations=ToolAnnotations(read_only_hint=False, destructive_hint=False,
+                                             idempotent_hint=False, open_world_hint=True))
+        async def workspace_git_fetch(project: StrictStr, expected_sha: StrictStr) -> dict:
+            """Fetch the validated origin and verify the requested commit under the worker fence."""
+            from .workspace_jobs import workspace_git_fetch as fetch_git
+            actor = principal()
+            token = get_access_token()
+            def check():
+                if principal() != actor or token.expires_at is None or token.expires_at <= time.time():
+                    raise PermissionError("DENIED")
+            def fetch():
+                try:
+                    return fetch_git(jobs, actor, project, expected_sha, authorize=check)
+                except PermissionError:
+                    raise PermissionError("DENIED") from None
+                except (OSError, ValueError, TypeError, KeyError, TimeoutError, subprocess.SubprocessError):
+                    raise ValueError("WORKSPACE_FETCH_UNAVAILABLE_RECONCILE_IF_PENDING") from None
+            return await asyncio.to_thread(fetch)
 
         @mcp.tool(annotations=read)
         async def workspace_changes(job_id: StrictStr) -> dict:
@@ -558,7 +665,22 @@ def build_server(verifier, jobs, fixture_reader=None, *, diagnostics=None, githu
                             raise PermissionError("DENIED")
 
                     check()
-                    result = installed_context(path, repository, workflow, skills, templates, expected_revision)
+                    def integrated_head():
+                        from .github_operational import registry_entries
+                        from .methodology import CANONICAL
+                        aliases = [alias for alias, entry in registry_entries(github_provider.runtime).items()
+                                   if entry["repository"].casefold() == CANONICAL]
+                        if len(aliases) != 1:
+                            raise PermissionError("DENIED")
+                        canonical, _ = github_provider.open_project(actor, aliases[0])
+                        def canonical_check():
+                            check()
+                            if canonical.require(actor, aliases[0]).casefold() != CANONICAL:
+                                raise PermissionError("DENIED")
+                        canonical_check()
+                        return canonical.reader.integrated_head(actor, aliases[0], check_access=canonical_check)
+                    result = installed_context(path, repository, workflow, skills, templates, expected_revision,
+                                               integrated_head=integrated_head)
                     check()
                     observe("complete")
                     check()

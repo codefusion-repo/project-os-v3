@@ -119,3 +119,35 @@ class MethodologyTests(unittest.TestCase):
         self.commit(self.project)
         with self.assertRaises(ValueError):
             build_context(self.kit, self.installed, self.project, "example/demo", "implement", [], [])
+
+    def test_newer_integrated_pin_without_runtime_update(self):
+        (self.kit / "PROJECT_OS.md").write_text("integrated methodology\n")
+        integrated = self.commit(self.kit)
+        (self.project / "AGENTS.md").write_text(
+            "Canonical codefusion-repo/project-os-v3\nProject-OS-Version: " + integrated + "\n")
+        self.commit(self.project)
+        for repo in ("example/demo", CANONICAL):
+            result = build_context(self.kit, self.installed, self.project, repo,
+                                   "implement", [], [], expected_revision=integrated,
+                                   integrated_head=lambda: integrated)
+            self.assertEqual(result["methodology_revision"], integrated)
+            self.assertEqual(result["installed_revision"], self.installed)
+            self.assertEqual(result["provenance"], "canonical_main_verified_git_objects")
+            self.assertEqual(next(d["content"] for d in result["documents"]
+                                  if d["path"] == "PROJECT_OS.md"), "integrated methodology\n")
+        (self.kit / "PROJECT_OS.md").write_text("unreviewed candidate\n")
+        candidate = self.commit(self.kit)
+        with self.assertRaises(ValueError):
+            build_context(self.kit, self.installed, self.project, CANONICAL,
+                          "implement", [], [], expected_revision=candidate,
+                          integrated_head=lambda: integrated)
+        with self.assertRaises(ValueError):
+            build_context(self.kit, self.installed, self.project, CANONICAL,
+                          "implement", [], [], expected_revision="0" * 40,
+                          integrated_head=lambda: integrated)
+        with self.assertRaises(PermissionError):
+            def denied():
+                raise PermissionError("DENIED")
+            build_context(self.kit, self.installed, self.project, CANONICAL,
+                          "implement", [], [], expected_revision=integrated,
+                          integrated_head=denied)

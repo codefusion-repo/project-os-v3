@@ -17,13 +17,13 @@ MAX_DOCUMENT = 64 * 1024
 MAX_RESPONSE = 384 * 1024
 
 
-def git(root, *args):
+def git(root, *args, input_data=None):
     env = {"PATH": "/usr/bin:/bin", "HOME": str(root), "GIT_CONFIG_NOSYSTEM": "1",
            "GIT_CONFIG_GLOBAL": "/dev/null", "GIT_NO_REPLACE_OBJECTS": "1",
            "GIT_NO_LAZY_FETCH": "1", "GIT_TERMINAL_PROMPT": "0", "GIT_OPTIONAL_LOCKS": "0"}
     try:
         result = subprocess.run(["git", "-C", str(root), "-c", "core.fsmonitor=false", *args],
-                                stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                input=input_data, stdin=subprocess.DEVNULL if input_data is None else None, stdout=subprocess.PIPE,
                                 stderr=subprocess.DEVNULL, env=env, timeout=5, check=False)
     except (OSError, subprocess.TimeoutExpired):
         raise ValueError("METHODOLOGY_UNAVAILABLE") from None
@@ -82,13 +82,13 @@ def selection(workflow, skills, templates):
             "adapters/browser-chat.md"]
 
 
-def build_context(kit, installed, project_root, repository, workflow, skills, templates, *, expected_revision=None):
+def build_context(kit, installed, project_root, repository, workflow, skills, templates, *, expected_revision=None, integrated_head=None):
     paths = selection(workflow, skills, templates)
     checkout(kit, CANONICAL)
     installed = commit(kit, installed)
     if repository.casefold() == CANONICAL:
-        version = installed
-        agents = document(kit, CANONICAL, installed, "AGENTS.md")
+        version = commit(kit, expected_revision) if expected_revision is not None else installed
+        agents = document(kit, CANONICAL, version, "AGENTS.md")
         paths.extend(["docs/PRODUCT.md", "local-bridge/MVP.md"])
     else:
         checkout(project_root, repository)
@@ -102,13 +102,28 @@ def build_context(kit, installed, project_root, repository, workflow, skills, te
                 or len(set(refs)) != 1 or CANONICAL not in agents["content"].lower()):
             raise ValueError("METHODOLOGY_VERSION_UNAVAILABLE")
         version = commit(kit, refs[0])
-        git(kit, "merge-base", "--is-ancestor", version, installed)
+    provenance = "local_reviewed_installation_git_objects"
+    if version != installed:
+        try:
+            git(kit, "merge-base", "--is-ancestor", version, installed)
+            # Preserve the canonical kit's legacy default and reject older overrides.
+            if repository.casefold() == CANONICAL:
+                raise ValueError("METHODOLOGY_VERSION_MISMATCH")
+        except ValueError:
+            # A newer pin must be a descendant of the installed baseline and
+            # reachable from the independently observed canonical main tip.
+            git(kit, "merge-base", "--is-ancestor", installed, version)
+            if integrated_head is None:
+                raise ValueError("METHODOLOGY_INTEGRATION_UNVERIFIED")
+            main = commit(kit, integrated_head())
+            git(kit, "merge-base", "--is-ancestor", version, main)
+            provenance = "canonical_main_verified_git_objects"
     if expected_revision is not None and expected_revision != version:
         raise ValueError("METHODOLOGY_VERSION_MISMATCH")
     documents = [agents] + [document(kit, CANONICAL, version, path) for path in paths]
     result = {"complete": True, "methodology_revision": version,
               "installed_revision": installed, "documents": documents,
-              "provenance": "local_reviewed_installation_git_objects"}
+              "provenance": provenance}
     if len(json.dumps(result, ensure_ascii=True).encode("ascii")) > MAX_RESPONSE:
         raise ValueError("METHODOLOGY_LIMIT")
     return result
@@ -129,7 +144,8 @@ def installed_receipt():
     return receipt
 
 
-def installed_context(project_config, repository, workflow, skills, templates, expected_revision=None):
+def installed_context(project_config, repository, workflow, skills, templates, expected_revision=None, *, integrated_head=None):
     receipt = installed_receipt()
     return build_context(Path(sys.prefix).parents[1], receipt["sha"], project_config.parent.parent,
-                         repository, workflow, skills, templates, expected_revision=expected_revision)
+                         repository, workflow, skills, templates, expected_revision=expected_revision,
+                         integrated_head=integrated_head)

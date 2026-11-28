@@ -802,7 +802,7 @@ class AuthTests(unittest.TestCase):
                                                 "body": None, "state": "open", "comments": 0,
                                                 "repository_url": base, "url": base + "/issues/1"}}
 
-        def methodology(path, repository, workflow, skills, templates, expected_revision):
+        def methodology(path, repository, workflow, skills, templates, expected_revision, *, integrated_head=None):
             self.assertEqual(str(path), grants[repository.split("/")[1]]["config"])
             return {"complete": True, "documents": [{"content": repository + "-fixture-methodology"}]}
 
@@ -1193,7 +1193,7 @@ class AuthTests(unittest.TestCase):
         self.assertIsNone(load_supervised_workspace_policy(verifier, base, supervised=True, multi=True))
         flag = state / SUPERVISED_GRANTS
         flag.touch(mode=0o600)
-        original = ["workspace_prepare", "workspace_materialize", "workspace_context",
+        original = ["workspace_prepare", "workspace_materialize", "workspace_git_read", "workspace_context",
                     "workspace_dirty_context", "expo-test"]
         flag.write_text(json.dumps({"demo": original}))
         with self.assertRaises(PermissionError):
@@ -1219,8 +1219,15 @@ class AuthTests(unittest.TestCase):
             names = {item["name"] for item in call("tools/list", {})["tools"]}
             self.assertIn("submit_workspace_job", names)
             self.assertIn("workspace_context", names)
+            self.assertIn("workspace_git_status", names)
             self.assertNotIn("submit_workspace_execute", names)
             args = dict(project="demo", expected_sha=sha, profile="expo-test")
+            status_args = dict(project="demo", expected_sha=sha)
+            self.assertTrue(payload(tool("workspace_git_status", **status_args))["sha_present"])
+            self.assertFalse(payload(tool("workspace_git_status", project="demo", expected_sha="0" * 40))["sha_present"])
+            flag.write_text(json.dumps({"demo": [op for op in original if op != "workspace_git_read"]}))
+            self.assertTrue(tool("workspace_git_status", **status_args).get("isError", False))
+            flag.write_text(json.dumps({"demo": original}))
             context = payload(tool("workspace_context", **args, paths=["note.txt"]))
             self.assertEqual(context["files"][0]["text"], "committed\n")
             self.assertNotIn("diff", context)
@@ -1371,7 +1378,7 @@ class AuthTests(unittest.TestCase):
         # Synthetic CLI exercises the actual JSONL process boundary, not account access.
         executable = bin_dir / "codex"
         executable.write_text("#!" + sys.executable + "\n" + r'''
-import json, sys
+import json, sys, subprocess
 from pathlib import Path
 def emit(value):
     print(json.dumps(value), flush=True)
@@ -1382,9 +1389,18 @@ if sys.argv[1:] == ["app-server"]:
             emit({"id": data["id"], "result": {}})
         elif data.get("method") == "account/rateLimits/read":
             emit({"id": data["id"], "result": {"ordinaryUsageAllowed": True}})
-elif sys.argv[1:] == ["--ask-for-approval", "never", "exec", "--json", "-"]:
-    assert "Fixture implementation" in sys.stdin.read()
-    Path("AGENTS.md").write_text("Fixture implementation complete\n")
+        elif data.get("method") == "model/list":
+            emit({"id": data["id"], "result": {"data": [{"model": "fixture-model", "hidden": False,
+                "isDefault": True, "supportedReasoningEfforts": [{"reasoningEffort": "high"}]}], "nextCursor": None}})
+elif sys.argv[1:] in (["--ask-for-approval", "never", "exec", "--json", "-"],
+                     ["--ask-for-approval", "never", "exec", "--json", "--model", "fixture-model", "--config", 'model_reasoning_effort="high"', "-"]):
+    prompt = sys.stdin.read()
+    assert "Fixture implementation" in prompt
+    if "work/authorized" in prompt:
+        subprocess.run(["git", "switch", "-c", "work/authorized"], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        Path("next.txt").write_text("next\n")
+    else:
+        Path("AGENTS.md").write_text("Fixture implementation complete\n")
     emit({"type": "item.completed", "item": {"type": "agent_message", "text": "Fixture changed."}})
     emit({"type": "turn.completed", "usage": {}})
 else:
@@ -1413,6 +1429,9 @@ else:
                 return json.loads(result["content"][0]["text"])
             args = {"project": "demo", "expected_sha": sha, "branch": "work/18-codex",
                     "issue": 18, "prompt": "Fixture implementation", "request_key": "codex-first"}
+            capabilities = payload("codex_capabilities", project="demo", expected_sha=sha)
+            self.assertEqual(capabilities["models"][0]["model"], "fixture-model")
+            self.assertEqual(capabilities["capacity"], "available")
             direct = payload("submit_codex_job", **args, mode="browser")
             self.assertEqual(direct["executor"], "browser")
             self.assertFalse(direct["lease_held"])
@@ -1433,7 +1452,20 @@ else:
             self.assertEqual(git("rev-parse", "HEAD"), sha)
             self.assertEqual(payload("submit_codex_job", **args, mode="browser")["executor"], "blocked")
             self.assertEqual(payload("submit_codex_job", **{**args, "request_key": "dirty"},
-                                     mode="browser")["executor"], "blocked")
+                                     mode="browser")["executor"], "browser")
+            (repo / "untracked.txt").write_text("keep\n")
+            second = payload("submit_codex_job", **{**args, "request_key": "continuation"},
+                             target_branch="work/authorized", model="fixture-model", reasoning_effort="high")
+            run_pending(jobs, workspace_backend=backend, enabled=verifier.enabled)
+            continued = payload("get_job_evidence", job_id=second["job_id"])
+            self.assertEqual(continued["state"], "SUCCEEDED")
+            self.assertEqual(continued["result"]["execution"]["requested_model"], "fixture-model")
+            self.assertIsNone(continued["result"]["execution"]["effective_model"])
+            self.assertTrue(continued["result"]["execution"]["before"]["dirty"])
+            self.assertEqual(continued["result"]["execution"]["after"]["branch"], "work/authorized")
+            self.assertEqual((repo / "untracked.txt").read_text(), "keep\n")
+            self.assertEqual((repo / "AGENTS.md").read_text(), "Fixture implementation complete\n")
+            self.assertEqual(jobs.pending_effects(), [])
             grants.write_text(json.dumps({"demo": [op for op in ops if op != "codex-implement"]}))
             self.assertEqual(payload("submit_codex_job", **args)["executor"], "blocked")
 

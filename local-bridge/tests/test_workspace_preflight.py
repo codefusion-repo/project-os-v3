@@ -80,11 +80,15 @@ class WorkspacePreflightTests(unittest.TestCase):
             return read_workspace_context(self.runtime, policy, "operator", "demo", self.sha,
                                           "flutter-test", list(paths), **kwargs)
         file = self.project / "pubspec.yaml"
+        file.write_text("name: staged change\n")
+        self.git("add", "pubspec.yaml")
         file.write_text("name: local change\n")
         status = self.git("status", "--porcelain")
         self.assertNotIn("diff", read("pubspec.yaml"))
         result = read("pubspec.yaml", include_dirty=True)
         self.assertIn("+name: local change", result["diff"])
+        self.assertIn("+name: staged change", result["staged_diff"])
+        self.assertNotIn("+name: local change", result["staged_diff"])
         self.assertEqual(self.git("status", "--porcelain"), status)
         self.assertEqual(file.read_text(), "name: local change\n")
         file.unlink()
@@ -266,6 +270,97 @@ class WorkspacePreflightTests(unittest.TestCase):
         policy = Policy([*self.policy.grants, *(( "operator", op, "disposable")
                                                 for op in ("submit", "read", "cancel"))])
         return Jobs(state, policy, workflows=("workspace_prepare",))
+
+    def test_git_status_requires_grant_and_preserves_dirty_checkout(self):
+        from project_os_bridge.workspace_jobs import workspace_git_status
+        jobs = self.workspace_queue()
+        with self.assertRaises(PermissionError):
+            workspace_git_status(jobs, "operator", "demo", self.sha)
+        jobs.policy = Policy([*jobs.policy.grants, ("operator", "workspace_git_read", "demo")])
+        (self.project / "pubspec.yaml").write_text("dirty fixture\n")
+        self.git("add", "pubspec.yaml")
+        (self.project / "package.json").write_text("unstaged fixture\n")
+        before = self.git("status", "--porcelain")
+        result = workspace_git_status(jobs, "operator", "demo", self.sha)
+        self.assertTrue(result["dirty"])
+        self.assertTrue(result["sha_present"])
+        self.assertEqual(result["head"], self.sha)
+        self.assertEqual(result["history"][0], self.sha)
+        self.assertFalse(workspace_git_status(jobs, "operator", "demo", "0" * 40)["sha_present"])
+        from project_os_bridge import methodology
+        real_git = methodology.git
+        def failing_git(root, *args, **kwargs):
+            if args[:2] == ("cat-file", "--batch-check=%(objectname) %(objecttype)"):
+                raise ValueError("METHODOLOGY_UNAVAILABLE")
+            return real_git(root, *args, **kwargs)
+        with patch("project_os_bridge.methodology.git", side_effect=failing_git):
+            with self.assertRaises(ValueError):
+                workspace_git_status(jobs, "operator", "demo", self.sha)
+        self.assertEqual(self.git("status", "--porcelain"), before)
+        self.git("remote", "set-url", "origin", "https://github.com/example/other.git")
+        with self.assertRaises(ValueError):
+            workspace_git_status(jobs, "operator", "demo", self.sha)
+
+    def test_git_status_blocks_active_effect_and_worker(self):
+        from project_os_bridge.workspace_jobs import workspace_git_status
+        jobs = self.workspace_queue()
+        jobs.policy = Policy([*jobs.policy.grants, ("operator", "workspace_git_read", "demo")])
+        with exclusive_worker(jobs), self.assertRaises(BlockingIOError):
+            workspace_git_status(jobs, "operator", "demo", self.sha)
+        with jobs.transaction() as conn:
+            conn.execute("INSERT INTO fixture_effects(job_id) VALUES(?)", ("fixture",))
+        with self.assertRaises(ValueError):
+            workspace_git_status(jobs, "operator", "demo", self.sha)
+
+    def test_git_fetch_grant_preservation_and_uncertain_effect(self):
+        from types import SimpleNamespace
+        from project_os_bridge.workspace_jobs import workspace_git_fetch
+        from project_os_bridge.reconcile import reconcile
+        jobs = self.workspace_queue()
+        with self.assertRaises(PermissionError):
+            workspace_git_fetch(jobs, "operator", "demo", self.sha)
+        jobs.policy = Policy([*jobs.policy.grants, ("operator", "workspace_git_fetch", "demo")])
+        (self.project / "pubspec.yaml").write_text("staged\n")
+        self.git("add", "pubspec.yaml")
+        (self.project / "package.json").write_text("unstaged\n")
+        before = self.git("status", "--porcelain")
+        with patch("project_os_bridge.workspace_jobs._run_git_network", side_effect=[SimpleNamespace(stdout=b"https://github.com/example/demo.git\n"), SimpleNamespace(returncode=0)]) as fetch:
+            result = workspace_git_fetch(jobs, "operator", "demo", self.sha)
+        self.assertTrue(result["sha_present_before"])
+        self.assertTrue(result["sha_present"])
+        self.assertEqual(fetch.call_count, 2)
+        self.assertEqual(self.git("status", "--porcelain"), before)
+        self.assertEqual(self.git("rev-parse", "HEAD"), self.sha)
+        with patch("project_os_bridge.workspace_jobs._run_git_network", side_effect=[SimpleNamespace(stdout=b"https://github.com/example/demo.git\n"), SimpleNamespace(returncode=1)]):
+            with self.assertRaises(ValueError):
+                workspace_git_fetch(jobs, "operator", "demo", self.sha)
+        effect = jobs.pending_effects()[0]
+        with self.assertRaises(ValueError):
+            workspace_git_fetch(jobs, "operator", "demo", self.sha)
+        reconcile(jobs, effect["job_id"], quiescent=True)
+        self.assertFalse(jobs.pending_effects())
+
+    def test_codex_capability_interruption_reconciles_without_replay(self):
+        from project_os_bridge.core import now
+        from project_os_bridge.reconcile import reconcile
+        jobs = self.workspace_queue()
+        job_id = "capability-fixture"
+        with jobs.transaction() as conn:
+            stamp = now()
+            conn.execute("INSERT INTO jobs(id,principal,resource,workflow,request_key,state,created,updated) VALUES(?,?,?,?,?,?,?,?)",
+                         (job_id, "operator", "disposable", "codex_capabilities", job_id, "RUNNING", stamp, stamp))
+            jobs.event(conn, job_id, "RUNNING")
+            conn.execute("INSERT INTO fixture_effects(job_id,token,context_id) VALUES(?,?,?)",
+                         (job_id, "fixture-token", "a" * 64))
+        with self.assertRaises(PermissionError):
+            reconcile(jobs, job_id)
+        self.assertEqual(len(jobs.pending_effects()), 1)
+        reconcile(jobs, job_id, quiescent=True)
+        self.assertEqual(jobs.pending_effects(), [])
+        with jobs.transaction() as conn:
+            self.assertEqual(conn.execute("SELECT state FROM jobs WHERE id=?", (job_id,)).fetchone()[0], "INTERRUPTED")
+            self.assertEqual([row[0] for row in conn.execute("SELECT state FROM events WHERE job_id=? ORDER BY rowid", (job_id,))],
+                             ["RUNNING", "INTERRUPTED"])
 
     def test_durable_job_materializes_both_profiles(self):
         jobs = self.workspace_queue()

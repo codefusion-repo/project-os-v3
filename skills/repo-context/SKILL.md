@@ -16,6 +16,9 @@ Repositorio o checkout accesible; locator primario solo ante ambigüedad materia
 4. Recuperar objetivo, estado, referencias, validación, blockers y siguiente paso seguro; pedir como máximo un locator primario solo ante ambigüedad material no resoluble.
 
 ## Validación y salida
+
+Cuando el Bridge autorizado ofrezca `github_context` o `methodology_context`, reutiliza sus respuestas completas y verificadas; complementa con fuentes vivas lo faltante o desactualizado sin repetir lecturas satisfechas. `workspace_context` requiere sus grants y perfil; la lectura de cambios locales seleccionados requiere además `workspace_dirty_context`. La ausencia de estos grants no bloquea por sí sola QA. No deduzcas permisos de la disponibilidad de una herramienta.
+
 Refs, archivos y comandos observados; siguiente acción y límites de acceso. No afirmar estado remoto si no fue consultado.
 
 ## Riesgos/limitaciones

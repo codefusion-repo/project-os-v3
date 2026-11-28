@@ -76,6 +76,23 @@ class GitHubReader:
                 or not data["full_name"].isascii() or data["full_name"].lower() != repo.lower()):
             raise GitHubReadError("RESOURCE_MISMATCH")
 
+    def integrated_head(self, principal, project, *, check_access=None):
+        """Observe the canonical main ref using the existing exact-repo reader."""
+        repo = self._repo(principal, project)
+        if repo.casefold() != "codefusion-repo/project-os-v3" or project not in self.repository_ids:
+            raise PermissionError("DENIED")
+        self._verify_identity(principal, project, check_access)
+        result = self._authorized_request(principal, project, f"repos/{repo}/git/ref/heads/main", check_access)
+        data = result.get("data")
+        obj = data.get("object") if isinstance(data, dict) else None
+        sha = obj.get("sha") if isinstance(obj, dict) else None
+        if (result.get("complete") is not True or not isinstance(data, dict)
+                or data.get("ref") != "refs/heads/main" or not isinstance(obj, dict)
+                or obj.get("type") != "commit" or not isinstance(sha, str)
+                or not re.fullmatch(r"[0-9a-f]{40}", sha)):
+            raise GitHubReadError("CANONICAL_MAIN_UNVERIFIED")
+        return sha
+
     def _issue_context(self, principal, project, number, check_access):
         repo = self._repo(principal, project)
 
